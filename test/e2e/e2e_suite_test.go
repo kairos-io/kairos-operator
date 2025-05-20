@@ -20,10 +20,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/kairos-io/operator/test/utils"
 )
@@ -40,6 +44,10 @@ var (
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	projectImage = "example.com/operator:v0.0.1"
+
+	kubeconfig  string
+	clusterName string
+	clientset   *kubernetes.Clientset
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -53,15 +61,23 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	kubeconfig, clusterName = createCluster()
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	Expect(err).NotTo(HaveOccurred())
+	clientset, err = kubernetes.NewForConfig(config)
+	Expect(err).NotTo(HaveOccurred())
+
+	os.Setenv("KUBECONFIG", kubeconfig)
+
 	By("building the manager(Operator) image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
 	// built and available before running the tests. Also, remove the following block.
 	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
+	err = utils.LoadImageToKindClusterWithName(clusterName, projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
 
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
@@ -81,9 +97,27 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	// Teardown CertManager after the suite if not skipped and if it was not already installed
-	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
-		utils.UninstallCertManager()
-	}
+	By("deleting the kind cluster")
+	exec.Command("kind", "delete", "cluster", "--name", clusterName).Run()
 })
+
+func createCluster() (string, string) {
+	// Create a temporary directory for the kubeconfig
+	tmpDir, err := os.MkdirTemp("", "node-labeler-e2e-*")
+	Expect(err).NotTo(HaveOccurred())
+
+	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+
+	// Generate a unique cluster name using timestamp
+	clusterName := fmt.Sprintf("node-labeler-e2e-%d", time.Now().UnixNano())
+
+	// Create the kind cluster with the custom kubeconfig path
+	cmd := exec.Command("kind", "create", "cluster",
+		"--name", clusterName,
+		"--config", "../../test/e2e/kind-2node.yaml",
+		"--kubeconfig", kubeconfigPath)
+	_, err = cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred())
+
+	return kubeconfigPath, clusterName
+}

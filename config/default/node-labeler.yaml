@@ -1,12 +1,9 @@
-apiVersion: apps/v1
-kind: DaemonSet
+apiVersion: batch/v1
+kind: Job
 metadata:
   name: kairos-node-labeler
   namespace: kairos-system
 spec:
-  selector:
-    matchLabels:
-      app: kairos-node-labeler
   template:
     metadata:
       labels:

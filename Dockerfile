@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM docker.io/golang:1.23 AS builder
+FROM docker.io/golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -13,8 +13,6 @@ RUN go mod download
 
 # Copy the go source
 COPY cmd/main.go cmd/main.go
-COPY api/ api/
-COPY internal/ internal/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command
