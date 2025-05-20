@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- kairos.io_v1alpha1_nodeop.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -15,7 +15,7 @@ namePrefix: operator-
 #    someName: someValue
 
 resources:
-#- ../crd
+- ../crd
 - ../rbac
 - ../manager
 - node-labeler.yaml

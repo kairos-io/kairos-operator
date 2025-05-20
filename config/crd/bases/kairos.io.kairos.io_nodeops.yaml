@@ -1,0 +1,117 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: nodeops.kairos.io.kairos.io
+spec:
+  group: kairos.io.kairos.io
+  names:
+    kind: NodeOp
+    listKind: NodeOpList
+    plural: nodeops
+    singular: nodeop
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NodeOp is the Schema for the nodeops API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NodeOpSpec defines the desired state of NodeOp.
+            properties:
+              command:
+                description: |-
+                  Command is the command to run on the target nodes.
+                  This will be executed in a container with the node's root filesystem mounted.
+                items:
+                  type: string
+                type: array
+              hostMountPath:
+                default: /host
+                description: |-
+                  HostMountPath is the path where the node's root filesystem will be mounted.
+                  Defaults to "/host"
+                type: string
+              image:
+                default: busybox:latest
+                description: |-
+                  Image is the container image to use for running the command.
+                  Defaults to "busybox:latest"
+                type: string
+              targetNodes:
+                description: |-
+                  TargetNodes is a list of node names to run the operation on.
+                  If empty, the operation will run on all nodes.
+                items:
+                  type: string
+                type: array
+            required:
+            - command
+            type: object
+          status:
+            description: NodeOpStatus defines the observed state of NodeOp.
+            properties:
+              lastUpdated:
+                description: LastUpdated is the timestamp of the last status update.
+                format: date-time
+                type: string
+              nodeStatuses:
+                additionalProperties:
+                  description: NodeStatus represents the status of the operation on
+                    a specific node.
+                  properties:
+                    jobName:
+                      description: JobName is the name of the Job created for this
+                        node.
+                      type: string
+                    lastUpdated:
+                      description: LastUpdated is the timestamp of the last status
+                        update for this node.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message contains any additional information about
+                        the operation status.
+                      type: string
+                    phase:
+                      description: |-
+                        Phase represents the current phase of the operation on this node.
+                        Can be "Pending", "Running", "Completed", or "Failed"
+                      type: string
+                  required:
+                  - phase
+                  type: object
+                description: NodeStatuses contains the status of the operation for
+                  each target node.
+                type: object
+              phase:
+                description: |-
+                  Phase represents the current phase of the operation.
+                  Can be "Pending", "Running", "Completed", or "Failed"
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
