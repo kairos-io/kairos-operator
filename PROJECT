@@ -6,7 +6,7 @@ domain: kairos.io
 layout:
 - go.kubebuilder.io/v4
 projectName: operator
-repo: github.com/kairos-io/operator
+repo: github.com/kairos-io/kairos-operator
 resources:
 - api:
     crdVersion: v1
@@ -15,6 +15,6 @@ resources:
   domain: kairos.io
   group: kairos.io
   kind: NodeOp
-  path: github.com/kairos-io/operator/api/v1alpha1
+  path: github.com/kairos-io/kairos-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

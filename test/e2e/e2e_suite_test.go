@@ -29,7 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/kairos-io/operator/test/utils"
+	"github.com/kairos-io/kairos-operator/test/utils"
 )
 
 var (

@@ -1,4 +1,4 @@
-module github.com/kairos-io/operator
+module github.com/kairos-io/kairos-operator
 
 go 1.24.0
 

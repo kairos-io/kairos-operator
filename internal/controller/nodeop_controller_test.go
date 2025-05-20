@@ -28,7 +28,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	kairosiov1alpha1 "github.com/kairos-io/operator/api/v1alpha1"
+	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 )
 
 var _ = Describe("NodeOp Controller", func() {

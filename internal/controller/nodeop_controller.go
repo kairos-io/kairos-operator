@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	kairosiov1alpha1 "github.com/kairos-io/operator/api/v1alpha1"
+	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 )
 
 // NodeOpReconciler reconciles a NodeOp object

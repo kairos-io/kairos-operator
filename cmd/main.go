@@ -37,8 +37,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	kairosiov1alpha1 "github.com/kairos-io/operator/api/v1alpha1"
-	"github.com/kairos-io/operator/internal/controller"
+	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	"github.com/kairos-io/kairos-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
