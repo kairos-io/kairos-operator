@@ -1,8 +1,69 @@
-# operator
-// TODO(user): Add simple overview of use/purpose
+# ✅ Kairos Node Upgrade Operator — Implementation Plan
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+## 🔧 Architecture Overview
+
+- Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
+  - Mount `/etc/kairos-release` and `/etc/os-release` using `hostPath`.
+  - Detect if the node is Kairos-based.
+  - If so, create or update a `KairosNode` CR named after the node.
+  - Only update the `status` field (e.g., `observedVersion`, `cloudConfigHash`, `upgradeState`).
+
+- Define a **`KairosNode` CRD**:
+  - `.spec`: desired version, active/recovery images, config hash, etc.
+  - `.status`: current version, upgrade progress, timestamps.
+
+- The **Operator**:
+  - Watches `KairosNode` resources.
+  - Compares `spec.version` vs `status.observedVersion`.
+  - Triggers an **upgrade Job** when needed and `upgradeState != InProgress`.
+  - The Job:
+    - Drains the node (excluding upgrade and status Pods).
+    - Performs upgrade and reboots the node.
+    - Optionally uncordons the node.
+
+- After reboot, the DaemonSet resumes and updates `KairosNode.status`.
+- Operator detects successful upgrade and marks the state as `Completed`.
+
+---
+
+## 🔐 Security & Permissions
+
+- DaemonSet Pods:
+  - Run unprivileged.
+  - Mount only required files (`hostPath: /etc/kairos-release`, etc).
+  - Use a dedicated `ServiceAccount` with RBAC:
+    ```yaml
+    apiGroups: ["kairos.io"]
+    resources: ["kairosnodes/status"]
+    verbs: ["get", "patch", "update"]
+    ```
+
+- Use **projected service account tokens** with:
+  - Short expiration (e.g., `600s`)
+  - Custom audience (e.g., `kairos-operator`)
+
+---
+
+## 🧠 Behavioral Logic
+
+- DaemonSet creates CRs only for **Kairos nodes** (detected via `/etc/os-release`).
+- `KairosNode.status.upgradeState` acts as a state machine:
+  - `Idle` → `InProgress` → `Completed`
+- Node is uncordoned by:
+  - Upgrade Job (preferred), or
+  - Operator after detecting version match.
+
+---
+
+## 📌 Notes
+
+- Do **not** create `KairosNode` for non-Kairos nodes.
+- Operator does **not** update built-in `Node` resources.
+- Optional: label Kairos nodes for visibility:
+  ```yaml
+  labels:
+    kairos.io/managed: "true"
+
 
 ## Getting Started
 
