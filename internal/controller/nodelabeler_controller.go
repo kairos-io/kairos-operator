@@ -35,34 +35,23 @@ func (r *NodeLabelerReconciler) getOperatorNamespace() string {
 	return namespace
 }
 
-func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Get the node
-	node := &corev1.Node{}
-	if err := r.Get(ctx, req.NamespacedName, node); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	// Get the operator namespace
-	namespace := r.getOperatorNamespace()
-
-	// Check if a labeler job already exists for this node
+func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string, nodeName string) (bool, error) {
 	jobList := &batchv1.JobList{}
-	if err := r.List(ctx, jobList, client.InNamespace(namespace)); err != nil {
-		log.Error(err, "Failed to list jobs")
-		return ctrl.Result{}, err
+	if err := r.List(ctx, jobList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(map[string]string{
+			"node": nodeName,
+			"app":  "kairos-node-labeler",
+		}),
+	); err != nil {
+		return false, err
 	}
 
-	for _, job := range jobList.Items {
-		if job.Labels["node"] == node.Name && job.Labels["app"] == "kairos-node-labeler" {
-			// Job already exists for this node
-			return ctrl.Result{}, nil
-		}
-	}
+	return len(jobList.Items) > 0, nil
+}
 
-	// Create the node-labeler job
-	job := &batchv1.Job{
+func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespace string) *batchv1.Job {
+	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("kairos-node-labeler-%s", node.Name),
 			Namespace: namespace,
@@ -136,6 +125,34 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			},
 		},
 	}
+}
+
+func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Get the node
+	node := &corev1.Node{}
+	if err := r.Get(ctx, req.NamespacedName, node); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Get the operator namespace
+	namespace := r.getOperatorNamespace()
+
+	// Check if a labeler job already exists for this node
+	exists, err := r.jobExists(ctx, namespace, node.Name)
+	if err != nil {
+		log.Error(err, "Failed to check for existing jobs")
+		return ctrl.Result{}, err
+	}
+
+	if exists {
+		// Job already exists for this node
+		return ctrl.Result{}, nil
+	}
+
+	// Create the node-labeler job
+	job := r.createNodeLabelerJob(node, namespace)
 
 	if err := r.Create(ctx, job); err != nil {
 		log.Error(err, "Failed to create node-labeler job")
