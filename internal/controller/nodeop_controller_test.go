@@ -84,10 +84,11 @@ var _ = Describe("NodeOp Controller", func() {
 
 	Context("When reconciling a resource", func() {
 		var (
-			resourceName string
-			nodeName     string
-			ctx          context.Context
-			nodeop       *kairosiov1alpha1.NodeOp
+			resourceName    string
+			nodeName        string
+			ctx             context.Context
+			nodeop          *kairosiov1alpha1.NodeOp
+			createdResource *kairosiov1alpha1.NodeOp
 		)
 
 		BeforeEach(func() {
@@ -98,6 +99,7 @@ var _ = Describe("NodeOp Controller", func() {
 			resourceName = fmt.Sprintf("test-resource-%d", time.Now().UnixNano())
 			nodeName = fmt.Sprintf("test-node-%d", time.Now().UnixNano())
 			nodeop = &kairosiov1alpha1.NodeOp{}
+			createdResource = &kairosiov1alpha1.NodeOp{}
 
 			By("creating the custom resource for the Kind NodeOp")
 			resource := &kairosiov1alpha1.NodeOp{
@@ -108,7 +110,6 @@ var _ = Describe("NodeOp Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: "default",
-					UID:       types.UID(fmt.Sprintf("test-uid-%d", time.Now().UnixNano())),
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command: []string{"echo", "test"},
@@ -116,8 +117,7 @@ var _ = Describe("NodeOp Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			// Get the created resource to ensure TypeMeta is set
-			createdResource := &kairosiov1alpha1.NodeOp{}
+			// Get the created resource to ensure TypeMeta is set and get the actual UID
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      resourceName,
 				Namespace: "default",
@@ -209,6 +209,8 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(job.OwnerReferences).To(HaveLen(1))
 			Expect(job.OwnerReferences[0].Kind).To(Equal("NodeOp"))
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
+			Expect(job.OwnerReferences[0].APIVersion).To(Equal("kairos.io/v1alpha1"))
+			Expect(job.OwnerReferences[0].UID).To(Equal(createdResource.UID))
 
 			// Verify NodeOp status was updated
 			err = k8sClient.Get(ctx, types.NamespacedName{
