@@ -5,7 +5,27 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - kairos.io.kairos.io
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - operator.kairos.io
   resources:
   - nodeops
   verbs:
@@ -17,16 +37,24 @@ rules:
   - update
   - watch
 - apiGroups:
-  - kairos.io.kairos.io
+  - operator.kairos.io
   resources:
   - nodeops/finalizers
   verbs:
   - update
 - apiGroups:
-  - kairos.io.kairos.io
+  - operator.kairos.io
   resources:
   - nodeops/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch

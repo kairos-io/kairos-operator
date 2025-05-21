@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: nodeops.kairos.io.kairos.io
+  name: nodeops.operator.kairos.io
 spec:
-  group: kairos.io.kairos.io
+  group: operator.kairos.io
   names:
     kind: NodeOp
     listKind: NodeOpList

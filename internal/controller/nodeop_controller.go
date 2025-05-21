@@ -45,6 +45,8 @@ type NodeOpReconciler struct {
 // +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops/finalizers,verbs=update
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 
 // getNodeOp fetches the NodeOp resource and handles not found errors
 func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*kairosiov1alpha1.NodeOp, error) {

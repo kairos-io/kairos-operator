@@ -13,7 +13,7 @@ resources:
     namespaced: true
   controller: true
   domain: kairos.io
-  group: kairos.io
+  group: operator
   kind: NodeOp
   path: github.com/kairos-io/kairos-operator/api/v1alpha1
   version: v1alpha1

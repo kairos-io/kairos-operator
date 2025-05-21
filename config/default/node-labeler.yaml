@@ -13,6 +13,7 @@ spec:
       containers:
       - name: node-labeler
         image: kairos/node-labeler:latest
+        imagePullPolicy: IfNotPresent
         securityContext:
           runAsNonRoot: true
           runAsUser: 1000
