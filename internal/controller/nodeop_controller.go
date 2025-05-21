@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -76,8 +77,11 @@ func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*ka
 func (r *NodeOpReconciler) hasExistingJobs(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) (bool, error) {
 	log := logf.FromContext(ctx)
 
+	// Get the operator namespace
+	namespace := r.getOperatorNamespace()
+
 	jobList := &batchv1.JobList{}
-	err := r.List(ctx, jobList, client.InNamespace(nodeOp.Namespace))
+	err := r.List(ctx, jobList, client.InNamespace(namespace))
 	if err != nil {
 		log.Error(err, "Failed to list Jobs")
 		return false, err
@@ -131,10 +135,13 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		jobName = fullName
 	}
 
+	// Get the operator namespace
+	namespace := r.getOperatorNamespace()
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
-			Namespace: nodeOp.Namespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"nodeop": nodeOp.Name,
 				"node":   node.Name,
@@ -386,4 +393,14 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 		"job", job.Name,
 		"namespace", job.Namespace)
 	return nil
+}
+
+func (r *NodeOpReconciler) getOperatorNamespace() string {
+	// Get namespace from environment variable
+	namespace := os.Getenv("OPERATOR_NAMESPACE")
+	if namespace == "" {
+		// Fallback to "system" if not set
+		return "system"
+	}
+	return namespace
 }

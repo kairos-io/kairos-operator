@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -91,6 +92,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
+			// Set operator namespace to default for testing
+			os.Setenv("OPERATOR_NAMESPACE", "default")
 			// Generate a unique name for this test
 			resourceName = fmt.Sprintf("test-resource-%d", time.Now().UnixNano())
 			nodeName = fmt.Sprintf("test-node-%d", time.Now().UnixNano())

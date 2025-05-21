@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kairos-node-labeler
+  namespace: kairos-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kairos-node-labeler
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kairos-node-labeler
+subjects:
+- kind: ServiceAccount
+  name: kairos-node-labeler
+  namespace: kairos-system
+roleRef:
+  kind: ClusterRole
+  name: kairos-node-labeler
+  apiGroup: rbac.authorization.k8s.io 

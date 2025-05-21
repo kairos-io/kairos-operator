@@ -25,4 +25,6 @@ resources:
 - nodeop_admin_role.yaml
 - nodeop_editor_role.yaml
 - nodeop_viewer_role.yaml
+# Node labeler RBAC configuration
+- node_labeler_rbac.yaml
 
