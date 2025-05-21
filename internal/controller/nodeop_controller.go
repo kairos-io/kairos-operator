@@ -43,9 +43,9 @@ type NodeOpReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kairos.io.kairos.io,resources=nodeops/finalizers,verbs=update
+// +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 
