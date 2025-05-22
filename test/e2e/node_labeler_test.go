@@ -2,14 +2,12 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -21,95 +19,54 @@ var _ = Describe("Node Labeler E2E", func() {
 		out, err := exec.Command("kind", "get", "nodes", "--name", clusterName).CombinedOutput()
 		Expect(err).NotTo(HaveOccurred())
 		nodes := strings.Fields(string(out))
-		Expect(len(nodes)).To(Equal(3))
+		Expect(len(nodes)).To(Equal(2))
 		// Inject kairos-release into the first node
 		cmd := exec.Command("docker", "exec", nodes[0], "bash", "-c", "echo 'kairos' > /etc/kairos-release")
-		_, err = cmd.CombinedOutput()
-		Expect(err).NotTo(HaveOccurred())
+		out, err = cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
 
 		By("deploying the operator and node labeler")
 		cmd = exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/default")
 		out, err = cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(out))
 
-		By("creating a Job for each node")
-		nodelist, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-		Expect(err).NotTo(HaveOccurred())
-
-		for _, node := range nodelist.Items {
-			job := &batchv1.Job{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("kairos-node-labeler-%s", node.Name),
-					Namespace: "operator-system",
-				},
-				Spec: batchv1.JobSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							NodeName:      node.Name,
-							RestartPolicy: corev1.RestartPolicyNever,
-							Containers: []corev1.Container{
-								{
-									Name:  "node-labeler",
-									Image: "kairos/node-labeler:latest",
-									SecurityContext: &corev1.SecurityContext{
-										RunAsNonRoot: &[]bool{true}[0],
-										RunAsUser:    &[]int64{1000}[0],
-									},
-									Env: []corev1.EnvVar{
-										{
-											Name: "NODE_NAME",
-											ValueFrom: &corev1.EnvVarSource{
-												FieldRef: &corev1.ObjectFieldSelector{
-													FieldPath: "spec.nodeName",
-												},
-											},
-										},
-									},
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "kairos-release",
-											MountPath: "/etc/kairos-release",
-											ReadOnly:  true,
-										},
-										{
-											Name:      "os-release",
-											MountPath: "/etc/os-release",
-											ReadOnly:  true,
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "kairos-release",
-									VolumeSource: corev1.VolumeSource{
-										HostPath: &corev1.HostPathVolumeSource{
-											Path: "/etc/kairos-release",
-										},
-									},
-								},
-								{
-									Name: "os-release",
-									VolumeSource: corev1.VolumeSource{
-										HostPath: &corev1.HostPathVolumeSource{
-											Path: "/etc/os-release",
-										},
-									},
-								},
-							},
-							ServiceAccountName: "operator-kairos-node-labeler",
-						},
-					},
-				},
-			}
-			_, err = clientset.BatchV1().Jobs("operator-system").Create(context.TODO(), job, metav1.CreateOptions{})
-			Expect(err).NotTo(HaveOccurred())
-		}
-
-		By("waiting for Jobs to complete")
+		By("waiting for operator pod to be running")
 		Eventually(func() bool {
-			jobs, err := clientset.BatchV1().Jobs("operator-system").List(context.TODO(), metav1.ListOptions{})
+			pods, err := clientset.CoreV1().Pods("operator-system").List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "app.kubernetes.io/name=kairos-operator,app.kubernetes.io/component=operator",
+			})
 			if err != nil {
+				return false
+			}
+			if len(pods.Items) == 0 {
+				return false
+			}
+			pod := pods.Items[0]
+			return pod.Status.Phase == corev1.PodRunning &&
+				len(pod.Status.ContainerStatuses) > 0 &&
+				pod.Status.ContainerStatuses[0].Ready
+		}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Operator pod should be running")
+
+		By("waiting for labeler jobs to be created")
+		Eventually(func() bool {
+			jobs, err := clientset.BatchV1().Jobs("operator-system").List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "app=kairos-node-labeler",
+			})
+			if err != nil {
+				return false
+			}
+			return len(jobs.Items) == 2
+		}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Two labeler jobs should be created")
+
+		By("waiting for labeler jobs to complete successfully")
+		Eventually(func() bool {
+			jobs, err := clientset.BatchV1().Jobs("operator-system").List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "app=kairos-node-labeler",
+			})
+			if err != nil {
+				return false
+			}
+			if len(jobs.Items) != 2 {
 				return false
 			}
 			for _, job := range jobs.Items {
@@ -118,15 +75,23 @@ var _ = Describe("Node Labeler E2E", func() {
 				}
 			}
 			return true
-		}, 2*time.Minute, 5*time.Second).Should(BeTrue())
+		}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Both labeler jobs should complete successfully")
 
 		By("checking node labels")
-		nodelist, err = clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+		nodelist, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 		Expect(err).NotTo(HaveOccurred())
+
+		// Get the name of the node where we injected kairos-release
+		cmd = exec.Command("docker", "exec", nodes[0], "hostname")
+		out, err = cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred())
+		expectedManagedNode := strings.TrimSpace(string(out))
+
 		var labeled, unlabeled int
 		for _, node := range nodelist.Items {
 			if node.Labels["kairos.io/managed"] == "true" {
 				labeled++
+				Expect(node.Name).To(Equal(expectedManagedNode), "The node labeled as managed should be the one with kairos-release")
 			} else {
 				unlabeled++
 			}

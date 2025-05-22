@@ -12,10 +12,17 @@ import (
 )
 
 func main() {
+	// Get node name from environment variable
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		fmt.Println("NODE_NAME environment variable is required")
+		os.Exit(1)
+	}
+
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		fmt.Printf("Error getting in-cluster config: %v\n", err)
+		fmt.Printf("Error creating in-cluster config: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -26,45 +33,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Get the node name from the downward API
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		fmt.Println("NODE_NAME environment variable not set")
-		os.Exit(1)
-	}
-
-	// Read the release files
-	isKairos, err := checkKairosNode()
-	if err != nil {
-		fmt.Printf("Error checking Kairos node: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Get the node
 	node, err := clientset.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err != nil {
-		fmt.Printf("Error getting node: %v\n", err)
+		fmt.Printf("Error getting node %s: %v\n", nodeName, err)
 		os.Exit(1)
 	}
 
-	// Update node labels if needed
+	// Check if it's a Kairos node
+	isKairos, err := checkKairosNode()
+	if err != nil {
+		fmt.Printf("Error checking if node is Kairos: %v\n", err)
+		os.Exit(1)
+	}
+
 	if isKairos {
+		// Label the node
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
 		}
-		if node.Labels["kairos.io/managed"] != "true" {
-			node.Labels["kairos.io/managed"] = "true"
-			_, err = clientset.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
-			if err != nil {
-				fmt.Printf("Error updating node labels: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("Successfully labeled node as Kairos")
-		} else {
-			fmt.Println("Node already labeled as Kairos")
+		node.Labels["kairos.io/managed"] = "true"
+
+		// Update the node
+		_, err = clientset.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
+		if err != nil {
+			fmt.Printf("Error updating node %s: %v\n", nodeName, err)
+			os.Exit(1)
 		}
+		fmt.Printf("Successfully labeled node %s as kairos.io/managed=true\n", nodeName)
 	} else {
-		fmt.Println("Node is not a Kairos node")
+		fmt.Printf("Node %s is not a Kairos node\n", nodeName)
 	}
 }
 

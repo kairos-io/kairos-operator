@@ -62,6 +62,13 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 }
 
 func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespace string) *batchv1.Job {
+	// Get the node labeler image from environment variable
+	nodeLabelerImage := os.Getenv("NODE_LABELER_IMAGE")
+	if nodeLabelerImage == "" {
+		// Fallback to a default value if not set
+		nodeLabelerImage = "quay.io/kairos/operator-node-labeler:v0.0.1"
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("kairos-node-labeler-%s", node.Name),
@@ -84,7 +91,7 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 					Containers: []corev1.Container{
 						{
 							Name:            "node-labeler",
-							Image:           "kairos/node-labeler:latest",
+							Image:           nodeLabelerImage,
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							SecurityContext: &corev1.SecurityContext{
 								RunAsNonRoot: &[]bool{true}[0],

@@ -41,6 +41,26 @@ patches:
   target:
     kind: Deployment
 
+# Patch to update the operator image
+- target:
+    kind: Deployment
+    name: kairos-operator
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/image
+      value: quay.io/kairos/operator:v0.0.1
+
+# Patch to update the node-labeler image
+- target:
+    kind: Deployment
+    name: kairos-operator
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: NODE_LABELER_IMAGE
+        value: quay.io/kairos/operator-node-labeler:v0.0.1
+
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
 # This patch will protect the metrics with certManager self-signed certs.

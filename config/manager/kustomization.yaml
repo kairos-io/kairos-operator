@@ -5,7 +5,7 @@ patches:
 - path: manager_env_patch.yaml
   target:
     kind: Deployment
-    name: controller-manager
+    name: kairos-operator
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:

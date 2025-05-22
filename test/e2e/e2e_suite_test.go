@@ -43,7 +43,9 @@ var (
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
-	projectImage = "example.com/operator:v0.0.1"
+	projectImage = "quay.io/kairos/operator:v0.0.1"
+	// nodeLabelerImage is the name of the node-labeler image
+	nodeLabelerImage = "quay.io/kairos/operator-node-labeler:v0.0.1"
 
 	kubeconfig  string
 	clusterName string
@@ -60,6 +62,39 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "e2e suite")
 }
 
+// buildAndLoadImages builds and loads both the operator and node-labeler images into the kind cluster
+func buildAndLoadImages(clusterName string) error {
+	// Build and load the operator image
+	By("building the manager(Operator) image")
+	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+	_, err := utils.Run(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to build the manager(Operator) image: %w", err)
+	}
+
+	By("loading the manager(Operator) image on Kind")
+	err = utils.LoadImageToKindClusterWithName(clusterName, projectImage)
+	if err != nil {
+		return fmt.Errorf("failed to load the manager(Operator) image into Kind: %w", err)
+	}
+
+	// Build and load the node-labeler image
+	By("building the node-labeler image")
+	cmd = exec.Command("docker", "build", "-t", nodeLabelerImage, "-f", "Dockerfile.node-labeler", ".")
+	_, err = utils.Run(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to build the node-labeler image: %w", err)
+	}
+
+	By("loading the node-labeler image on Kind")
+	err = utils.LoadImageToKindClusterWithName(clusterName, nodeLabelerImage)
+	if err != nil {
+		return fmt.Errorf("failed to load the node-labeler image into Kind: %w", err)
+	}
+
+	return nil
+}
+
 var _ = BeforeSuite(func() {
 	kubeconfig, clusterName = createCluster()
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -69,16 +104,8 @@ var _ = BeforeSuite(func() {
 
 	os.Setenv("KUBECONFIG", kubeconfig)
 
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
-
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
-	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(clusterName, projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+	// Build and load both images
+	Expect(buildAndLoadImages(clusterName)).To(Succeed(), "Failed to build and load images")
 
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,
@@ -116,6 +143,12 @@ func createCluster() (string, string) {
 		"--name", clusterName,
 		"--config", "../../test/e2e/kind-2node.yaml",
 		"--kubeconfig", kubeconfigPath)
+	_, err = cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred())
+
+	// Wait for nodes to be ready
+	By("waiting for nodes to be ready")
+	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m")
 	_, err = cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred())
 

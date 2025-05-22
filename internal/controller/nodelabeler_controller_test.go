@@ -48,6 +48,8 @@ var _ = Describe("NodeLabeler Controller", func() {
 			ctx = context.Background()
 			// Set operator namespace to default for testing
 			os.Setenv("OPERATOR_NAMESPACE", "default")
+			// Set node labeler image for testing
+			os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.1")
 			// Generate a unique name for this test
 			nodeName = fmt.Sprintf("test-node-%d", time.Now().UnixNano())
 
@@ -61,6 +63,9 @@ var _ = Describe("NodeLabeler Controller", func() {
 		})
 
 		AfterEach(func() {
+			// Clean up environment variables
+			os.Unsetenv("OPERATOR_NAMESPACE")
+			os.Unsetenv("NODE_LABELER_IMAGE")
 			// Clean up Node
 			node := &corev1.Node{}
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
@@ -114,7 +119,7 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(foundJob.Spec.Template.Spec.Containers).To(HaveLen(1))
 			container := foundJob.Spec.Template.Spec.Containers[0]
 			Expect(container.Name).To(Equal("node-labeler"))
-			Expect(container.Image).To(Equal("kairos/node-labeler:latest"))
+			Expect(container.Image).To(Equal("quay.io/kairos/operator-node-labeler:v0.0.1"))
 			Expect(container.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 
 			// Verify security context
