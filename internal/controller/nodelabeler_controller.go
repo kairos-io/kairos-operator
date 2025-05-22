@@ -14,6 +14,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/kairos-io/kairos-operator/internal/utils"
 )
 
 const (
@@ -69,9 +71,12 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 		nodeLabelerImage = "quay.io/kairos/operator-node-labeler:v0.0.1"
 	}
 
+	fullName := fmt.Sprintf("kairos-node-labeler-%s", node.Name)
+	jobName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit)
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("kairos-node-labeler-%s", node.Name),
+			Name:      jobName,
 			Namespace: namespace,
 			Labels: map[string]string{
 				"app":  "kairos-node-labeler",

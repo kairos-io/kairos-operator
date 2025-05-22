@@ -14,7 +14,7 @@ import (
 
 var _ = Describe("Node Labeler E2E", func() {
 
-	FIt("should label only the node with /etc/kairos-release", func() {
+	It("should label only the node with /etc/kairos-release", func() {
 		By("injecting /etc/kairos-release into one node")
 		out, err := exec.Command("kind", "get", "nodes", "--name", clusterName).CombinedOutput()
 		Expect(err).NotTo(HaveOccurred())

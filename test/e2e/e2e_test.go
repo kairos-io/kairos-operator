@@ -139,11 +139,11 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that the kairos-operator pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller-manager pod
+				// Get the name of the kairos-operator pod
 				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
+					"pods", "-l", "app.kubernetes.io/name=kairos-operator,app.kubernetes.io/component=operator",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
@@ -152,11 +152,11 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 
 				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve kairos-operator pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+				g.Expect(podNames).To(HaveLen(1), "expected 1 operator pod running")
 				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				g.Expect(controllerPodName).To(ContainSubstring("kairos-operator"))
 
 				// Validate the pod's status
 				cmd = exec.Command("kubectl", "get",
@@ -165,7 +165,7 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				g.Expect(output).To(Equal("Running"), "Incorrect kairos-operator pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
@@ -174,13 +174,13 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=operator-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
+				fmt.Sprintf("--serviceaccount=%s:%s", namespace, "kairos-operator"),
 			)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+			cmd = exec.Command("kubectl", "get", "service", "kairos-operator-metrics-service", "-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
@@ -191,14 +191,14 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
+				cmd := exec.Command("kubectl", "get", "endpoints", "kairos-operator-metrics-service", "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")
 			}
 			Eventually(verifyMetricsEndpointReady).Should(Succeed())
 
-			By("verifying that the controller manager is serving the metrics server")
+			By("verifying that the operator is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 				output, err := utils.Run(cmd)
@@ -219,7 +219,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://kairos-operator-metrics-service.%s.svc.cluster.local:8443/metrics"],
 							"securityContext": {
 								"allowPrivilegeEscalation": false,
 								"capabilities": {
@@ -232,9 +232,9 @@ var _ = Describe("Manager", Ordered, func() {
 								}
 							}
 						}],
-						"serviceAccount": "%s"
+						"serviceAccount": "kairos-operator"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, namespace))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 

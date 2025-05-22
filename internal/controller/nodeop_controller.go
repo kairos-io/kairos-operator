@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"time"
 
@@ -32,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	"github.com/kairos-io/kairos-operator/internal/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -120,20 +120,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	// Create a full name combining all information
 	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-
-	var jobName string
-	// If the name is too long, create a shortened version with a hash suffix
-	if len(fullName) > 50 { // Leave room for hyphen and hash (50 + 1 + 12 = 63)
-		// Create a hash of the full name using FNV-1a
-		h := fnv.New64a()
-		h.Write([]byte(fullName))
-		hash := fmt.Sprintf("%x", h.Sum64())[:12] // Take first 12 chars of hex
-
-		// Use first 50 chars of the full name + hash
-		jobName = fmt.Sprintf("%s-%s", fullName[:50], hash)
-	} else {
-		jobName = fullName
-	}
+	jobName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit)
 
 	// Get the operator namespace
 	namespace := r.getOperatorNamespace()
