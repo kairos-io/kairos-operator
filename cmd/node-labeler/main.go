@@ -69,9 +69,13 @@ func main() {
 }
 
 func checkKairosNode() (bool, error) {
-	// Check if kairos-release exists
-	if _, err := os.Stat("/etc/kairos-release"); err == nil {
-		return true, nil
+	// Check if kairos-release exists and has content
+	if content, err := os.ReadFile("/etc/kairos-release"); err == nil {
+		// Only consider it a Kairos node if the file has content
+		if len(content) > 0 {
+			fmt.Println("Kairos release file found with content")
+			return true, nil
+		}
 	}
 
 	// Check os-release for Kairos
@@ -87,6 +91,7 @@ func checkKairosNode() (bool, error) {
 			id := strings.TrimPrefix(line, "ID=")
 			id = strings.Trim(id, "\"")
 			if strings.Contains(strings.ToLower(id), "kairos") {
+				fmt.Println("Kairos ID found in os-release")
 				return true, nil
 			}
 		}

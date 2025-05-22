@@ -7,11 +7,17 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	nodeLabelerServiceAccount = "kairos-node-labeler"
 )
 
 // NodeLabelerReconciler reconciles nodes to ensure they are labeled
@@ -20,10 +26,15 @@ type NodeLabelerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NodeLabelerReconciler) getOperatorNamespace() string {
 	// Get namespace from environment variable
@@ -68,7 +79,8 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 					},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "kairos-node-labeler",
+					NodeName:           node.Name,
+					ServiceAccountName: nodeLabelerServiceAccount,
 					Containers: []corev1.Container{
 						{
 							Name:            "node-labeler",
@@ -127,6 +139,66 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 	}
 }
 
+func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namespace string) error {
+	// Create ServiceAccount
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nodeLabelerServiceAccount,
+			Namespace: namespace,
+		},
+	}
+	if err := r.Create(ctx, sa); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create service account: %w", err)
+		}
+	}
+
+	// Create ClusterRole
+	clusterRole := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeLabelerServiceAccount,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"nodes"},
+				Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			},
+		},
+	}
+	if err := r.Create(ctx, clusterRole); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create cluster role: %w", err)
+		}
+	}
+
+	// Create ClusterRoleBinding
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeLabelerServiceAccount,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      nodeLabelerServiceAccount,
+				Namespace: namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     nodeLabelerServiceAccount,
+		},
+	}
+	if err := r.Create(ctx, clusterRoleBinding); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create cluster role binding: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -138,6 +210,13 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Get the operator namespace
 	namespace := r.getOperatorNamespace()
+
+	// Ensure service account and RBAC exist
+	log.Info("Ensuring service account and RBAC exist")
+	if err := r.ensureServiceAccount(ctx, namespace); err != nil {
+		log.Error(err, "Failed to ensure service account and RBAC")
+		return ctrl.Result{}, err
+	}
 
 	// Check if a labeler job already exists for this node
 	exists, err := r.jobExists(ctx, namespace, node.Name)
