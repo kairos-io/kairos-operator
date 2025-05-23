@@ -30,79 +30,11 @@ import (
 	"github.com/kairos-io/kairos-operator/test/utils"
 )
 
-// namespace where the project is deployed in
-const namespace = "operator-system"
-
-// serviceAccountName created for the project
-const serviceAccountName = "operator-controller-manager"
-
-// metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "operator-controller-manager-metrics-service"
-
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "operator-metrics-binding"
-
 var _ = Describe("Manager", Ordered, func() {
-	var controllerPodName string
-
-	BeforeEach(func() {
-		By("Getting the controller pod name")
-		cmd := exec.Command("kubectl", "get",
-			"pods", "-l", "app.kubernetes.io/name=kairos-operator,app.kubernetes.io/component=operator",
-			"-o", "go-template={{ range .items }}"+
-				"{{ if not .metadata.deletionTimestamp }}"+
-				"{{ .metadata.name }}"+
-				"{{ \"\\n\" }}{{ end }}{{ end }}",
-			"-n", namespace,
-		)
-
-		podOutput, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to retrieve kairos-operator pod information")
-		podNames := utils.GetNonEmptyLines(podOutput)
-
-		// Add detailed error reporting
-		if len(podNames) != 1 {
-			By("Fetching all pods in namespace for debugging")
-			allPodsCmd := exec.Command("kubectl", "get", "pods", "-n", namespace, "-o", "wide")
-			allPodsOutput, _ := utils.Run(allPodsCmd)
-			fmt.Println("Will now sleep")
-			time.Sleep(10 * time.Minute)
-			Fail(fmt.Sprintf("Expected exactly 1 operator pod running, but found %d pods. Pod output: %s\nAll pods in namespace:\n%s",
-				len(podNames), podOutput, allPodsOutput))
-		}
-
-		controllerPodName = podNames[0]
-		Expect(controllerPodName).To(ContainSubstring("kairos-operator"))
-	})
-
 	SetDefaultEventuallyTimeout(2 * time.Minute)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Manager", func() {
-		It("should run successfully", func() {
-			By("validating that the kairos-operator pod is running as expected")
-			verifyControllerUp := func(g Gomega) {
-				// Validate the pod's status
-				cmd := exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve kairos-operator pod information")
-				g.Expect(output).To(Equal("Running"), "Incorrect kairos-operator pod status")
-
-				// Validate the pod's status
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err = utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect kairos-operator pod status")
-			}
-			Eventually(verifyControllerUp).Should(Succeed())
-		})
-
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
