@@ -40,10 +40,10 @@ const (
 	// namespace where the project is deployed in
 	namespace = "operator-system"
 	// serviceAccountName created for the project
-	serviceAccountName = "operator-controller-manager"
+	serviceAccountName = "operator-kairos-operator"
 
 	// metricsServiceName is the name of the metrics service of the project
-	metricsServiceName = "operator-controller-manager-metrics-service"
+	metricsServiceName = "operator-kairos-operator-metrics-service"
 
 	// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 	metricsRoleBindingName = "operator-metrics-binding"
@@ -191,6 +191,13 @@ func installOperator() {
 	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/default")
 	out, err := cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), string(out))
+
+	By("waiting for the service account to be created")
+	Eventually(func() error {
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "get", "serviceaccount", serviceAccountName, "-n", namespace)
+		_, err := cmd.CombinedOutput()
+		return err
+	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Service account should be created")
 
 	By("getting the controller pod name")
 	getControllerPodName()
