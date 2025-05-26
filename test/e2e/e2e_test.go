@@ -41,21 +41,21 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Service account should exist")
 
-			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
+			By("creating the metrics-access ClusterRole")
+			cmd = exec.Command("kubectl", "create", "clusterrole", "metrics-reader",
+				"--verb=get",
+				"--non-resource-url=/metrics",
+			)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create metrics-reader ClusterRole")
+
+			By("creating a ClusterRoleBinding for the service account")
 			cmd = exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
-
-			By("creating a ClusterRoleBinding for metrics authentication")
-			cmd = exec.Command("kubectl", "create", "clusterrolebinding", "metrics-auth-binding",
-				"--clusterrole=metrics-auth-role",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create metrics auth ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
 			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
@@ -194,7 +194,14 @@ func getMetricsOutput() string {
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
 	metricsOutput, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
+	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"), func() string {
+		cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+		controllerLogs, err := utils.Run(cmd)
+		if err != nil {
+			return fmt.Sprintf("Failed to get controller logs: %v", err)
+		}
+		return fmt.Sprintf("Controller logs:\n%s", controllerLogs)
+	})
 	return metricsOutput
 }
 
