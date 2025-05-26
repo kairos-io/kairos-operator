@@ -41,6 +41,7 @@ var _ = Describe("NodeOp Controller", func() {
 		NodeOpNamespace = "default"
 		timeout         = time.Second * 10
 		interval        = time.Millisecond * 250
+		kindNodeOp      = "NodeOp"
 	)
 
 	Context("When creating a NodeOp", func() {
@@ -94,7 +95,7 @@ var _ = Describe("NodeOp Controller", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			// Set operator namespace to default for testing
-			os.Setenv("OPERATOR_NAMESPACE", "default")
+			Expect(os.Setenv("OPERATOR_NAMESPACE", "default")).To(Succeed())
 			// Generate a unique name for this test
 			resourceName = fmt.Sprintf("test-resource-%d", time.Now().UnixNano())
 			nodeName = fmt.Sprintf("test-node-%d", time.Now().UnixNano())
@@ -156,7 +157,7 @@ var _ = Describe("NodeOp Controller", func() {
 			for _, job := range jobList.Items {
 				// Check if this Job is owned by our NodeOp
 				for _, ownerRef := range job.OwnerReferences {
-					if ownerRef.Kind == "NodeOp" && ownerRef.Name == resourceName {
+					if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
 						Expect(k8sClient.Delete(ctx, &job)).To(Succeed())
 						break
 					}
@@ -196,18 +197,18 @@ var _ = Describe("NodeOp Controller", func() {
 			var ownedJobs int
 			for _, job := range jobList.Items {
 				for _, ownerRef := range job.OwnerReferences {
-					if ownerRef.Kind == "NodeOp" && ownerRef.Name == resourceName {
+					if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
 						ownedJobs++
 						break
 					}
 				}
 			}
-			Expect(ownedJobs).To(Equal(1))
+			Expect(ownedJobs).To(HaveLen(1))
 
 			// Verify Job has correct owner reference
 			job := jobList.Items[0]
 			Expect(job.OwnerReferences).To(HaveLen(1), fmt.Sprintf("Job %s has %d owner references", job.Name, len(job.OwnerReferences)))
-			Expect(job.OwnerReferences[0].Kind).To(Equal("NodeOp"))
+			Expect(job.OwnerReferences[0].Kind).To(Equal(kindNodeOp))
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
 			Expect(job.OwnerReferences[0].APIVersion).To(Equal("kairos.io/v1alpha1"))
 			Expect(job.OwnerReferences[0].UID).To(Equal(createdResource.UID))
@@ -218,8 +219,7 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: "default",
 			}, nodeop)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(nodeop.Status.NodeStatuses).NotTo(BeNil())
-			Expect(len(nodeop.Status.NodeStatuses)).To(BeNumerically(">", 0))
+			Expect(nodeop.Status.NodeStatuses).ToNot(BeEmpty())
 
 			// Update Job status to simulate completion
 			job.Status.Succeeded = 1
@@ -268,13 +268,13 @@ var _ = Describe("NodeOp Controller", func() {
 			var ownedJobs []batchv1.Job
 			for _, job := range jobList.Items {
 				for _, ownerRef := range job.OwnerReferences {
-					if ownerRef.Kind == "NodeOp" && ownerRef.Name == resourceName {
+					if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
 						ownedJobs = append(ownedJobs, job)
 						break
 					}
 				}
 			}
-			Expect(len(ownedJobs)).To(Equal(1))
+			Expect(ownedJobs).To(HaveLen(1))
 
 			// Update Job status to simulate failure
 			job := ownedJobs[0]

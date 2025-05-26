@@ -89,7 +89,7 @@ var _ = BeforeSuite(func() {
 	clientset, err = kubernetes.NewForConfig(config)
 	Expect(err).NotTo(HaveOccurred())
 
-	os.Setenv("KUBECONFIG", kubeconfig)
+	Expect(os.Setenv("KUBECONFIG", kubeconfig)).To(Succeed())
 
 	// Build and load both images
 	Expect(buildAndLoadImages(clusterName)).To(Succeed(), "Failed to build and load images")
@@ -110,7 +110,8 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	By("deleting the kind cluster")
-	exec.Command("kind", "delete", "cluster", "--name", clusterName).Run()
+	cmd := exec.Command("kind", "delete", "cluster", "--name", clusterName)
+	Expect(cmd.Run()).To(Succeed())
 })
 
 func createCluster() (string, string) {
@@ -133,7 +134,8 @@ func createCluster() (string, string) {
 
 	// Wait for nodes to be ready
 	By("waiting for nodes to be ready")
-	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfigPath, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m")
+	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+		"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m")
 	_, err = cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred())
 
@@ -159,7 +161,8 @@ func getControllerPodName() {
 		By("Fetching all pods in namespace for debugging")
 		allPodsCmd := exec.Command("kubectl", "get", "pods", "-n", namespace, "-o", "wide")
 		allPodsOutput, _ := utils.Run(allPodsCmd)
-		Fail(fmt.Sprintf("Expected exactly 1 operator pod running, but found %d pods. Pod output: %s\nAll pods in namespace:\n%s",
+		Fail(fmt.Sprintf("Expected exactly 1 operator pod running, but found %d pods. "+
+			"Pod output: %s\nAll pods in namespace:\n%s",
 			len(podNames), podOutput, allPodsOutput))
 	}
 
@@ -194,7 +197,8 @@ func installOperator() {
 
 	By("waiting for the service account to be created")
 	Eventually(func() error {
-		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "get", "serviceaccount", serviceAccountName, "-n", namespace)
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig,
+			"get", "serviceaccount", serviceAccountName, "-n", namespace)
 		_, err := cmd.CombinedOutput()
 		return err
 	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Service account should be created")
@@ -245,7 +249,7 @@ func makeNodeBeKairos() {
 	out, err := exec.Command("kind", "get", "nodes", "--name", clusterName).CombinedOutput()
 	Expect(err).NotTo(HaveOccurred())
 	nodes := strings.Fields(string(out))
-	Expect(len(nodes)).To(Equal(2))
+	Expect(nodes).To(HaveLen(2))
 	// Inject kairos-release into the first node
 	cmd := exec.Command("docker", "exec", nodes[0], "bash", "-c", "echo 'kairos' > /etc/kairos-release")
 	out, err = cmd.CombinedOutput()

@@ -37,6 +37,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const (
+	kindNodeOp  = "NodeOp"
+	phaseFailed = "Failed"
+)
+
 // NodeOpReconciler reconciles a NodeOp object
 type NodeOpReconciler struct {
 	client.Client
@@ -89,7 +94,7 @@ func (r *NodeOpReconciler) hasExistingJobs(ctx context.Context, nodeOp *kairosio
 
 	for _, job := range jobList.Items {
 		for _, ownerRef := range job.OwnerReferences {
-			if ownerRef.Kind == "NodeOp" && ownerRef.Name == nodeOp.Name {
+			if ownerRef.Kind == kindNodeOp && ownerRef.Name == nodeOp.Name {
 				log.Info("Found existing Job for NodeOp",
 					"nodeOp", nodeOp.Name,
 					"job", job.Name)
@@ -243,7 +248,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 				return err
 			}
 			// Job not found, mark as failed
-			status.Phase = "Failed"
+			status.Phase = phaseFailed
 			status.Message = "Job not found"
 			status.LastUpdated = metav1.Now()
 			nodeOp.Status.NodeStatuses[nodeName] = status
@@ -253,7 +258,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 
 		// Update node status based on Job status
 		if job.Status.Failed > 0 {
-			status.Phase = "Failed"
+			status.Phase = phaseFailed
 			status.Message = "Job failed"
 			anyFailed = true
 		} else if job.Status.Succeeded > 0 {
@@ -274,7 +279,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 
 	// Update overall phase
 	if anyFailed {
-		nodeOp.Status.Phase = "Failed"
+		nodeOp.Status.Phase = phaseFailed
 	} else if allCompleted {
 		nodeOp.Status.Phase = "Completed"
 	} else {
@@ -360,7 +365,7 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 
 	// Get the NodeOp that owns this Job
 	for _, ownerRef := range job.OwnerReferences {
-		if ownerRef.Kind == "NodeOp" {
+		if ownerRef.Kind == kindNodeOp {
 			log.Info("Job status changed, triggering NodeOp reconciliation",
 				"job", job.Name,
 				"nodeOp", ownerRef.Name,

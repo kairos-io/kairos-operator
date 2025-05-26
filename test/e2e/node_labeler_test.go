@@ -57,7 +57,8 @@ var _ = Describe("Node Labeler E2E", func() {
 		for _, node := range nodelist.Items {
 			if node.Labels["kairos.io/managed"] == "true" {
 				labeled++
-				Expect(node.Name).To(Equal(expectedManagedNode), "The node labeled as managed should be the one with kairos-release")
+				Expect(node.Name).To(Equal(expectedManagedNode),
+					"The node labeled as managed should be the one with kairos-release")
 			} else {
 				unlabeled++
 			}
