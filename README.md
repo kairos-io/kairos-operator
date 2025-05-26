@@ -1,5 +1,7 @@
 # ✅ Kairos Node Upgrade Operator — Implementation Plan
 
+[![Tests](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml/badge.svg)](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml)
+
 ## 🔧 Architecture Overview
 
 - Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
@@ -82,7 +84,7 @@ make docker-build docker-push IMG=<some-registry>/operator:tag
 
 **NOTE:** This image ought to be published in the personal registry you specified.
 And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+Make sure you have the proper permission to the registry if the above commands don't work.
 
 **Install the CRDs into the cluster:**
 
