@@ -203,7 +203,7 @@ var _ = Describe("NodeOp Controller", func() {
 					}
 				}
 			}
-			Expect(ownedJobs).To(HaveLen(1))
+			Expect(ownedJobs).To(Equal(1))
 
 			// Verify Job has correct owner reference
 			job := jobList.Items[0]
