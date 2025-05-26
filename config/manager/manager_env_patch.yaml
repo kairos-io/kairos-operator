@@ -4,12 +4,19 @@ metadata:
   name: kairos-operator
   namespace: system
 spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kairos-operator
   template:
     spec:
       containers:
       - name: manager
         env:
-        - name: OPERATOR_NAMESPACE
+        - name: CONTROLLER_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: CONTROLLER_POD_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace

@@ -6,4 +6,23 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: nodeop-sample
 spec:
-  # TODO(user): Add fields here
+  # The container image to run on each node
+  image: busybox:latest
+  # The command to execute in the container
+  command: ["sh", "-c", "echo 'Hello from node' && hostname"]
+  # Cordon the node before running the operation
+  cordon: true
+  # Drain options for pod eviction
+  drainOptions:
+    # Enable draining
+    enabled: true
+    # Force eviction of pods without a controller
+    force: false
+    # Grace period for pod termination (in seconds)
+    gracePeriodSeconds: 30
+    # Ignore DaemonSet pods
+    ignoreDaemonSets: true
+    # Delete data in emptyDir volumes
+    deleteEmptyDirData: false
+    # Timeout for drain operation (in seconds)
+    timeoutSeconds: 300

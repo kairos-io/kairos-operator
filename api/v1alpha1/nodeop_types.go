@@ -45,6 +45,56 @@ type NodeOpSpec struct {
 	// +optional
 	// +kubebuilder:default="busybox:latest"
 	Image string `json:"image,omitempty"`
+
+	// Cordon specifies whether to cordon the node before running the operation.
+	// When true, the node will be marked as unschedulable before the operation starts
+	// and will be uncordoned after the operation completes successfully.
+	// +optional
+	// +kubebuilder:default=false
+	Cordon bool `json:"cordon,omitempty"`
+
+	// DrainOptions specifies the options for draining the node before running the operation.
+	// When enabled, pods will be evicted from the node before the operation starts.
+	// This requires the Cordon field to be true.
+	// +optional
+	DrainOptions *DrainOptions `json:"drainOptions,omitempty"`
+}
+
+// DrainOptions defines the options for draining a node.
+type DrainOptions struct {
+	// Enabled specifies whether to drain the node.
+	// When true, pods will be evicted from the node before the operation starts.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Force specifies whether to force the drain operation.
+	// When true, pods that do not have a controller will be evicted.
+	// +optional
+	// +kubebuilder:default=false
+	Force bool `json:"force,omitempty"`
+
+	// GracePeriodSeconds is the time in seconds given to each pod to terminate gracefully.
+	// If negative, the default value specified in the pod will be used.
+	// +optional
+	GracePeriodSeconds *int32 `json:"gracePeriodSeconds,omitempty"`
+
+	// IgnoreDaemonSets specifies whether to ignore DaemonSet-managed pods.
+	// When true, DaemonSet-managed pods will be ignored during the drain operation.
+	// +optional
+	// +kubebuilder:default=true
+	IgnoreDaemonSets bool `json:"ignoreDaemonSets,omitempty"`
+
+	// DeleteEmptyDirData specifies whether to delete local data in emptyDir volumes.
+	// When true, data in emptyDir volumes will be deleted during the drain operation.
+	// +optional
+	// +kubebuilder:default=false
+	DeleteEmptyDirData bool `json:"deleteEmptyDirData,omitempty"`
+
+	// TimeoutSeconds is the length of time to wait before giving up on the drain operation.
+	// If not specified, a default timeout will be used.
+	// +optional
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
 }
 
 // NodeOpStatus defines the observed state of NodeOp.

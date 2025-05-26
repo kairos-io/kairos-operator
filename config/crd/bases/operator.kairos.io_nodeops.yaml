@@ -46,6 +46,56 @@ spec:
                 items:
                   type: string
                 type: array
+              cordon:
+                default: false
+                description: |-
+                  Cordon specifies whether to cordon the node before running the operation.
+                  When true, the node will be marked as unschedulable before the operation starts
+                  and will be uncordoned after the operation completes successfully.
+                type: boolean
+              drainOptions:
+                description: |-
+                  DrainOptions specifies the options for draining the node before running the operation.
+                  When enabled, pods will be evicted from the node before the operation starts.
+                  This requires the Cordon field to be true.
+                properties:
+                  deleteEmptyDirData:
+                    default: false
+                    description: |-
+                      DeleteEmptyDirData specifies whether to delete local data in emptyDir volumes.
+                      When true, data in emptyDir volumes will be deleted during the drain operation.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled specifies whether to drain the node.
+                      When true, pods will be evicted from the node before the operation starts.
+                    type: boolean
+                  force:
+                    default: false
+                    description: |-
+                      Force specifies whether to force the drain operation.
+                      When true, pods that do not have a controller will be evicted.
+                    type: boolean
+                  gracePeriodSeconds:
+                    description: |-
+                      GracePeriodSeconds is the time in seconds given to each pod to terminate gracefully.
+                      If negative, the default value specified in the pod will be used.
+                    format: int32
+                    type: integer
+                  ignoreDaemonSets:
+                    default: true
+                    description: |-
+                      IgnoreDaemonSets specifies whether to ignore DaemonSet-managed pods.
+                      When true, DaemonSet-managed pods will be ignored during the drain operation.
+                    type: boolean
+                  timeoutSeconds:
+                    description: |-
+                      TimeoutSeconds is the length of time to wait before giving up on the drain operation.
+                      If not specified, a default timeout will be used.
+                    format: int32
+                    type: integer
+                type: object
               hostMountPath:
                 default: /host
                 description: |-

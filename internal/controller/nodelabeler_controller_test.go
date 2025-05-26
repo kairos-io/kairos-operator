@@ -42,7 +42,7 @@ var _ = Describe("NodeLabeler Controller", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			// Set operator namespace to default for testing
-			Expect(os.Setenv("OPERATOR_NAMESPACE", "default")).To(Succeed())
+			Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
 			// Set node labeler image for testing
 			Expect(os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.1")).To(Succeed())
 			// Generate a unique name for this test
@@ -59,7 +59,7 @@ var _ = Describe("NodeLabeler Controller", func() {
 
 		AfterEach(func() {
 			// Clean up environment variables
-			Expect(os.Unsetenv("OPERATOR_NAMESPACE")).To(Succeed())
+			Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
 			Expect(os.Unsetenv("NODE_LABELER_IMAGE")).To(Succeed())
 			// Clean up Node
 			node := &corev1.Node{}
@@ -73,7 +73,12 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"))).To(Succeed())
 			for _, job := range jobList.Items {
 				if job.Labels["node"] == nodeName {
-					Expect(k8sClient.Delete(ctx, &job)).To(Succeed())
+					// Add propagation policy to delete child pods
+					propagationPolicy := metav1.DeletePropagationBackground
+					deleteOpts := &client.DeleteOptions{
+						PropagationPolicy: &propagationPolicy,
+					}
+					Expect(k8sClient.Delete(ctx, &job, deleteOpts)).To(Succeed())
 				}
 			}
 		})

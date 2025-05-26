@@ -95,7 +95,7 @@ var _ = Describe("NodeOp Controller", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			// Set operator namespace to default for testing
-			Expect(os.Setenv("OPERATOR_NAMESPACE", "default")).To(Succeed())
+			Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
 			// Generate a unique name for this test
 			resourceName = fmt.Sprintf("test-resource-%d", time.Now().UnixNano())
 			nodeName = fmt.Sprintf("test-node-%d", time.Now().UnixNano())
@@ -142,7 +142,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 		AfterEach(func() {
 			// Clean up environment variables first
-			Expect(os.Unsetenv("OPERATOR_NAMESPACE")).To(Succeed())
+			Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
 
 			// Clean up NodeOp with retry
 			Eventually(func() error {
@@ -170,7 +170,12 @@ var _ = Describe("NodeOp Controller", func() {
 					// Check if this Job is owned by our NodeOp
 					for _, ownerRef := range job.OwnerReferences {
 						if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
-							if err := k8sClient.Delete(ctx, &job); err != nil {
+							// Add propagation policy to delete child pods
+							propagationPolicy := metav1.DeletePropagationBackground
+							deleteOpts := &client.DeleteOptions{
+								PropagationPolicy: &propagationPolicy,
+							}
+							if err := k8sClient.Delete(ctx, &job, deleteOpts); err != nil {
 								return err
 							}
 							break
@@ -215,7 +220,7 @@ var _ = Describe("NodeOp Controller", func() {
 			err = k8sClient.List(ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
-					"nodeop": resourceName,
+					"kairos.io/nodeop": resourceName,
 				}),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -333,6 +338,78 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify NodeOp status was updated to reflect Job failure
 			Expect(nodeop.Status.Phase).To(Equal("Failed"))
+		})
+
+		It("should cordon and drain node when specified in NodeOp spec", func() {
+			By("Creating a NodeOp with cordon and drain enabled")
+			cordonDrainNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-cordon", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{"echo", "test"},
+					Cordon:  true,
+					DrainOptions: &kairosiov1alpha1.DrainOptions{
+						Enabled:          true,
+						Force:            false,
+						IgnoreDaemonSets: true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cordonDrainNodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      cordonDrainNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying node is cordoned")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(), "Node should be cordoned")
+
+			By("Verifying job was created")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": cordonDrainNodeOp.Name,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should have created one job")
+
+			By("Simulating job completion")
+			job := &jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again to process job completion")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      cordonDrainNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying node is uncordoned after job completion")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after job completion")
 		})
 	})
 })

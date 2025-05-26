@@ -40,7 +40,7 @@ type NodeLabelerReconciler struct {
 
 func (r *NodeLabelerReconciler) getOperatorNamespace() string {
 	// Get namespace from environment variable
-	namespace := os.Getenv("OPERATOR_NAMESPACE")
+	namespace := os.Getenv("CONTROLLER_POD_NAMESPACE")
 	if namespace == "" {
 		// Fallback to "system" if not set
 		return "system"
