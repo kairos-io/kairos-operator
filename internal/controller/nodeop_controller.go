@@ -100,8 +100,8 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Return with requeue to ensure we pick up Job status changes quickly
-	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	// Return with requeue to ensure we still sync even if we miss some event
+	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
