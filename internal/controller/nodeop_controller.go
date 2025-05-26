@@ -54,6 +54,68 @@ type NodeOpReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 
+// Reconcile is part of the main kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state.
+//
+// For more details, check Reconcile and its Result here:
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
+func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Get the NodeOp resource
+	nodeOp, err := r.getNodeOp(ctx, req)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if nodeOp == nil {
+		// NodeOp was deleted, nothing to do
+		return ctrl.Result{}, nil
+	}
+
+	// Check if Jobs already exist
+	hasJobs, err := r.hasExistingJobs(ctx, nodeOp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if hasJobs {
+		// Update status of existing Jobs
+		if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
+			log.Error(err, "Failed to update NodeOp status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// If we get here, no Jobs exist yet
+	// Create the Jobs
+	if err := r.createJobs(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to create Jobs")
+		return ctrl.Result{}, err
+	}
+
+	// Update status after creating Jobs
+	if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to update NodeOp status after Job creation")
+		return ctrl.Result{}, err
+	}
+
+	// Return with requeue to ensure we pick up Job status changes quickly
+	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&kairosiov1alpha1.NodeOp{}).
+		Watches(
+			&batchv1.Job{},
+			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForJob),
+		).
+		Named("nodeop").
+		Complete(r)
+}
+
 // getNodeOp fetches the NodeOp resource and handles not found errors
 func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*kairosiov1alpha1.NodeOp, error) {
 	log := logf.FromContext(ctx)
@@ -294,68 +356,6 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	}
 
 	return nil
-}
-
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
-func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// Get the NodeOp resource
-	nodeOp, err := r.getNodeOp(ctx, req)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if nodeOp == nil {
-		// NodeOp was deleted, nothing to do
-		return ctrl.Result{}, nil
-	}
-
-	// Check if Jobs already exist
-	hasJobs, err := r.hasExistingJobs(ctx, nodeOp)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if hasJobs {
-		// Update status of existing Jobs
-		if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
-			log.Error(err, "Failed to update NodeOp status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// If we get here, no Jobs exist yet
-	// Create the Jobs
-	if err := r.createJobs(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to create Jobs")
-		return ctrl.Result{}, err
-	}
-
-	// Update status after creating Jobs
-	if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to update NodeOp status after Job creation")
-		return ctrl.Result{}, err
-	}
-
-	// Return with requeue to ensure we pick up Job status changes quickly
-	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&kairosiov1alpha1.NodeOp{}).
-		Watches(
-			&batchv1.Job{},
-			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForJob),
-		).
-		Named("nodeop").
-		Complete(r)
 }
 
 // findNodeOpsForJob finds NodeOps that own the given Job
