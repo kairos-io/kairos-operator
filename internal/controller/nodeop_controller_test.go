@@ -141,35 +141,57 @@ var _ = Describe("NodeOp Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Clean up NodeOp
-			resource := &kairosiov1alpha1.NodeOp{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName,
-				Namespace: "default",
-			}, resource)
-			if err == nil {
-				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-			}
+			// Clean up environment variables first
+			Expect(os.Unsetenv("OPERATOR_NAMESPACE")).To(Succeed())
 
-			// Clean up Jobs owned by this NodeOp
-			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"))).To(Succeed())
-			for _, job := range jobList.Items {
-				// Check if this Job is owned by our NodeOp
-				for _, ownerRef := range job.OwnerReferences {
-					if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
-						Expect(k8sClient.Delete(ctx, &job)).To(Succeed())
-						break
+			// Clean up NodeOp with retry
+			Eventually(func() error {
+				resource := &kairosiov1alpha1.NodeOp{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				}, resource)
+				if err != nil {
+					if client.IgnoreNotFound(err) != nil {
+						return err
+					}
+					return nil
+				}
+				return k8sClient.Delete(ctx, resource)
+			}, timeout, interval).Should(Succeed())
+
+			// Clean up Jobs owned by this NodeOp with retry
+			Eventually(func() error {
+				jobList := &batchv1.JobList{}
+				if err := k8sClient.List(ctx, jobList, client.InNamespace("default")); err != nil {
+					return err
+				}
+				for _, job := range jobList.Items {
+					// Check if this Job is owned by our NodeOp
+					for _, ownerRef := range job.OwnerReferences {
+						if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
+							if err := k8sClient.Delete(ctx, &job); err != nil {
+								return err
+							}
+							break
+						}
 					}
 				}
-			}
+				return nil
+			}, timeout, interval).Should(Succeed())
 
-			// Clean up Node
-			node := &corev1.Node{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
-			if err == nil {
-				Expect(k8sClient.Delete(ctx, node)).To(Succeed())
-			}
+			// Clean up Node with retry
+			Eventually(func() error {
+				node := &corev1.Node{}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
+				if err != nil {
+					if client.IgnoreNotFound(err) != nil {
+						return err
+					}
+					return nil
+				}
+				return k8sClient.Delete(ctx, node)
+			}, timeout, interval).Should(Succeed())
 		})
 
 		It("should create Jobs for each node and update status", func() {
@@ -190,7 +212,12 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify Jobs were created
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList, client.InNamespace("default"))
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"nodeop": resourceName,
+				}),
+			)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Count only jobs owned by our test's NodeOp
