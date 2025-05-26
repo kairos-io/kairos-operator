@@ -206,7 +206,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify Job has correct owner reference
 			job := jobList.Items[0]
-			Expect(job.OwnerReferences).To(HaveLen(1))
+			Expect(job.OwnerReferences).To(HaveLen(1), fmt.Sprintf("Job %s has %d owner references", job.Name, len(job.OwnerReferences)))
 			Expect(job.OwnerReferences[0].Kind).To(Equal("NodeOp"))
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
 			Expect(job.OwnerReferences[0].APIVersion).To(Equal("kairos.io/v1alpha1"))
