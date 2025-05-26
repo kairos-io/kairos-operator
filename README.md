@@ -1,8 +1,8 @@
-# ✅ Kairos Node Upgrade Operator — Implementation Plan
+# Kairos Operator
 
 [![Tests](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml/badge.svg)](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml)
 
-## 🔧 Architecture Overview
+## Implementation Plan (TODO list)
 
 - Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
   - Mount `/etc/kairos-release` and `/etc/os-release` using `hostPath`.
