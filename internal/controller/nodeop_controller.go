@@ -36,6 +36,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -370,14 +371,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 				"kairos.io/nodeop": nodeOp.Name,
 				"kairos.io/node":   node.Name,
 			},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: nodeOp.APIVersion,
-					Kind:       nodeOp.Kind,
-					Name:       nodeOp.Name,
-					UID:        nodeOp.UID,
-				},
-			},
 		},
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{
@@ -388,12 +381,33 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 							Name:    "nodeop",
 							Image:   nodeOp.Spec.Image,
 							Command: nodeOp.Spec.Command,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "host-root",
+									MountPath: "/host",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "host-root",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/",
+								},
+							},
 						},
 					},
 					RestartPolicy: corev1.RestartPolicyNever,
 				},
 			},
 		},
+	}
+
+	if err := controllerutil.SetControllerReference(nodeOp, job, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for Job")
+		return err
 	}
 
 	if err := r.Create(ctx, job); err != nil {
