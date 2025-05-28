@@ -1,5 +1,7 @@
 # Kairos Operator
 
+> ⚠️ **WARNING: This operator is currently a work in progress and not ready for production use.** Until it's ready for consumption, this README won't always reflect the current state of things.
+
 [![Tests](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml/badge.svg)](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml)
 
 ## Implementation Plan (TODO list)
