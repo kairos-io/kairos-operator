@@ -168,7 +168,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.version }}
+          ref: main
+          fetch-depth: 0
 
       - name: Update version in kustomization files
         run: |
@@ -177,11 +178,9 @@ jobs:
           # Update node-labeler image version
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[0-9.]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
           
-          # Commit and push changes if not in a detached HEAD state
-          if [[ $(git rev-parse --abbrev-ref HEAD) != "HEAD" ]]; then
-            git config --global user.name 'GitHub Actions'
-            git config --global user.email 'github-actions@github.com'
-            git add config/default/kustomization.yaml
-            git commit -m "chore: bump version to ${{ inputs.version }}"
-            git push
-          fi 
+          # Commit and push changes
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'github-actions@github.com'
+          git add config/default/kustomization.yaml
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git push
