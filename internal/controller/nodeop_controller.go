@@ -373,6 +373,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			},
 		},
 		Spec: batchv1.JobSpec{
+			BackoffLimit: &[]int32{0}[0],
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					NodeName: node.Name,
@@ -381,6 +382,9 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 							Name:    "nodeop",
 							Image:   nodeOp.Spec.Image,
 							Command: nodeOp.Spec.Command,
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: &[]bool{true}[0],
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "host-root",
