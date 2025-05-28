@@ -16,4 +16,7 @@ jobs:
     needs: [lint, test]
     uses: ./.github/workflows/release.yml
     with:
-      version: ${{ github.ref_name }} 
+      version: ${{ github.ref_name }}
+    secrets:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+      QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
