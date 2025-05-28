@@ -82,6 +82,8 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:buildcache,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+          provenance: false
+          sbom: false
 
   build-node-labeler:
     needs: setup
@@ -120,6 +122,8 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:buildcache,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+          provenance: false
+          sbom: false
 
   combine-manifests:
     needs: [build-operator, build-node-labeler]
