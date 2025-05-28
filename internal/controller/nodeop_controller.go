@@ -40,8 +40,9 @@ import (
 )
 
 const (
-	kindNodeOp  = "NodeOp"
-	phaseFailed = "Failed"
+	kindNodeOp   = "NodeOp"
+	phaseFailed  = "Failed"
+	phaseRunning = "Running"
 	// Environment variables for controller pod identification
 	controllerPodNameEnv      = "CONTROLLER_POD_NAME"
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
@@ -505,11 +506,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		}
 
 		// Update node status based on Job status
-		if job.Status.Failed > 0 {
-			status.Phase = phaseFailed
-			status.Message = "Job failed"
-			anyFailed = true
-		} else if job.Status.Succeeded > 0 {
+		if job.Status.Succeeded > 0 {
 			status.Phase = "Completed"
 			status.Message = "Job completed successfully"
 
@@ -529,6 +526,14 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Phase = "Running"
 			status.Message = "Job is running"
 			allCompleted = false
+		} else if job.Status.Ready != nil {
+			status.Phase = "Pending"
+			status.Message = "Job is pending"
+			allCompleted = false
+		} else if job.Status.Failed > 0 {
+			status.Phase = phaseFailed
+			status.Message = "Job failed"
+			anyFailed = true
 		} else {
 			status.Phase = "Pending"
 			status.Message = "Job is pending"
@@ -544,7 +549,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	} else if allCompleted {
 		nodeOp.Status.Phase = "Completed"
 	} else {
-		nodeOp.Status.Phase = "Running"
+		nodeOp.Status.Phase = phaseRunning
 	}
 	nodeOp.Status.LastUpdated = metav1.Now()
 

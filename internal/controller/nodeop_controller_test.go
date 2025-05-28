@@ -310,6 +310,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Update Job status to simulate failure
 			job := ownedJobs[0]
+			job.Status.Succeeded = 0
+			job.Status.Active = 0
 			job.Status.Failed = 1
 			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
 
