@@ -373,7 +373,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &[]int32{0}[0],
+			BackoffLimit: &[]int32{3}[0],
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					NodeName: node.Name,
