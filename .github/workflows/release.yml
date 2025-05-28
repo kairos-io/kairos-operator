@@ -42,7 +42,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_TOKEN }}
+          password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta-operator
