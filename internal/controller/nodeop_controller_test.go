@@ -242,7 +242,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(job.OwnerReferences).To(HaveLen(1), fmt.Sprintf("Job %s has %d owner references", job.Name, len(job.OwnerReferences)))
 			Expect(job.OwnerReferences[0].Kind).To(Equal(kindNodeOp))
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
-			Expect(job.OwnerReferences[0].APIVersion).To(Equal("kairos.io/v1alpha1"))
+			Expect(job.OwnerReferences[0].APIVersion).To(Equal("operator.kairos.io/v1alpha1"))
 			Expect(job.OwnerReferences[0].UID).To(Equal(createdResource.UID))
 
 			// Verify NodeOp status was updated

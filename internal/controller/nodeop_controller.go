@@ -149,7 +149,7 @@ func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*ka
 
 	// Set TypeMeta fields since they are not stored in etcd
 	nodeOp.TypeMeta = metav1.TypeMeta{
-		APIVersion: "kairos.io/v1alpha1",
+		APIVersion: "operator.kairos.io/v1alpha1",
 		Kind:       "NodeOp",
 	}
 
