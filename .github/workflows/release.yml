@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        required: true
+        type: string
+
+env:
+  REGISTRY: quay.io
+  OPERATOR_IMAGE_NAME: kairos/operator
+  NODE_LABELER_IMAGE_NAME: kairos/operator-node-labeler
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta-operator
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ inputs.version }},suffix={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Extract metadata (tags, labels) for Node Labeler
+        id: meta-node-labeler
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ inputs.version }}
+            type=raw,value=${{ inputs.version }},suffix={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push operator image
+        id: build-operator
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-operator.outputs.tags }}
+          labels: ${{ steps.meta-operator.outputs.labels }}
+
+      - name: Build and push node-labeler image
+        id: build-node-labeler
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.node-labeler
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-node-labeler.outputs.tags }}
+          labels: ${{ steps.meta-node-labeler.outputs.labels }}
+
+      - name: Update version in kustomization files
+        if: success()
+        run: |
+          # Update operator image version
+          sed -i "s|value: quay.io/kairos/operator:v[0-9.]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
+          # Update node-labeler image version
+          sed -i "s|value: quay.io/kairos/operator-node-labeler:v[0-9.]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
+          
+          # Commit and push changes if not in a detached HEAD state
+          if [[ $(git rev-parse --abbrev-ref HEAD) != "HEAD" ]]; then
+            git config --global user.name 'GitHub Actions'
+            git config --global user.email 'github-actions@github.com'
+            git add config/default/kustomization.yaml
+            git commit -m "chore: bump version to ${{ inputs.version }}"
+            git push
+          fi 
