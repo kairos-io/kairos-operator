@@ -169,16 +169,39 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Install GitHub CLI
+        run: |
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+          && sudo apt update \
+          && sudo apt install gh -y
+
+      - name: Create version bump branch
+        run: |
+          git checkout -b "chore/bump-version-${{ inputs.version }}"
+
       - name: Update version in kustomization files
         run: |
           # Update operator image version
           sed -i "s|value: quay.io/kairos/operator:v[0-9.]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
           # Update node-labeler image version
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[0-9.]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
-          
-          # Commit and push changes
+
+      - name: Commit and push changes
+        run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'github-actions@github.com'
           git add config/default/kustomization.yaml
           git commit -m "chore: bump version to ${{ inputs.version }}"
-          git push
+          git push origin "chore/bump-version-${{ inputs.version }}"
+
+      - name: Create Pull Request
+        run: |
+          gh pr create \
+            --title "chore: bump version to ${{ inputs.version }}" \
+            --body "This PR updates the operator and node-labeler image versions to ${{ inputs.version }}" \
+            --base main \
+            --head "chore/bump-version-${{ inputs.version }}" \
+            --label "version bump"
