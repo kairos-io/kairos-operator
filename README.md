@@ -6,6 +6,7 @@
 
 ## Implementation Plan (TODO list)
 
+
 - Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
   - Mount `/etc/kairos-release` and `/etc/os-release` using `hostPath`.
   - Detect if the node is Kairos-based.
