@@ -634,6 +634,12 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 						return err
 					}
 
+					// Get the operator image from environment variable
+					operatorImage := os.Getenv("OPERATOR_IMAGE")
+					if operatorImage == "" {
+						operatorImage = "quay.io/kairos/kairos-operator:latest"
+					}
+
 					rebootPod := &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
@@ -646,25 +652,24 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 						},
 						Spec: corev1.PodSpec{
 							NodeName: nodeName,
+							HostPID:  true,
 							Containers: []corev1.Container{
 								{
 									Name:  "reboot",
-									Image: "bitnami/kubectl:latest",
+									Image: operatorImage,
 									Command: []string{
 										"/bin/sh",
 										"-c",
-										"if [ -z \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}')\" ]; then " +
-											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"pending\"}}}' --namespace $POD_NAMESPACE; " +
+										"if [ -z \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}' 2>/dev/null || echo)\" ]; then " +
+											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"pending\"}}}' --namespace $POD_NAMESPACE && " +
 											"nsenter -i -m -t 1 -- reboot; " +
 											"elif [ \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}')\" = \"pending\" ]; then " +
 											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"completed\"}}}' --namespace $POD_NAMESPACE; " +
-											"exit 0; " +
-											"else " +
-											"exit 0; " +
 											"fi",
 									},
 									SecurityContext: &corev1.SecurityContext{
 										Privileged: &[]bool{true}[0],
+										RunAsUser:  &[]int64{0}[0],
 									},
 									Env: []corev1.EnvVar{
 										{
@@ -686,7 +691,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 									},
 								},
 							},
-							RestartPolicy:      corev1.RestartPolicyNever,
+							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
 						},
 					}
