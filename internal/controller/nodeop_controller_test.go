@@ -24,8 +24,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -310,6 +312,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Update Job status to simulate failure
 			job := ownedJobs[0]
+			job.Status.Succeeded = 0
+			job.Status.Active = 0
 			job.Status.Failed = 1
 			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
 
@@ -410,6 +414,169 @@ var _ = Describe("NodeOp Controller", func() {
 			By("Verifying node is uncordoned after job completion")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
 			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after job completion")
+		})
+
+		It("should create a reboot pod when RebootOnSuccess is true and job completes successfully", func() {
+			By("Creating a NodeOp with RebootOnSuccess=true")
+			rebootNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-reboot",
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: true,
+					Cordon:          true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, rebootNodeOp)).To(Succeed())
+
+			By("Verifying node starts in schedulable state")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should start in schedulable state")
+
+			By("Reconciling the NodeOp")
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// First reconciliation should create Jobs
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rebootNodeOp.Name,
+					Namespace: rebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify Job was created
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": rebootNodeOp.Name,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1))
+
+			// Simulate job completion
+			job := jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+
+			// Reconcile again to trigger reboot pod creation
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rebootNodeOp.Name,
+					Namespace: rebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify reboot pod was created
+			podList := &corev1.PodList{}
+			err = k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": rebootNodeOp.Name,
+					"kairos.io/reboot": "true",
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podList.Items).To(HaveLen(1))
+
+			// Verify reboot pod configuration
+			rebootPod := podList.Items[0]
+			Expect(rebootPod.Spec.NodeName).To(Equal(nodeName))
+			Expect(rebootPod.Spec.Containers).To(HaveLen(1))
+			Expect(rebootPod.Spec.Containers[0].Image).To(Equal("bitnami/kubectl:latest"))
+			Expect(rebootPod.Spec.Containers[0].Command).To(ContainElement(ContainSubstring("kubectl patch pod $POD_NAME -p")))
+			Expect(rebootPod.Spec.Containers[0].SecurityContext.Privileged).To(PointTo(BeTrue()))
+			Expect(rebootPod.Spec.Volumes).To(BeEmpty())
+			Expect(rebootPod.Spec.ServiceAccountName).To(Equal("nodeop-reboot"))
+
+			// Verify node is still cordoned
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(), "Node should remain cordoned until reboot is completed")
+
+			// Simulate reboot pod setting pending state
+			rebootPod.Annotations = map[string]string{
+				"kairos.io/reboot-state": "pending",
+			}
+			Expect(k8sClient.Update(ctx, &rebootPod)).To(Succeed())
+
+			// Reconcile again - node should still be cordoned
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rebootNodeOp.Name,
+					Namespace: rebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify node is still cordoned
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(), "Node should remain cordoned until reboot is completed")
+
+			// Simulate reboot pod completing
+			rebootPod.Annotations = map[string]string{
+				"kairos.io/reboot-state": "completed",
+			}
+			Expect(k8sClient.Update(ctx, &rebootPod)).To(Succeed())
+
+			// Reconcile again - node should be uncordoned
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rebootNodeOp.Name,
+					Namespace: rebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify node is uncordoned
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after reboot is completed")
+
+			// Verify the reboot pod has completed state
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      rebootPod.Name,
+				Namespace: rebootPod.Namespace,
+			}, &rebootPod)).To(Succeed())
+			Expect(rebootPod.Annotations).To(HaveKeyWithValue("kairos.io/reboot-state", "completed"))
+
+			// Verify service account was created
+			sa := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "nodeop-reboot",
+				Namespace: "default",
+			}, sa)).To(Succeed())
+
+			// Verify role was created
+			role := &rbacv1.Role{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "nodeop-reboot",
+				Namespace: "default",
+			}, role)).To(Succeed())
+			Expect(role.Rules).To(HaveLen(1))
+			Expect(role.Rules[0].Resources).To(ContainElement("pods"))
+			Expect(role.Rules[0].Verbs).To(ContainElements("get", "patch"))
+
+			// Verify role binding was created
+			roleBinding := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "nodeop-reboot",
+				Namespace: "default",
+			}, roleBinding)).To(Succeed())
+			Expect(roleBinding.Subjects).To(HaveLen(1))
+			Expect(roleBinding.Subjects[0].Name).To(Equal("nodeop-reboot"))
+			Expect(roleBinding.RoleRef.Name).To(Equal("nodeop-reboot"))
 		})
 	})
 })

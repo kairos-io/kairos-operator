@@ -6,6 +6,22 @@
 
 ## Implementation Plan (TODO list)
 
+
+- Jobs are not a good resource for what we are trying to do. We want to add a "Reboot" field on the NodeOp resource which will allow the user to say "when my commands run successully, reboot the node". If we reboot within a Job, the job's Pods will stay in "Unknown" state and it makes it complicated to cleanup without loosing the Jobs output.
+
+We will switch to creating a Pod instead. That's because, after reboot, the **same** Pod will be restarted and we only need to create some kind of "sentinel" in order to avoid re-running the job if it was run successfully.
+
+We will:
+- add a "RebootOnSuccess" field on NodeOp
+- change the controller logic to create a Pod on each targeted Node, instead of a Job which is the current logic.
+- change the controller to monitor the Pods instead of Jobs in order to update the NodeOp status
+- annotate the Pod with a specific annotation "kairos.io/nodeop-success: false". This will be exposed using the downward API so that we can read it from within the Pod.
+- Wrap the user's command in the Pod inside a script of our own which will check the annotation (using the downward API). If it's "true" it means the user's command has been run already so the script will simply `exit 0`. Otherwise, the user's command will run. If there is no error and if the user speficied "RebootOnSuccess: true", our script will also append some code to annotate the Pod (so that after reboot we see that the command was already run) and will reboot. 
+
+This way, we can make sure we only reboot once (and not fall in a reboot loop) and we won't have rogue "Unknown" state Pods lying around.
+-----------------
+
+
 - Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
   - Mount `/etc/kairos-release` and `/etc/os-release` using `hostPath`.
   - Detect if the node is Kairos-based.
