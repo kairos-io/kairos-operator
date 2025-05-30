@@ -49,6 +49,8 @@ const (
 	// Environment variables for controller pod identification
 	controllerPodNameEnv      = "CONTROLLER_POD_NAME"
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
+	// Finalizer for cleaning up ClusterRoleBinding
+	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
 )
 
 // NodeOpReconciler reconciles a NodeOp object
@@ -80,6 +82,33 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	if nodeOp == nil {
 		// NodeOp was deleted, nothing to do
+		return ctrl.Result{}, nil
+	}
+
+	// Handle finalization
+	if !nodeOp.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
+			// Delete the ClusterRoleBinding
+			crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
+			clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: crbName,
+				},
+			}
+			if err := r.Delete(ctx, clusterRoleBinding); err != nil {
+				if !apierrors.IsNotFound(err) {
+					log.Error(err, "Failed to delete ClusterRoleBinding")
+					return ctrl.Result{}, err
+				}
+			}
+
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(nodeOp, clusterRoleBindingFinalizer)
+			if err := r.Update(ctx, nodeOp); err != nil {
+				log.Error(err, "Failed to remove finalizer from NodeOp")
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -124,8 +153,26 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 }
 
+// getOperatorNamespace returns the namespace where the operator is running
+func (r *NodeOpReconciler) getOperatorNamespace() string {
+	// Get namespace from environment variable
+	namespace := os.Getenv(controllerPodNamespaceEnv)
+	if namespace == "" {
+		// Fallback to "operator-system" if not set
+		return "operator-system"
+	}
+	return namespace
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Ensure cluster-wide RBAC resources are created when the controller starts
+	if err := r.ensureClusterRBAC(context.Background()); err != nil {
+		log := logf.Log.WithName("setup")
+		log.Error(err, "Failed to ensure cluster RBAC")
+		os.Exit(1)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kairosiov1alpha1.NodeOp{}).
 		Watches(
@@ -564,12 +611,6 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 
 			// If RebootOnSuccess is true, create a reboot pod
 			if nodeOp.Spec.RebootOnSuccess {
-				// Ensure service account exists
-				if err := r.createRebootServiceAccount(ctx, nodeOp.Namespace); err != nil {
-					log.Error(err, "Failed to create service account for reboot pod")
-					return err
-				}
-
 				// Check if reboot pod already exists
 				podList := &corev1.PodList{}
 				err := r.List(ctx, podList,
@@ -586,7 +627,13 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 				}
 
 				if len(podList.Items) == 0 {
+					log.Info("Creating reboot pod for NodeOp", "nodeOp", nodeOp.Name, "node", nodeName)
 					// Create reboot pod
+					if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
+						log.Error(err, "Failed to ensure service account for reboot pod")
+						return err
+					}
+
 					rebootPod := &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
@@ -640,8 +687,13 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 								},
 							},
 							RestartPolicy:      corev1.RestartPolicyNever,
-							ServiceAccountName: "nodeop-reboot",
+							ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
 						},
+					}
+
+					if err := controllerutil.SetControllerReference(nodeOp, rebootPod, r.Scheme); err != nil {
+						log.Error(err, "Failed to set controller reference for reboot pod")
+						return err
 					}
 
 					if err := r.Create(ctx, rebootPod); err != nil {
@@ -744,16 +796,48 @@ func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj clie
 	return nil
 }
 
-// createRebootServiceAccount creates the service account and RBAC rules for the reboot pod
-func (r *NodeOpReconciler) createRebootServiceAccount(ctx context.Context, namespace string) error {
+// ensureClusterRBAC creates the cluster-wide RBAC resources for the reboot pod
+func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 
-	// Create service account
+	// Create cluster role
+	clusterRole := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "nodeop-reboot",
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "patch"},
+			},
+		},
+	}
+	if err := r.Create(ctx, clusterRole); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			log.Error(err, "Failed to create cluster role")
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ensureNodeOpServiceAccount creates the service account for a specific NodeOp
+func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	log := logf.FromContext(ctx)
+
+	// Create service account for this NodeOp
+	saName := fmt.Sprintf("%s-reboot", nodeOp.Name)
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "nodeop-reboot",
-			Namespace: namespace,
+			Name:      saName,
+			Namespace: nodeOp.Namespace,
 		},
+	}
+	if err := controllerutil.SetControllerReference(nodeOp, sa, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for service account")
+		return err
 	}
 	if err := r.Create(ctx, sa); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -762,50 +846,37 @@ func (r *NodeOpReconciler) createRebootServiceAccount(ctx context.Context, names
 		}
 	}
 
-	// Create role
-	role := &rbacv1.Role{
+	// Create cluster role binding for this NodeOp's service account
+	crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "nodeop-reboot",
-			Namespace: namespace,
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"pods"},
-				Verbs:         []string{"get", "patch"},
-				ResourceNames: []string{"*"}, // The pod can only patch itself
-			},
-		},
-	}
-	if err := r.Create(ctx, role); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create role")
-			return err
-		}
-	}
-
-	// Create role binding
-	roleBinding := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "nodeop-reboot",
-			Namespace: namespace,
+			Name: crbName,
 		},
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      "nodeop-reboot",
-				Namespace: namespace,
+				Name:      saName,
+				Namespace: nodeOp.Namespace,
 			},
 		},
 		RoleRef: rbacv1.RoleRef{
-			Kind:     "Role",
-			Name:     "nodeop-reboot",
 			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "nodeop-reboot",
 		},
 	}
-	if err := r.Create(ctx, roleBinding); err != nil {
+	if err := r.Create(ctx, clusterRoleBinding); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create role binding")
+			log.Error(err, "Failed to create cluster role binding")
+			return err
+		}
+	}
+
+	// Add finalizer to NodeOp if not present
+	if !controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
+		controllerutil.AddFinalizer(nodeOp, clusterRoleBindingFinalizer)
+		if err := r.Update(ctx, nodeOp); err != nil {
+			log.Error(err, "Failed to add finalizer to NodeOp")
 			return err
 		}
 	}
