@@ -33,10 +33,13 @@ import (
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 	"github.com/kairos-io/kairos-operator/internal/utils"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -128,6 +131,16 @@ func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&batchv1.Job{},
 			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForJob),
+		).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForRebootPod),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				// Only watch pods with our reboot label
+				pod := obj.(*corev1.Pod)
+				_, hasRebootLabel := pod.Labels["kairos.io/reboot"]
+				return hasRebootLabel
+			})),
 		).
 		Named("nodeop").
 		Complete(r)
@@ -510,16 +523,132 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Phase = "Completed"
 			status.Message = "Job completed successfully"
 
-			// If the job completed successfully and the node was cordoned, uncordon it
+			// If the node was cordoned, check if we should uncordon it
 			if nodeOp.Spec.Cordon {
-				node := &corev1.Node{}
-				if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
-					log.Error(err, "Failed to get node for uncordoning", "node", nodeName)
+				// Only uncordon if:
+				// 1. RebootOnSuccess is false, or
+				// 2. RebootOnSuccess is true and reboot is completed
+				shouldUncordon := !nodeOp.Spec.RebootOnSuccess
+
+				if nodeOp.Spec.RebootOnSuccess {
+					// Check if reboot pod exists and has completed
+					podList := &corev1.PodList{}
+					err := r.List(ctx, podList,
+						client.InNamespace(nodeOp.Namespace),
+						client.MatchingLabels(map[string]string{
+							"kairos.io/nodeop": nodeOp.Name,
+							"kairos.io/reboot": "true",
+							"kairos.io/node":   nodeName,
+						}),
+					)
+					if err == nil && len(podList.Items) > 0 {
+						rebootPod := podList.Items[0]
+						if state, ok := rebootPod.Annotations["kairos.io/reboot-state"]; ok && state == "completed" {
+							shouldUncordon = true
+						}
+					}
+				}
+
+				if shouldUncordon {
+					node := &corev1.Node{}
+					if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+						log.Error(err, "Failed to get node for uncordoning", "node", nodeName)
+						return err
+					}
+					if err := r.uncordonNode(ctx, node); err != nil {
+						log.Error(err, "Failed to uncordon node after job completion", "node", nodeName)
+						return err
+					}
+				}
+			}
+
+			// If RebootOnSuccess is true, create a reboot pod
+			if nodeOp.Spec.RebootOnSuccess {
+				// Ensure service account exists
+				if err := r.createRebootServiceAccount(ctx, nodeOp.Namespace); err != nil {
+					log.Error(err, "Failed to create service account for reboot pod")
 					return err
 				}
-				if err := r.uncordonNode(ctx, node); err != nil {
-					log.Error(err, "Failed to uncordon node after job completion", "node", nodeName)
+
+				// Check if reboot pod already exists
+				podList := &corev1.PodList{}
+				err := r.List(ctx, podList,
+					client.InNamespace(nodeOp.Namespace),
+					client.MatchingLabels(map[string]string{
+						"kairos.io/nodeop": nodeOp.Name,
+						"kairos.io/reboot": "true",
+						"kairos.io/node":   nodeName,
+					}),
+				)
+				if err != nil {
+					log.Error(err, "Failed to list reboot pods", "node", nodeName)
 					return err
+				}
+
+				if len(podList.Items) == 0 {
+					// Create reboot pod
+					rebootPod := &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
+							Namespace:    nodeOp.Namespace,
+							Labels: map[string]string{
+								"kairos.io/nodeop": nodeOp.Name,
+								"kairos.io/reboot": "true",
+								"kairos.io/node":   nodeName,
+							},
+						},
+						Spec: corev1.PodSpec{
+							NodeName: nodeName,
+							Containers: []corev1.Container{
+								{
+									Name:  "reboot",
+									Image: "bitnami/kubectl:latest",
+									Command: []string{
+										"/bin/sh",
+										"-c",
+										"if [ -z \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}')\" ]; then " +
+											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"pending\"}}}' --namespace $POD_NAMESPACE; " +
+											"nsenter -i -m -t 1 -- reboot; " +
+											"elif [ \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}')\" = \"pending\" ]; then " +
+											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"completed\"}}}' --namespace $POD_NAMESPACE; " +
+											"exit 0; " +
+											"else " +
+											"exit 0; " +
+											"fi",
+									},
+									SecurityContext: &corev1.SecurityContext{
+										Privileged: &[]bool{true}[0],
+									},
+									Env: []corev1.EnvVar{
+										{
+											Name: "POD_NAME",
+											ValueFrom: &corev1.EnvVarSource{
+												FieldRef: &corev1.ObjectFieldSelector{
+													FieldPath: "metadata.name",
+												},
+											},
+										},
+										{
+											Name: "POD_NAMESPACE",
+											ValueFrom: &corev1.EnvVarSource{
+												FieldRef: &corev1.ObjectFieldSelector{
+													FieldPath: "metadata.namespace",
+												},
+											},
+										},
+									},
+								},
+							},
+							RestartPolicy:      corev1.RestartPolicyNever,
+							ServiceAccountName: "nodeop-reboot",
+						},
+					}
+
+					if err := r.Create(ctx, rebootPod); err != nil {
+						log.Error(err, "Failed to create reboot pod", "node", nodeName)
+						return err
+					}
+					log.Info("Created reboot pod", "node", nodeName, "pod", rebootPod.Name)
 				}
 			}
 		} else if job.Status.Active > 0 {
@@ -588,5 +717,98 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 	log.Info("No NodeOp owner found for Job",
 		"job", job.Name,
 		"namespace", job.Namespace)
+	return nil
+}
+
+// findNodeOpsForRebootPod finds NodeOps that are associated with the given reboot pod
+func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod := obj.(*corev1.Pod)
+	log := logf.FromContext(ctx)
+
+	// Check if this is a reboot pod
+	if nodeOpName, ok := pod.Labels["kairos.io/nodeop"]; ok {
+		log.Info("Reboot pod status changed, triggering NodeOp reconciliation",
+			"pod", pod.Name,
+			"nodeOp", nodeOpName,
+			"namespace", pod.Namespace)
+		return []reconcile.Request{
+			{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpName,
+					Namespace: pod.Namespace,
+				},
+			},
+		}
+	}
+
+	return nil
+}
+
+// createRebootServiceAccount creates the service account and RBAC rules for the reboot pod
+func (r *NodeOpReconciler) createRebootServiceAccount(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
+
+	// Create service account
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nodeop-reboot",
+			Namespace: namespace,
+		},
+	}
+	if err := r.Create(ctx, sa); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			log.Error(err, "Failed to create service account")
+			return err
+		}
+	}
+
+	// Create role
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nodeop-reboot",
+			Namespace: namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"pods"},
+				Verbs:         []string{"get", "patch"},
+				ResourceNames: []string{"*"}, // The pod can only patch itself
+			},
+		},
+	}
+	if err := r.Create(ctx, role); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			log.Error(err, "Failed to create role")
+			return err
+		}
+	}
+
+	// Create role binding
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nodeop-reboot",
+			Namespace: namespace,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "nodeop-reboot",
+				Namespace: namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "Role",
+			Name:     "nodeop-reboot",
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+	if err := r.Create(ctx, roleBinding); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			log.Error(err, "Failed to create role binding")
+			return err
+		}
+	}
+
 	return nil
 }

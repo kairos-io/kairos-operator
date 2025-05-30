@@ -58,6 +58,12 @@ type NodeOpSpec struct {
 	// This requires the Cordon field to be true.
 	// +optional
 	DrainOptions *DrainOptions `json:"drainOptions,omitempty"`
+
+	// RebootOnSuccess specifies whether to reboot the node after the operation completes successfully.
+	// When true, a privileged pod will be created to trigger a reboot using nsenter.
+	// +optional
+	// +kubebuilder:default=false
+	RebootOnSuccess bool `json:"rebootOnSuccess,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.
