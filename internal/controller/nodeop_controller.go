@@ -424,16 +424,74 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
 	jobName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit)
 
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: nodeOp.Namespace,
-			Labels: map[string]string{
-				"kairos.io/nodeop": nodeOp.Name,
-				"kairos.io/node":   node.Name,
+	// Create the Job spec
+	var jobSpec batchv1.JobSpec
+	if nodeOp.Spec.RebootOnSuccess {
+		// When reboot is requested, use init container for user command and main container for sentinel
+		jobSpec = batchv1.JobSpec{
+			BackoffLimit: &[]int32{3}[0],
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					NodeName: node.Name,
+					InitContainers: []corev1.Container{
+						{
+							Name:    "nodeop",
+							Image:   nodeOp.Spec.Image,
+							Command: nodeOp.Spec.Command,
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: &[]bool{true}[0],
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "host-root",
+									MountPath: "/host",
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "sentinel-creator",
+							Image: "busybox:latest",
+							Command: []string{
+								"/bin/sh",
+								"-c",
+								fmt.Sprintf("echo 'Job completed at %s' > /sentinel/%s-$(date +%%s)", "$(date)", jobName),
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "sentinel-volume",
+									MountPath: "/sentinel",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "host-root",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/",
+								},
+							},
+						},
+						{
+							Name: "sentinel-volume",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/usr/local/.kairos",
+									Type: &[]corev1.HostPathType{corev1.HostPathDirectoryOrCreate}[0],
+								},
+							},
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
 			},
-		},
-		Spec: batchv1.JobSpec{
+		}
+	} else {
+		// When no reboot is requested, use the original job spec
+		jobSpec = batchv1.JobSpec{
 			BackoffLimit: &[]int32{3}[0],
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -467,7 +525,19 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 					RestartPolicy: corev1.RestartPolicyNever,
 				},
 			},
+		}
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: nodeOp.Namespace,
+			Labels: map[string]string{
+				"kairos.io/nodeop": nodeOp.Name,
+				"kairos.io/node":   node.Name,
+			},
 		},
+		Spec: jobSpec,
 	}
 
 	if err := controllerutil.SetControllerReference(nodeOp, job, r.Scheme); err != nil {
@@ -515,6 +585,21 @@ func (r *NodeOpReconciler) createJobs(ctx context.Context, nodeOp *kairosiov1alp
 	nodes, err := r.getClusterNodes(ctx)
 	if err != nil {
 		return err
+	}
+
+	// If RebootOnSuccess is true, create all reboot pods first before creating any jobs
+	if nodeOp.Spec.RebootOnSuccess {
+		log.Info("Creating reboot pods for all nodes before creating jobs", "nodeOp", nodeOp.Name)
+		for _, node := range nodes {
+			fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
+			jobName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit)
+
+			if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
+				log.Error(err, "Failed to create reboot pod for node, continuing with other nodes",
+					"node", node.Name)
+				continue
+			}
+		}
 	}
 
 	// Create a Job for each node
@@ -570,142 +655,16 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Phase = "Completed"
 			status.Message = "Job completed successfully"
 
-			// If the node was cordoned, check if we should uncordon it
-			if nodeOp.Spec.Cordon {
-				// Only uncordon if:
-				// 1. RebootOnSuccess is false, or
-				// 2. RebootOnSuccess is true and reboot is completed
-				shouldUncordon := !nodeOp.Spec.RebootOnSuccess
-
-				if nodeOp.Spec.RebootOnSuccess {
-					// Check if reboot pod exists and has completed
-					podList := &corev1.PodList{}
-					err := r.List(ctx, podList,
-						client.InNamespace(nodeOp.Namespace),
-						client.MatchingLabels(map[string]string{
-							"kairos.io/nodeop": nodeOp.Name,
-							"kairos.io/reboot": "true",
-							"kairos.io/node":   nodeName,
-						}),
-					)
-					if err == nil && len(podList.Items) > 0 {
-						rebootPod := podList.Items[0]
-						if state, ok := rebootPod.Annotations["kairos.io/reboot-state"]; ok && state == "completed" {
-							shouldUncordon = true
-						}
-					}
-				}
-
-				if shouldUncordon {
-					node := &corev1.Node{}
-					if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
-						log.Error(err, "Failed to get node for uncordoning", "node", nodeName)
-						return err
-					}
-					if err := r.uncordonNode(ctx, node); err != nil {
-						log.Error(err, "Failed to uncordon node after job completion", "node", nodeName)
-						return err
-					}
-				}
-			}
-
-			// If RebootOnSuccess is true, create a reboot pod
-			if nodeOp.Spec.RebootOnSuccess {
-				// Check if reboot pod already exists
-				podList := &corev1.PodList{}
-				err := r.List(ctx, podList,
-					client.InNamespace(nodeOp.Namespace),
-					client.MatchingLabels(map[string]string{
-						"kairos.io/nodeop": nodeOp.Name,
-						"kairos.io/reboot": "true",
-						"kairos.io/node":   nodeName,
-					}),
-				)
-				if err != nil {
-					log.Error(err, "Failed to list reboot pods", "node", nodeName)
+			// If the node was cordoned and reboot is not requested, uncordon it
+			if nodeOp.Spec.Cordon && !nodeOp.Spec.RebootOnSuccess {
+				node := &corev1.Node{}
+				if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+					log.Error(err, "Failed to get node for uncordoning", "node", nodeName)
 					return err
 				}
-
-				if len(podList.Items) == 0 {
-					log.Info("Creating reboot pod for NodeOp", "nodeOp", nodeOp.Name, "node", nodeName)
-					// Create reboot pod
-					if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
-						log.Error(err, "Failed to ensure service account for reboot pod")
-						return err
-					}
-
-					// Get the operator image from environment variable
-					operatorImage := os.Getenv("OPERATOR_IMAGE")
-					if operatorImage == "" {
-						operatorImage = "quay.io/kairos/kairos-operator:latest"
-					}
-
-					rebootPod := &corev1.Pod{
-						ObjectMeta: metav1.ObjectMeta{
-							GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
-							Namespace:    nodeOp.Namespace,
-							Labels: map[string]string{
-								"kairos.io/nodeop": nodeOp.Name,
-								"kairos.io/reboot": "true",
-								"kairos.io/node":   nodeName,
-							},
-						},
-						Spec: corev1.PodSpec{
-							NodeName: nodeName,
-							HostPID:  true,
-							Containers: []corev1.Container{
-								{
-									Name:  "reboot",
-									Image: operatorImage,
-									Command: []string{
-										"/bin/sh",
-										"-c",
-										"if [ -z \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}' 2>/dev/null || echo)\" ]; then " +
-											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"pending\"}}}' --namespace $POD_NAMESPACE && " +
-											"nsenter -i -m -t 1 -- reboot; " +
-											"elif [ \"$(kubectl get pod $POD_NAME -n $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\\.io/reboot-state}')\" = \"pending\" ]; then " +
-											"kubectl patch pod $POD_NAME -p '{\"metadata\":{\"annotations\":{\"kairos.io/reboot-state\":\"completed\"}}}' --namespace $POD_NAMESPACE; " +
-											"fi",
-									},
-									SecurityContext: &corev1.SecurityContext{
-										Privileged: &[]bool{true}[0],
-										RunAsUser:  &[]int64{0}[0],
-									},
-									Env: []corev1.EnvVar{
-										{
-											Name: "POD_NAME",
-											ValueFrom: &corev1.EnvVarSource{
-												FieldRef: &corev1.ObjectFieldSelector{
-													FieldPath: "metadata.name",
-												},
-											},
-										},
-										{
-											Name: "POD_NAMESPACE",
-											ValueFrom: &corev1.EnvVarSource{
-												FieldRef: &corev1.ObjectFieldSelector{
-													FieldPath: "metadata.namespace",
-												},
-											},
-										},
-									},
-								},
-							},
-							RestartPolicy:      corev1.RestartPolicyOnFailure,
-							ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
-						},
-					}
-
-					if err := controllerutil.SetControllerReference(nodeOp, rebootPod, r.Scheme); err != nil {
-						log.Error(err, "Failed to set controller reference for reboot pod")
-						return err
-					}
-
-					if err := r.Create(ctx, rebootPod); err != nil {
-						log.Error(err, "Failed to create reboot pod", "node", nodeName)
-						return err
-					}
-					log.Info("Created reboot pod", "node", nodeName, "pod", rebootPod.Name)
+				if err := r.uncordonNode(ctx, node); err != nil {
+					log.Error(err, "Failed to uncordon node after job completion", "node", nodeName)
+					return err
 				}
 			}
 		} else if job.Status.Active > 0 {
@@ -720,6 +679,14 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Phase = phaseFailed
 			status.Message = "Job failed"
 			anyFailed = true
+
+			// Clean up reboot pod for failed job if reboot was requested
+			if nodeOp.Spec.RebootOnSuccess {
+				if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
+					log.Error(err, "Failed to cleanup reboot pod for failed job", "node", nodeName)
+					// Don't return error, just log it and continue
+				}
+			}
 		} else {
 			status.Phase = "Pending"
 			status.Message = "Job is pending"
@@ -882,6 +849,150 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 		controllerutil.AddFinalizer(nodeOp, clusterRoleBindingFinalizer)
 		if err := r.Update(ctx, nodeOp); err != nil {
 			log.Error(err, "Failed to add finalizer to NodeOp")
+			return err
+		}
+	}
+
+	return nil
+}
+
+// createRebootPod creates a reboot pod that waits for a sentinel file before rebooting
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
+	log := logf.FromContext(ctx)
+
+	// Ensure service account for reboot pod
+	if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to ensure service account for reboot pod")
+		return err
+	}
+
+	// Get the operator image from environment variable
+	operatorImage := os.Getenv("OPERATOR_IMAGE")
+	if operatorImage == "" {
+		operatorImage = "quay.io/kairos/kairos-operator:latest"
+	}
+
+	rebootPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
+			Namespace:    nodeOp.Namespace,
+			Labels: map[string]string{
+				"kairos.io/nodeop": nodeOp.Name,
+				"kairos.io/reboot": "true",
+				"kairos.io/node":   nodeName,
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			HostPID:  true,
+			Containers: []corev1.Container{
+				{
+					Name:  "reboot",
+					Image: operatorImage,
+					Command: []string{
+						"/bin/sh",
+						"-c",
+						fmt.Sprintf(`
+							echo "Waiting for sentinel file for job %s..."
+							while true; do
+								SENTINEL_FILE=$(find /sentinel -name "%s-*" -type f 2>/dev/null | head -1)
+								if [ -n "$SENTINEL_FILE" ]; then
+									echo "Found sentinel file: $SENTINEL_FILE"
+									echo "Deleting sentinel file before reboot..."
+									rm -f "$SENTINEL_FILE"
+									echo "Rebooting node..."
+									kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"completed"}}}' --namespace $POD_NAMESPACE
+									nsenter -i -m -t 1 -- reboot
+									break
+								fi
+								sleep 10
+							done
+						`, jobName, jobName),
+					},
+					SecurityContext: &corev1.SecurityContext{
+						Privileged: &[]bool{true}[0],
+						RunAsUser:  &[]int64{0}[0],
+					},
+					Env: []corev1.EnvVar{
+						{
+							Name: "POD_NAME",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{
+									FieldPath: "metadata.name",
+								},
+							},
+						},
+						{
+							Name: "POD_NAMESPACE",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{
+									FieldPath: "metadata.namespace",
+								},
+							},
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "sentinel-volume",
+							MountPath: "/sentinel",
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "sentinel-volume",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/usr/local/.kairos",
+							Type: &[]corev1.HostPathType{corev1.HostPathDirectoryOrCreate}[0],
+						},
+					},
+				},
+			},
+			RestartPolicy:      corev1.RestartPolicyOnFailure,
+			ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(nodeOp, rebootPod, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference for reboot pod")
+		return err
+	}
+
+	if err := r.Create(ctx, rebootPod); err != nil {
+		log.Error(err, "Failed to create reboot pod", "node", nodeName)
+		return err
+	}
+
+	log.Info("Created reboot pod", "node", nodeName, "pod", rebootPod.Name, "job", jobName)
+	return nil
+}
+
+// cleanupRebootPodForNode removes the reboot pod for a failed job
+func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
+	log := logf.FromContext(ctx)
+
+	// Get the reboot pod for the failed job
+	podList := &corev1.PodList{}
+	err := r.List(ctx, podList,
+		client.InNamespace(nodeOp.Namespace),
+		client.MatchingLabels(map[string]string{
+			"kairos.io/nodeop": nodeOp.Name,
+			"kairos.io/reboot": "true",
+			"kairos.io/node":   nodeName,
+		}),
+	)
+	if err != nil {
+		log.Error(err, "Failed to list reboot pods", "node", nodeName)
+		return err
+	}
+
+	if len(podList.Items) > 0 {
+		pod := podList.Items[0]
+		log.Info("Deleting reboot pod for failed job", "node", nodeName, "pod", pod.Name)
+		if err := r.Delete(ctx, &pod); err != nil {
+			log.Error(err, "Failed to delete reboot pod for failed job", "node", nodeName)
 			return err
 		}
 	}
