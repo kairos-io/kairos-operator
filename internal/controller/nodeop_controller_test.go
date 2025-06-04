@@ -1273,3 +1273,567 @@ var _ = Describe("NodeOp Controller", func() {
 		})
 	})
 })
+
+var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
+	const (
+		timeout    = time.Second * 10
+		interval   = time.Millisecond * 250
+		kindNodeOp = "NodeOp"
+	)
+
+	var (
+		ctx                  context.Context
+		resourceName         string
+		nodeNames            []string
+		nodes                []*corev1.Node
+		controllerReconciler *NodeOpReconciler
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		// Set operator namespace to default for testing
+		Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
+
+		// Generate unique names for this test
+		resourceName = fmt.Sprintf("test-concurrency-%d", time.Now().UnixNano())
+
+		// Create multiple test nodes
+		nodeNames = []string{
+			fmt.Sprintf("test-node-1-%d", time.Now().UnixNano()),
+			fmt.Sprintf("test-node-2-%d", time.Now().UnixNano()),
+			fmt.Sprintf("test-node-3-%d", time.Now().UnixNano()),
+		}
+
+		nodes = make([]*corev1.Node, len(nodeNames))
+		for i, nodeName := range nodeNames {
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			nodes[i] = node
+		}
+
+		controllerReconciler = &NodeOpReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	AfterEach(func() {
+		// Clean up environment variables
+		Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
+
+		// Clean up NodeOp
+		Eventually(func() error {
+			resource := &kairosiov1alpha1.NodeOp{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}, resource)
+			if err != nil {
+				if client.IgnoreNotFound(err) != nil {
+					return err
+				}
+				return nil
+			}
+			return k8sClient.Delete(ctx, resource)
+		}, timeout, interval).Should(Succeed())
+
+		// Clean up Jobs
+		Eventually(func() error {
+			jobList := &batchv1.JobList{}
+			if err := k8sClient.List(ctx, jobList, client.InNamespace("default")); err != nil {
+				return err
+			}
+			for _, job := range jobList.Items {
+				for _, ownerRef := range job.OwnerReferences {
+					if ownerRef.Kind == kindNodeOp && ownerRef.Name == resourceName {
+						propagationPolicy := metav1.DeletePropagationBackground
+						deleteOpts := &client.DeleteOptions{
+							PropagationPolicy: &propagationPolicy,
+						}
+						if err := k8sClient.Delete(ctx, &job, deleteOpts); err != nil {
+							return err
+						}
+						break
+					}
+				}
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+
+		// Clean up nodes
+		for _, node := range nodes {
+			Eventually(func() error {
+				return k8sClient.Delete(ctx, node)
+			}, timeout, interval).Should(Succeed())
+		}
+	})
+
+	Context("When testing concurrency limits", func() {
+		It("should create jobs on all nodes when concurrency is 0 (unlimited)", func() {
+			By("Creating a NodeOp with concurrency=0")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:     []string{"echo", "test"},
+					Concurrency: 0, // unlimited
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying jobs were created for all nodes")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(len(nodeNames)), "Should create jobs for all nodes")
+
+			By("Verifying NodeOp status shows all nodes")
+			Eventually(func() int {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				}, nodeOp)
+				if err != nil {
+					return 0
+				}
+				return len(nodeOp.Status.NodeStatuses)
+			}, timeout, interval).Should(Equal(len(nodeNames)))
+		})
+
+		It("should limit concurrent jobs when concurrency is set to 1", func() {
+			By("Creating a NodeOp with concurrency=1")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:     []string{"echo", "test"},
+					Concurrency: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying only one job was created initially")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should create only one job initially")
+
+			By("Simulating first job completion")
+			job := &jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again to trigger next job creation")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying second job was created")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should have two jobs after first completion")
+		})
+
+		It("should respect concurrency limit of 2", func() {
+			By("Creating a NodeOp with concurrency=2")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:     []string{"echo", "test"},
+					Concurrency: 2,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying exactly two jobs were created initially")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should create exactly two jobs initially")
+
+			By("Simulating one job completion")
+			job := &jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again to trigger third job creation")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying third job was created")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(3), "Should have three jobs after one completion")
+		})
+	})
+
+	Context("When testing StopOnFailure feature", func() {
+		It("should stop creating new jobs when StopOnFailure is true and a job fails", func() {
+			By("Creating a NodeOp with StopOnFailure=true and concurrency=1")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:       []string{"echo", "test"},
+					Concurrency:   1,
+					StopOnFailure: true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying one job was created")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should create one job initially")
+
+			By("Simulating job failure")
+			job := &jobList.Items[0]
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again after job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying no additional jobs were created")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should not create additional jobs after failure")
+
+			By("Verifying NodeOp status shows failed phase")
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}, nodeOp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodeOp.Status.Phase).To(Equal("Failed"))
+		})
+
+		It("should continue creating jobs when StopOnFailure is false and a job fails", func() {
+			By("Creating a NodeOp with StopOnFailure=false and concurrency=1")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:       []string{"echo", "test"},
+					Concurrency:   1,
+					StopOnFailure: false,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying one job was created")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should create one job initially")
+
+			By("Simulating job failure")
+			job := &jobList.Items[0]
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again after job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying second job was created despite failure")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should create second job despite first failure")
+		})
+	})
+
+	Context("When testing TargetNodes filtering", func() {
+		It("should only create jobs on specified target nodes", func() {
+			By("Creating a NodeOp targeting only first two nodes")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:     []string{"echo", "test"},
+					TargetNodes: []string{nodeNames[0], nodeNames[1]}, // Only first two nodes
+					Concurrency: 0,                                    // unlimited
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying jobs were created only for target nodes")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should create jobs only for target nodes")
+
+			By("Verifying the correct nodes have jobs")
+			nodeNamesWithJobs := make(map[string]bool)
+			for _, job := range jobList.Items {
+				if nodeName, exists := job.Labels["kairos.io/node"]; exists {
+					nodeNamesWithJobs[nodeName] = true
+				}
+			}
+			Expect(nodeNamesWithJobs).To(HaveKey(nodeNames[0]))
+			Expect(nodeNamesWithJobs).To(HaveKey(nodeNames[1]))
+			Expect(nodeNamesWithJobs).NotTo(HaveKey(nodeNames[2]))
+		})
+	})
+
+	Context("When testing combined features", func() {
+		It("should respect both concurrency and target nodes", func() {
+			By("Creating a NodeOp with concurrency=1 and targeting two nodes")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:     []string{"echo", "test"},
+					TargetNodes: []string{nodeNames[0], nodeNames[1]},
+					Concurrency: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying only one job was created initially")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should create only one job initially due to concurrency=1")
+
+			By("Simulating job completion")
+			job := &jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling again to trigger second job creation")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying second job was created")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should have two jobs total for two target nodes")
+
+			By("Verifying no third job is created")
+			// Complete the second job
+			for _, j := range jobList.Items {
+				if j.Status.Succeeded == 0 {
+					j.Status.Succeeded = 1
+					Expect(k8sClient.Status().Update(ctx, &j)).To(Succeed())
+					break
+				}
+			}
+
+			// Reconcile again
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should still have only 2 jobs (no third one for nodeNames[2])
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(2), "Should not create job for third node not in target list")
+		})
+	})
+})
