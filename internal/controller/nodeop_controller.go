@@ -857,6 +857,8 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 									rm -f "$SENTINEL_FILE"
 									echo "Attempting to patch pod..."
 									kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"%s"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
+									echo "Giving 5 seconds to the Job Pod to exit gracefully..."
+									sleep 5
 									echo "Attempting reboot with nsenter..."
 									nsenter -i -m -t 1 -- reboot || echo "nsenter reboot failed"
 									break
