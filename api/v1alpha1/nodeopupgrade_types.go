@@ -45,23 +45,23 @@ type NodeOpUpgradeSpec struct {
 	// When true, if any job fails, no new jobs will be created for remaining nodes.
 	// This is useful for canary deployments where you want to stop on the first failure.
 	// +optional
-	StopOnFailure bool `json:"stopOnFailure,omitempty"`
+	StopOnFailure *bool `json:"stopOnFailure,omitempty"`
 
 	// UpgradeRecovery specifies whether to upgrade the recovery partition.
 	// When true, the recovery partition will be upgraded.
 	// +optional
-	UpgradeRecovery bool `json:"upgradeRecovery,omitempty"`
+	UpgradeRecovery *bool `json:"upgradeRecovery,omitempty"`
 
 	// UpgradeActive specifies whether to upgrade the active partition.
 	// When true, the active partition will be upgraded.
 	// This is the default behavior for most upgrade scenarios.
 	// +optional
-	UpgradeActive bool `json:"upgradeActive,omitempty"`
+	UpgradeActive *bool `json:"upgradeActive,omitempty"`
 
 	// Force specifies whether to perform the upgrade without checking if the current version
 	// matches the target version. When true, the upgrade will proceed regardless of version comparison.
 	// +optional
-	Force bool `json:"force,omitempty"`
+	Force *bool `json:"force,omitempty"`
 }
 
 // NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.

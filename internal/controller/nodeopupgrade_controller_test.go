@@ -53,11 +53,11 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
 					Image:           "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
-					UpgradeActive:   true,
-					UpgradeRecovery: false,
-					Force:           false,
+					UpgradeActive:   asBool(true),
+					UpgradeRecovery: asBool(false),
+					Force:           asBool(false),
 					Concurrency:     1,
-					StopOnFailure:   false,
+					StopOnFailure:   asBool(false),
 				},
 			}
 		})
@@ -116,10 +116,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.StopOnFailure).To(Equal(nodeOpUpgrade.Spec.StopOnFailure))
 			Expect(nodeOp.Spec.TargetNodes).To(Equal(nodeOpUpgrade.Spec.TargetNodes))
 			Expect(nodeOp.Spec.HostMountPath).To(Equal("/host"))
-			Expect(nodeOp.Spec.Cordon).To(BeTrue())
-			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
+			Expect(*nodeOp.Spec.Cordon).To(BeTrue())
+			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 			Expect(nodeOp.Spec.DrainOptions).NotTo(BeNil())
-			Expect(nodeOp.Spec.DrainOptions.Enabled).To(BeTrue())
+			Expect(*nodeOp.Spec.DrainOptions.Enabled).To(BeTrue())
 
 			By("Verifying NodeOp has correct labels")
 			Expect(nodeOp.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "nodeopupgrade-controller"))
@@ -141,9 +141,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should generate correct upgrade command for active partition only", func() {
 			By("Creating the NodeOpUpgrade resource with active upgrade only")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = false
-			nodeOpUpgrade.Spec.Force = false
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+			nodeOpUpgrade.Spec.Force = asBool(false)
 
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
@@ -182,9 +182,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should generate correct upgrade command for recovery partition only", func() {
 			By("Creating the NodeOpUpgrade resource with recovery upgrade only")
-			nodeOpUpgrade.Spec.UpgradeActive = false
-			nodeOpUpgrade.Spec.UpgradeRecovery = true
-			nodeOpUpgrade.Spec.Force = false
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(false)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+			nodeOpUpgrade.Spec.Force = asBool(false)
 
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
@@ -215,9 +215,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should generate correct upgrade command for both partitions", func() {
 			By("Creating the NodeOpUpgrade resource with both upgrades")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = true
-			nodeOpUpgrade.Spec.Force = false
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+			nodeOpUpgrade.Spec.Force = asBool(false)
 
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
@@ -251,9 +251,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should generate correct upgrade command with force enabled", func() {
 			By("Creating the NodeOpUpgrade resource with force enabled")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = false
-			nodeOpUpgrade.Spec.Force = true
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+			nodeOpUpgrade.Spec.Force = asBool(true)
 
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
@@ -387,8 +387,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should set RebootOnSuccess correctly based on UpgradeActive", func() {
 			By("Creating NodeOpUpgrade with UpgradeActive=true (should reboot)")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = false
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			controllerReconciler := &NodeOpUpgradeReconciler{
@@ -410,7 +410,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Name:      nodeOpUpgradeName,
 				Namespace: "default",
 			}, nodeOp)).To(Succeed())
-			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
+			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 
 			By("Cleaning up for next test")
 			Expect(k8sClient.Delete(ctx, nodeOpUpgrade)).To(Succeed())
@@ -425,9 +425,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
 					Image:           "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
-					UpgradeActive:   false,
-					UpgradeRecovery: true,
-					Force:           false,
+					UpgradeActive:   asBool(false),
+					UpgradeRecovery: asBool(true),
+					Force:           asBool(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade2)).To(Succeed())
@@ -446,7 +446,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Name:      nodeOpUpgrade2Name,
 				Namespace: "default",
 			}, nodeOp2)).To(Succeed())
-			Expect(nodeOp2.Spec.RebootOnSuccess).To(BeFalse())
+			Expect(*nodeOp2.Spec.RebootOnSuccess).To(BeFalse())
 
 			By("Cleaning up second test resources")
 			Expect(k8sClient.Delete(ctx, nodeOpUpgrade2)).To(Succeed())
@@ -455,8 +455,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should set RebootOnSuccess to true when UpgradeActive is true", func() {
 			By("Creating NodeOpUpgrade with UpgradeActive=true")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = false
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			controllerReconciler := &NodeOpUpgradeReconciler{
@@ -478,13 +478,13 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Name:      nodeOpUpgradeName,
 				Namespace: "default",
 			}, nodeOp)).To(Succeed())
-			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
+			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 		})
 
 		It("should set RebootOnSuccess to false when UpgradeActive is false", func() {
 			By("Creating NodeOpUpgrade with UpgradeActive=false")
-			nodeOpUpgrade.Spec.UpgradeActive = false
-			nodeOpUpgrade.Spec.UpgradeRecovery = true
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(false)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			controllerReconciler := &NodeOpUpgradeReconciler{
@@ -506,13 +506,13 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Name:      nodeOpUpgradeName,
 				Namespace: "default",
 			}, nodeOp)).To(Succeed())
-			Expect(nodeOp.Spec.RebootOnSuccess).To(BeFalse())
+			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeFalse())
 		})
 
 		It("should set RebootOnSuccess to true when upgrading both partitions", func() {
 			By("Creating NodeOpUpgrade with both UpgradeActive and UpgradeRecovery true")
-			nodeOpUpgrade.Spec.UpgradeActive = true
-			nodeOpUpgrade.Spec.UpgradeRecovery = true
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			controllerReconciler := &NodeOpUpgradeReconciler{
@@ -534,7 +534,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Name:      nodeOpUpgradeName,
 				Namespace: "default",
 			}, nodeOp)).To(Succeed())
-			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
+			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 		})
 	})
 })

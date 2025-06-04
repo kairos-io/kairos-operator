@@ -51,7 +51,7 @@ type NodeOpSpec struct {
 	// and will be uncordoned after the operation completes successfully.
 	// +optional
 	// +kubebuilder:default=false
-	Cordon bool `json:"cordon,omitempty"`
+	Cordon *bool `json:"cordon,omitempty"`
 
 	// DrainOptions specifies the options for draining the node before running the operation.
 	// When enabled, pods will be evicted from the node before the operation starts.
@@ -63,7 +63,7 @@ type NodeOpSpec struct {
 	// When true, a privileged pod will be created to trigger a reboot using nsenter.
 	// +optional
 	// +kubebuilder:default=false
-	RebootOnSuccess bool `json:"rebootOnSuccess,omitempty"`
+	RebootOnSuccess *bool `json:"rebootOnSuccess,omitempty"`
 
 	// BackoffLimit specifies the number of retries before marking this job failed.
 	// This directly maps to the Job spec.backoffLimit field.
@@ -85,7 +85,7 @@ type NodeOpSpec struct {
 	// This is useful for canary deployments where you want to stop on the first failure.
 	// +optional
 	// +kubebuilder:default=false
-	StopOnFailure bool `json:"stopOnFailure,omitempty"`
+	StopOnFailure *bool `json:"stopOnFailure,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.
@@ -94,13 +94,13 @@ type DrainOptions struct {
 	// When true, pods will be evicted from the node before the operation starts.
 	// +optional
 	// +kubebuilder:default=false
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Force specifies whether to force the drain operation.
 	// When true, pods that do not have a controller will be evicted.
 	// +optional
 	// +kubebuilder:default=false
-	Force bool `json:"force,omitempty"`
+	Force *bool `json:"force,omitempty"`
 
 	// GracePeriodSeconds is the time in seconds given to each pod to terminate gracefully.
 	// If negative, the default value specified in the pod will be used.
@@ -111,13 +111,13 @@ type DrainOptions struct {
 	// When true, DaemonSet-managed pods will be ignored during the drain operation.
 	// +optional
 	// +kubebuilder:default=true
-	IgnoreDaemonSets bool `json:"ignoreDaemonSets,omitempty"`
+	IgnoreDaemonSets *bool `json:"ignoreDaemonSets,omitempty"`
 
 	// DeleteEmptyDirData specifies whether to delete local data in emptyDir volumes.
 	// When true, data in emptyDir volumes will be deleted during the drain operation.
 	// +optional
 	// +kubebuilder:default=false
-	DeleteEmptyDirData bool `json:"deleteEmptyDirData,omitempty"`
+	DeleteEmptyDirData *bool `json:"deleteEmptyDirData,omitempty"`
 
 	// TimeoutSeconds is the length of time to wait before giving up on the drain operation.
 	// If not specified, a default timeout will be used.

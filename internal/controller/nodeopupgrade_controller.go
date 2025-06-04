@@ -122,6 +122,17 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 	// Generate the upgrade command based on the NodeOpUpgrade spec
 	upgradeCommand := r.generateUpgradeCommand(nodeOpUpgrade)
 
+	// Helper function to get bool value with default
+	getBoolValue := func(ptr *bool, defaultValue bool) *bool {
+		if ptr == nil {
+			return &defaultValue
+		}
+		return ptr
+	}
+
+	// Determine if we should reboot on success (true if UpgradeActive is true or nil)
+	shouldReboot := nodeOpUpgrade.Spec.UpgradeActive == nil || *nodeOpUpgrade.Spec.UpgradeActive
+
 	nodeOp := &kairosiov1alpha1.NodeOp{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      nodeOpUpgrade.Name,
@@ -138,10 +149,10 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 			StopOnFailure:   nodeOpUpgrade.Spec.StopOnFailure,
 			Command:         upgradeCommand,
 			HostMountPath:   hostMountPath,
-			Cordon:          true,
-			RebootOnSuccess: nodeOpUpgrade.Spec.UpgradeActive,
+			Cordon:          getBoolValue(nil, true), // Always cordon for upgrades
+			RebootOnSuccess: &shouldReboot,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
-				Enabled: true,
+				Enabled: getBoolValue(nil, true), // Always drain for upgrades
 			},
 		},
 	}
@@ -162,7 +173,8 @@ set -x -e
 `
 
 	// Add version check logic unless force is enabled
-	if !nodeOpUpgrade.Spec.Force {
+	forceUpgrade := nodeOpUpgrade.Spec.Force != nil && *nodeOpUpgrade.Spec.Force
+	if !forceUpgrade {
 		script += `get_version() {
     local file_path="$1"
     # shellcheck disable=SC1090
@@ -202,8 +214,19 @@ mount --rbind ` + hostMountPath + `/run /run
 
 `
 
+	// Helper function to get boolean value with default
+	getBool := func(ptr *bool, defaultValue bool) bool {
+		if ptr == nil {
+			return defaultValue
+		}
+		return *ptr
+	}
+
+	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, false)
+	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, true) // Default to true
+
 	// Add upgrade logic based on spec
-	if nodeOpUpgrade.Spec.UpgradeRecovery && nodeOpUpgrade.Spec.UpgradeActive {
+	if upgradeRecovery && upgradeActive {
 		// Both recovery and active
 		script += `# Upgrade recovery partition
 kairos-agent upgrade --recovery --source dir:/
@@ -212,13 +235,13 @@ kairos-agent upgrade --recovery --source dir:/
 kairos-agent upgrade --source dir:/
 exit 0
 `
-	} else if nodeOpUpgrade.Spec.UpgradeRecovery {
+	} else if upgradeRecovery {
 		// Recovery only
 		script += `# Upgrade recovery partition only
 kairos-agent upgrade --recovery --source dir:/
 exit 0
 `
-	} else if nodeOpUpgrade.Spec.UpgradeActive {
+	} else if upgradeActive {
 		// Active only (default behavior)
 		script += `# Upgrade active partition
 kairos-agent upgrade --source dir:/
