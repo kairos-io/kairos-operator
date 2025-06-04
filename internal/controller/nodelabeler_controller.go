@@ -223,13 +223,6 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Get the operator namespace
 	namespace := r.getOperatorNamespace()
 
-	// Ensure service account and RBAC exist
-	log.Info("Ensuring service account and RBAC exist")
-	if err := r.ensureServiceAccount(ctx, namespace); err != nil {
-		log.Error(err, "Failed to ensure service account and RBAC")
-		return ctrl.Result{}, err
-	}
-
 	// Check if a labeler job already exists for this node
 	exists, err := r.jobExists(ctx, namespace, node.Name)
 	if err != nil {
@@ -255,6 +248,15 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Ensure RBAC resources are created when the controller starts
+	namespace := r.getOperatorNamespace()
+	if err := r.ensureServiceAccount(context.Background(), namespace); err != nil {
+		log := logf.Log.WithName("setup")
+		log.Error(err, "Failed to ensure service account and RBAC")
+		os.Exit(1)
+
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		Complete(r)

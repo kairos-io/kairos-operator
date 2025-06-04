@@ -58,6 +58,18 @@ type NodeOpSpec struct {
 	// This requires the Cordon field to be true.
 	// +optional
 	DrainOptions *DrainOptions `json:"drainOptions,omitempty"`
+
+	// RebootOnSuccess specifies whether to reboot the node after the operation completes successfully.
+	// When true, a privileged pod will be created to trigger a reboot using nsenter.
+	// +optional
+	// +kubebuilder:default=false
+	RebootOnSuccess bool `json:"rebootOnSuccess,omitempty"`
+
+	// BackoffLimit specifies the number of retries before marking this job failed.
+	// This directly maps to the Job spec.backoffLimit field.
+	// If not specified, defaults to 6 (Kubernetes default).
+	// +optional
+	BackoffLimit *int32 `json:"backoffLimit,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.
@@ -126,6 +138,11 @@ type NodeStatus struct {
 	// Message contains any additional information about the operation status.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// RebootStatus represents the reboot state of this node.
+	// Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
+	// +optional
+	RebootStatus string `json:"rebootStatus,omitempty"`
 
 	// LastUpdated is the timestamp of the last status update for this node.
 	// +optional

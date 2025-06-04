@@ -26,14 +26,6 @@ rules:
   - ""
   resources:
   - pods
-  verbs:
-  - delete
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - serviceaccounts
   verbs:
   - create
