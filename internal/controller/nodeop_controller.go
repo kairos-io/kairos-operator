@@ -44,6 +44,7 @@ import (
 
 const (
 	kindNodeOp     = "NodeOp"
+	phasePending   = "Pending"
 	phaseFailed    = "Failed"
 	phaseRunning   = "Running"
 	phaseCompleted = "Completed"
@@ -533,7 +534,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	}
 
 	nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
-		Phase:        "Pending",
+		Phase:        phasePending,
 		JobName:      actualJobName,
 		Message:      "Job created",
 		RebootStatus: rebootStatus,
@@ -626,7 +627,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 				status.RebootStatus = rebootStatusNotRequested // Reboot was never requested
 			}
 		} else {
-			status.Phase = "Pending"
+			status.Phase = phasePending
 			status.Message = "Job is pending"
 			// Keep existing reboot status during pending phase
 			if status.RebootStatus == "" {
@@ -1215,10 +1216,10 @@ func (r *NodeOpReconciler) hasFailedJobs(nodeOp *kairosiov1alpha1.NodeOp) bool {
 func (r *NodeOpReconciler) countRunningJobs(nodeOp *kairosiov1alpha1.NodeOp) int32 {
 	var count int32
 	for _, status := range nodeOp.Status.NodeStatuses {
-		// A job is considered "running" if:
+		// Conditions where we consider a job "running" or "busy":
 		// 1. It's in Pending or Running phase, OR
 		// 2. It's Completed but reboot is still pending (node is busy rebooting)
-		if status.Phase == "Pending" || status.Phase == "Running" ||
+		if status.Phase == phasePending || status.Phase == phaseRunning ||
 			(status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending) {
 			count++
 		}

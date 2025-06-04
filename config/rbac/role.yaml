@@ -59,6 +59,7 @@ rules:
   - operator.kairos.io
   resources:
   - nodeops
+  - nodeopupgrades
   verbs:
   - create
   - delete
@@ -71,12 +72,14 @@ rules:
   - operator.kairos.io
   resources:
   - nodeops/finalizers
+  - nodeopupgrades/finalizers
   verbs:
   - update
 - apiGroups:
   - operator.kairos.io
   resources:
   - nodeops/status
+  - nodeopupgrades/status
   verbs:
   - get
   - patch
