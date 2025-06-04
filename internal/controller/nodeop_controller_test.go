@@ -1058,7 +1058,7 @@ var _ = Describe("NodeOp Controller", func() {
 				}),
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podList.Items).To(HaveLen(0), "No reboot pod should be created when RebootOnSuccess is false")
+			Expect(podList.Items).To(BeEmpty(), "No reboot pod should be created when RebootOnSuccess is false")
 
 			By("Simulating job failure")
 			jobList := &batchv1.JobList{}
