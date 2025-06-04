@@ -164,7 +164,7 @@ spec:
                     rebootStatus:
                       description: |-
                         RebootStatus represents the reboot state of this node.
-                        Can be "false" (reboot not requested), "pending" (reboot requested but not completed), or "completed" (reboot finished)
+                        Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
                       type: string
                   required:
                   - phase

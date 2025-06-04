@@ -53,9 +53,10 @@ const (
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
 	// Reboot status constants
-	rebootStatusFalse     = "false"
-	rebootStatusPending   = "pending"
-	rebootStatusCompleted = "completed"
+	rebootStatusNotRequested = "not-requested"
+	rebootStatusCancelled    = "cancelled"
+	rebootStatusPending      = "pending"
+	rebootStatusCompleted    = "completed"
 )
 
 // NodeOpReconciler reconciles a NodeOp object
@@ -570,7 +571,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	}
 
 	// Determine initial reboot status
-	rebootStatus := rebootStatusFalse
+	rebootStatus := rebootStatusNotRequested
 	if nodeOp.Spec.RebootOnSuccess {
 		rebootStatus = rebootStatusPending
 	}
@@ -685,22 +686,26 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 				if nodeOp.Spec.RebootOnSuccess {
 					status.RebootStatus = rebootStatusPending
 				} else {
-					status.RebootStatus = rebootStatusFalse
+					status.RebootStatus = rebootStatusNotRequested
 				}
 			}
 			allCompleted = false
 		} else if job.Status.Failed > 0 {
 			status.Phase = phaseFailed
 			status.Message = "Job failed"
-			status.RebootStatus = rebootStatusFalse // Reset reboot status on failure
 			anyFailed = true
 
-			// Clean up reboot pod for failed job if reboot was requested
+			// Handle reboot-related cleanup and status based on whether reboot was originally requested
 			if nodeOp.Spec.RebootOnSuccess {
+				status.RebootStatus = rebootStatusCancelled // Reboot was requested but cancelled due to job failure
+
+				// Clean up reboot pod for failed job
 				if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
 					log.Error(err, "Failed to cleanup reboot pod for failed job", "node", nodeName)
 					// Don't return error, just log it and continue
 				}
+			} else {
+				status.RebootStatus = rebootStatusNotRequested // Reboot was never requested
 			}
 		} else {
 			status.Phase = "Pending"
@@ -710,7 +715,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 				if nodeOp.Spec.RebootOnSuccess {
 					status.RebootStatus = rebootStatusPending
 				} else {
-					status.RebootStatus = rebootStatusFalse
+					status.RebootStatus = rebootStatusNotRequested
 				}
 			}
 			allCompleted = false
@@ -1106,7 +1111,7 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 
 	// Set reboot status based on whether reboot was requested
 	if !nodeOp.Spec.RebootOnSuccess {
-		status.RebootStatus = rebootStatusFalse
+		status.RebootStatus = rebootStatusNotRequested
 	} else {
 		// If reboot is requested, check if reboot pod is completed
 		rebootCompleted, err := r.isRebootPodCompleted(ctx, nodeOp, nodeName)

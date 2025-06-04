@@ -654,7 +654,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal("nodeop"))
 			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"echo", "test"}))
 
-			By("Simulating job completion and verifying rebootStatus is 'false'")
+			By("Simulating job completion and verifying rebootStatus is 'not-requested'")
 			job.Status.Succeeded = 1
 			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
 
@@ -667,7 +667,7 @@ var _ = Describe("NodeOp Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify NodeOp status shows rebootStatus as "false"
+			// Verify NodeOp status shows rebootStatus as "not-requested"
 			updatedNodeOp := &kairosiov1alpha1.NodeOp{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      noRebootNodeOp.Name,
@@ -676,7 +676,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			Expect(updatedNodeOp.Status.NodeStatuses).NotTo(BeEmpty())
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
-				Expect(nodeStatus.RebootStatus).To(Equal("false"), "RebootStatus should be 'false' when RebootOnSuccess is false")
+				Expect(nodeStatus.RebootStatus).To(Equal("not-requested"), "RebootStatus should be 'not-requested' when RebootOnSuccess is false")
 				Expect(nodeStatus.Phase).To(Equal("Completed"))
 			}
 		})
@@ -906,7 +906,7 @@ var _ = Describe("NodeOp Controller", func() {
 			}
 		})
 
-		It("should handle failed jobs by setting rebootStatus to 'false' and cleaning up reboot pods", func() {
+		It("should handle failed jobs by setting rebootStatus to 'cancelled' and cleaning up reboot pods", func() {
 			By("Creating a NodeOp with RebootOnSuccess=true")
 			failedJobNodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
@@ -983,7 +983,7 @@ var _ = Describe("NodeOp Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying rebootStatus is set to 'false' for failed job")
+			By("Verifying rebootStatus is set to 'cancelled' for failed job")
 			updatedNodeOp := &kairosiov1alpha1.NodeOp{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      failedJobNodeOp.Name,
@@ -992,7 +992,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			Expect(updatedNodeOp.Status.Phase).To(Equal("Failed"))
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
-				Expect(nodeStatus.RebootStatus).To(Equal("false"), "RebootStatus should be 'false' when job fails")
+				Expect(nodeStatus.RebootStatus).To(Equal("cancelled"), "RebootStatus should be 'cancelled' when job fails")
 				Expect(nodeStatus.Phase).To(Equal("Failed"))
 			}
 
@@ -1007,6 +1007,97 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podList.Items).To(HaveLen(1)) // Not deleted in tests since we don't have kubelet running.
 			Expect(podList.Items[0].DeletionTimestamp).NotTo(BeNil(), "Reboot pod should be marked for deletion when job fails")
+		})
+
+		It("should set rebootStatus to 'not-requested' when RebootOnSuccess=false and job fails", func() {
+			By("Creating a NodeOp with RebootOnSuccess=false")
+			noRebootFailedJobNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-no-reboot-failed",
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"exit", "1"}, // This will cause the job to fail
+					RebootOnSuccess: false,
+				},
+			}
+			Expect(k8sClient.Create(ctx, noRebootFailedJobNodeOp)).To(Succeed())
+
+			// Cleanup this test's NodeOp
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, noRebootFailedJobNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Initial reconciliation")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      noRebootFailedJobNodeOp.Name,
+					Namespace: noRebootFailedJobNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying no reboot pod was created")
+			podList := &corev1.PodList{}
+			err = k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": noRebootFailedJobNodeOp.Name,
+					"kairos.io/reboot": "true",
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podList.Items).To(HaveLen(0), "No reboot pod should be created when RebootOnSuccess is false")
+
+			By("Simulating job failure")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": noRebootFailedJobNodeOp.Name,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1))
+
+			job := jobList.Items[0]
+			job.Status.Succeeded = 0
+			job.Status.Active = 0
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+
+			By("Reconciling to process job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      noRebootFailedJobNodeOp.Name,
+					Namespace: noRebootFailedJobNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying rebootStatus is set to 'not-requested' for failed job when RebootOnSuccess=false")
+			updatedNodeOp := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      noRebootFailedJobNodeOp.Name,
+				Namespace: noRebootFailedJobNodeOp.Namespace,
+			}, updatedNodeOp)).To(Succeed())
+
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Failed"))
+			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
+				Expect(nodeStatus.RebootStatus).To(Equal("not-requested"), "RebootStatus should be 'not-requested' when job fails and RebootOnSuccess=false")
+				Expect(nodeStatus.Phase).To(Equal("Failed"))
+			}
 		})
 
 		It("should apply custom BackoffLimit from NodeOp spec to created Jobs", func() {
