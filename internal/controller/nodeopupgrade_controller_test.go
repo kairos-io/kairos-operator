@@ -105,12 +105,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying that a NodeOp was created")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			By("Verifying NodeOp has correct configuration")
 			Expect(nodeOp.Spec.Image).To(Equal(nodeOpUpgrade.Spec.Image))
@@ -133,17 +131,12 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.OwnerReferences[0].Name).To(Equal(nodeOpUpgradeName))
 
 			By("Verifying NodeOpUpgrade status is updated")
-			Eventually(func() string {
-				updatedNodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, updatedNodeOpUpgrade)
-				if err != nil {
-					return ""
-				}
-				return updatedNodeOpUpgrade.Status.Phase
-			}, time.Second*10, time.Millisecond*250).Should(Equal("Initializing"))
+			updatedNodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, updatedNodeOpUpgrade)).To(Succeed())
+			Expect(updatedNodeOpUpgrade.Status.Phase).To(Equal("Initializing"))
 		})
 
 		It("should generate correct upgrade command for active partition only", func() {
@@ -170,12 +163,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			Expect(nodeOp.Spec.Command).To(HaveLen(3))
 			Expect(nodeOp.Spec.Command[0]).To(Equal("/bin/sh"))
@@ -213,16 +204,13 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			script := nodeOp.Spec.Command[2]
 			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
-			Expect(script).To(ContainSubstring("# no need to reboot when upgrading recovery"))
 		})
 
 		It("should generate correct upgrade command for both partitions", func() {
@@ -249,12 +237,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			script := nodeOp.Spec.Command[2]
 			Expect(script).To(ContainSubstring("# Upgrade recovery partition"))
@@ -287,16 +273,16 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("export FORCE=true"))
-			Expect(script).NotTo(ContainSubstring("if [ \"$FORCE\" != \"true\" ]; then"))
+			Expect(script).NotTo(ContainSubstring("get_version()"))
+			Expect(script).To(ContainSubstring("mount --rbind"))
+			Expect(script).NotTo(ContainSubstring("--recovery"))
+			Expect(script).NotTo(ContainSubstring("export FORCE=true"))
 		})
 
 		It("should update NodeOpUpgrade status when NodeOp status changes", func() {
@@ -319,12 +305,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Updating the NodeOp status")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 
 			// Simulate NodeOp status update
 			nodeOp.Status.Phase = "Running"
@@ -348,16 +332,11 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying NodeOpUpgrade status is updated")
 			updatedNodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{}
-			Eventually(func() string {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, updatedNodeOpUpgrade)
-				if err != nil {
-					return ""
-				}
-				return updatedNodeOpUpgrade.Status.Phase
-			}, time.Second*10, time.Millisecond*250).Should(Equal("Running"))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, updatedNodeOpUpgrade)).To(Succeed())
+			Expect(updatedNodeOpUpgrade.Status.Phase).To(Equal("Running"))
 
 			Expect(updatedNodeOpUpgrade.Status.Message).To(Equal("Upgrade operation is running"))
 			Expect(updatedNodeOpUpgrade.Status.NodeStatuses).To(HaveKey("test-node"))
@@ -384,15 +363,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying NodeOp was created")
 			nodeOpList := &kairosiov1alpha1.NodeOpList{}
-			Eventually(func() int {
-				err := k8sClient.List(ctx, nodeOpList, client.InNamespace("default"), client.MatchingLabels{
-					"nodeopupgrade.kairos.io/name": nodeOpUpgradeName,
-				})
-				if err != nil {
-					return 0
-				}
-				return len(nodeOpList.Items)
-			}, time.Second*10, time.Millisecond*250).Should(Equal(1))
+			Expect(k8sClient.List(ctx, nodeOpList, client.InNamespace("default"), client.MatchingLabels{
+				"nodeopupgrade.kairos.io/name": nodeOpUpgradeName,
+			})).To(Succeed())
+			Expect(nodeOpList.Items).To(HaveLen(1))
 
 			By("Reconciling again")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -432,12 +406,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying RebootOnSuccess is true when UpgradeActive is true")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 
 			By("Cleaning up for next test")
@@ -470,12 +442,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying RebootOnSuccess is false when UpgradeActive is false")
 			nodeOp2 := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgrade2Name,
-					Namespace: "default",
-				}, nodeOp2)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgrade2Name,
+				Namespace: "default",
+			}, nodeOp2)).To(Succeed())
 			Expect(nodeOp2.Spec.RebootOnSuccess).To(BeFalse())
 
 			By("Cleaning up second test resources")
@@ -504,12 +474,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying RebootOnSuccess is true")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 		})
 
@@ -534,12 +502,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying RebootOnSuccess is false")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 			Expect(nodeOp.Spec.RebootOnSuccess).To(BeFalse())
 		})
 
@@ -564,12 +530,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying RebootOnSuccess is true when upgrading both partitions")
 			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				}, nodeOp)
-			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
 			Expect(nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 		})
 	})

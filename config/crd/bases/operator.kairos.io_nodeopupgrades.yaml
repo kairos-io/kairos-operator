@@ -50,7 +50,6 @@ spec:
                 minimum: 0
                 type: integer
               force:
-                default: false
                 description: |-
                   Force specifies whether to perform the upgrade without checking if the current version
                   matches the target version. When true, the upgrade will proceed regardless of version comparison.
@@ -61,7 +60,6 @@ spec:
                   This should contain the Kairos version and dependencies needed for upgrade.
                 type: string
               stopOnFailure:
-                default: false
                 description: |-
                   StopOnFailure specifies whether to stop creating new jobs when a job fails.
                   When true, if any job fails, no new jobs will be created for remaining nodes.
@@ -75,14 +73,12 @@ spec:
                   type: string
                 type: array
               upgradeActive:
-                default: true
                 description: |-
                   UpgradeActive specifies whether to upgrade the active partition.
                   When true, the active partition will be upgraded.
                   This is the default behavior for most upgrade scenarios.
                 type: boolean
               upgradeRecovery:
-                default: false
                 description: |-
                   UpgradeRecovery specifies whether to upgrade the recovery partition.
                   When true, the recovery partition will be upgraded.
