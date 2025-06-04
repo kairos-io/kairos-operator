@@ -240,7 +240,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(ownedJobs).To(Equal(1))
 
 			// Verify Job has correct owner reference
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.OwnerReferences).To(HaveLen(1), fmt.Sprintf("Job %s has %d owner references", job.Name, len(job.OwnerReferences)))
 			Expect(job.OwnerReferences[0].Kind).To(Equal(kindNodeOp))
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
@@ -257,7 +257,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Update Job status to simulate completion
 			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			// Reconcile again to update NodeOp status
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -481,9 +481,9 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1))
 
 			// Simulate job completion
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			// Reconcile again to trigger reboot pod creation
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -648,7 +648,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1), "Regular job should be created")
 
 			By("Verifying Job does NOT have InitContainers")
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.Spec.Template.Spec.InitContainers).To(BeEmpty(), "Job should not have InitContainers when RebootOnSuccess is false")
 			Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1), "Job should have exactly one main container")
 			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal("nodeop"))
@@ -656,7 +656,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating job completion and verifying rebootStatus is 'not-requested'")
 			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			// Reconcile again to process job completion
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -744,7 +744,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1), "Job should also be created")
 
 			By("Verifying Job has InitContainer and sentinel container structure")
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(1), "Job should have exactly one InitContainer for user command")
 			Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1), "Job should have exactly one main container for sentinel")
 
@@ -841,9 +841,9 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			// Reconcile to process job completion
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -968,11 +968,11 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			job.Status.Succeeded = 0
 			job.Status.Active = 0
 			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1071,11 +1071,11 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			job.Status.Succeeded = 0
 			job.Status.Active = 0
 			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1151,7 +1151,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.Spec.BackoffLimit).NotTo(BeNil(), "Job BackoffLimit should be set")
 			Expect(*job.Spec.BackoffLimit).To(Equal(customBackoffLimit), "Job BackoffLimit should match NodeOp spec")
 		})
@@ -1206,7 +1206,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.Spec.BackoffLimit).NotTo(BeNil(), "Job BackoffLimit should be set")
 			Expect(*job.Spec.BackoffLimit).To(Equal(int32(6)), "Job BackoffLimit should default to Kubernetes default (6)")
 		})
@@ -1263,7 +1263,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(1))
 
-			job := jobList.Items[0]
+			job := &jobList.Items[0]
 			Expect(job.Spec.BackoffLimit).NotTo(BeNil(), "Job BackoffLimit should be set")
 			Expect(*job.Spec.BackoffLimit).To(Equal(customBackoffLimit), "Job BackoffLimit should match NodeOp spec even with RebootOnSuccess=true")
 
@@ -1668,7 +1668,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			job.Status.Failed = 1
 			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
-			By("Reconciling again after job failure")
+			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
@@ -1834,6 +1834,160 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(2), "Should not create job for third node not in target list")
+		})
+	})
+
+	Context("When testing concurrency with reboot pending", func() {
+		It("should consider jobs with pending reboot as running and not start new jobs", func() {
+			By("Creating a NodeOp with concurrency=1 and RebootOnSuccess=true")
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					Concurrency:     1,
+					RebootOnSuccess: true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+			By("Reconciling the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying one job was created initially")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should create one job initially")
+
+			By("Simulating job completion (but reboot still pending)")
+			job := &jobList.Items[0]
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			By("Reconciling to process job completion")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying job status shows completed but reboot pending")
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}, nodeOp)
+			Expect(err).NotTo(HaveOccurred())
+
+			var nodeStatus kairosiov1alpha1.NodeStatus
+			for _, status := range nodeOp.Status.NodeStatuses {
+				nodeStatus = status
+				break // We only have one node in this test
+			}
+			Expect(nodeStatus.Phase).To(Equal("Completed"))
+			Expect(nodeStatus.RebootStatus).To(Equal("pending"))
+
+			By("Reconciling again - no new jobs should be created while reboot is pending")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying no additional jobs were created while reboot is pending")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1), "Should not create additional jobs while reboot is pending")
+
+			By("Simulating reboot completion")
+			podList := &corev1.PodList{}
+			err = k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+					"kairos.io/reboot": "true",
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podList.Items).To(HaveLen(1))
+
+			rebootPod := podList.Items[0]
+			rebootPod.Status.Phase = corev1.PodSucceeded
+			rebootPod.Annotations = map[string]string{
+				"kairos.io/reboot-state": "completed",
+			}
+			Expect(k8sClient.Status().Update(ctx, &rebootPod)).To(Succeed())
+			Expect(k8sClient.Update(ctx, &rebootPod)).To(Succeed())
+
+			By("Reconciling after reboot completion")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying reboot status is now completed")
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}, nodeOp)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, status := range nodeOp.Status.NodeStatuses {
+				nodeStatus = status
+				break // We only have one node in this test
+			}
+			Expect(nodeStatus.Phase).To(Equal("Completed"))
+			Expect(nodeStatus.RebootStatus).To(Equal("completed"))
+
+			By("Reconciling again - now new jobs should be allowed since reboot is completed")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying new job can now be created (if more target nodes exist)")
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": resourceName,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			// In this test we have 3 nodes total, so we should now have 2 jobs
+			// (first one completed with reboot completed, second one just started)
+			Expect(jobList.Items).To(HaveLen(2), "Should create second job after reboot is completed")
 		})
 	})
 })

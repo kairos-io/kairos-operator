@@ -1215,7 +1215,11 @@ func (r *NodeOpReconciler) hasFailedJobs(nodeOp *kairosiov1alpha1.NodeOp) bool {
 func (r *NodeOpReconciler) countRunningJobs(nodeOp *kairosiov1alpha1.NodeOp) int32 {
 	var count int32
 	for _, status := range nodeOp.Status.NodeStatuses {
-		if status.Phase == "Pending" || status.Phase == "Running" {
+		// A job is considered "running" if:
+		// 1. It's in Pending or Running phase, OR
+		// 2. It's Completed but reboot is still pending (node is busy rebooting)
+		if status.Phase == "Pending" || status.Phase == "Running" ||
+			(status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending) {
 			count++
 		}
 	}
