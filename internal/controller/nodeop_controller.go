@@ -554,8 +554,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	return nil
 }
 
-// createJobs function has been replaced by manageJobCreation to support concurrency
-
 // updateNodeOpStatus updates the status of the NodeOp based on Job statuses
 func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
@@ -1137,7 +1135,7 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 	// Determine how many new jobs we can start
 	var maxConcurrency int32
 	if nodeOp.Spec.Concurrency == 0 {
-		// 0 means unlimited concurrency (original behavior)
+		// 0 means unlimited concurrency
 		maxConcurrency = int32(len(targetNodes))
 	} else {
 		maxConcurrency = nodeOp.Spec.Concurrency
