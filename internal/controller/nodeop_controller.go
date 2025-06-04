@@ -103,38 +103,19 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	// Check if Jobs already exist
-	hasJobs, err := r.hasExistingJobs(ctx, nodeOp)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if hasJobs {
-		log.Info("Jobs already exist for NodeOp", "nodeOp", nodeOp.Name)
-		if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
-			if apierrors.IsConflict(err) {
-				log.Info("NodeOp was modified, requeuing reconciliation")
-				return ctrl.Result{Requeue: true}, nil
-			}
-			log.Error(err, "Failed to update NodeOp status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// If we get here, no Jobs exist yet
-	if err := r.createJobs(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to create Jobs")
-		return ctrl.Result{}, err
-	}
-
-	// Update status after creating Jobs
+	// Update status based on existing jobs
 	if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
 		if apierrors.IsConflict(err) {
 			log.Info("NodeOp was modified, requeuing reconciliation")
 			return ctrl.Result{Requeue: true}, nil
 		}
-		log.Error(err, "Failed to update NodeOp status after Job creation")
+		log.Error(err, "Failed to update NodeOp status")
+		return ctrl.Result{}, err
+	}
+
+	// Check if we should create more jobs
+	if err := r.manageJobCreation(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to manage job creation")
 		return ctrl.Result{}, err
 	}
 
@@ -193,31 +174,6 @@ func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*ka
 	}
 
 	return nodeOp, nil
-}
-
-// hasExistingJobs checks if there are any Jobs associated with the NodeOp
-func (r *NodeOpReconciler) hasExistingJobs(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) (bool, error) {
-	log := logf.FromContext(ctx)
-
-	jobList := &batchv1.JobList{}
-	err := r.List(ctx, jobList, client.InNamespace(nodeOp.Namespace))
-	if err != nil {
-		log.Error(err, "Failed to list Jobs")
-		return false, err
-	}
-
-	for _, job := range jobList.Items {
-		for _, ownerRef := range job.OwnerReferences {
-			if ownerRef.Kind == kindNodeOp && ownerRef.Name == nodeOp.Name {
-				log.Info("Found existing Job for NodeOp",
-					"nodeOp", nodeOp.Name,
-					"job", job.Name)
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
 }
 
 // getClusterNodes returns a list of all nodes in the cluster
@@ -598,44 +554,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	return nil
 }
 
-// createJobs creates Jobs for all nodes in the cluster
-func (r *NodeOpReconciler) createJobs(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
-	log := logf.FromContext(ctx)
-
-	// Get all nodes in the cluster
-	nodes, err := r.getClusterNodes(ctx)
-	if err != nil {
-		return err
-	}
-
-	// If RebootOnSuccess is true, create all reboot pods first before creating any jobs
-	if nodeOp.Spec.RebootOnSuccess {
-		log.Info("Creating reboot pods for all nodes before creating jobs", "nodeOp", nodeOp.Name)
-		for _, node := range nodes {
-			fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-			jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6) // Leave room for suffix
-
-			if err := r.createRebootPod(ctx, nodeOp, node.Name, jobBaseName); err != nil {
-				log.Error(err, "Failed to create reboot pod for node, continuing with other nodes",
-					"node", node.Name)
-				continue
-			}
-		}
-	}
-
-	// Create a Job for each node
-	for _, node := range nodes {
-		if err := r.createNodeJob(ctx, nodeOp, node); err != nil {
-			// Log the error but continue with other nodes
-			log.Error(err, "Failed to create Job for node, continuing with other nodes",
-				"node", node.Name)
-			continue
-		}
-	}
-
-	return nil
-}
-
 // updateNodeOpStatus updates the status of the NodeOp based on Job statuses
 func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
@@ -937,6 +855,8 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 									rm -f "$SENTINEL_FILE"
 									echo "Attempting to patch pod..."
 									kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"%s"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
+									echo "Giving 5 seconds to the Job Pod to exit gracefully..."
+									sleep 5
 									echo "Attempting reboot with nsenter..."
 									nsenter -i -m -t 1 -- reboot || echo "nsenter reboot failed"
 									break
@@ -1157,4 +1077,151 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 	}
 
 	return status, nil
+}
+
+// getTargetNodes returns the list of nodes that should run the operation
+func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) ([]corev1.Node, error) {
+	// Get all nodes in the cluster
+	allNodes, err := r.getClusterNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// If no target nodes specified, return all nodes
+	if len(nodeOp.Spec.TargetNodes) == 0 {
+		return allNodes, nil
+	}
+
+	// Filter nodes based on TargetNodes list
+	var targetNodes []corev1.Node
+	targetNodeMap := make(map[string]bool)
+	for _, nodeName := range nodeOp.Spec.TargetNodes {
+		targetNodeMap[nodeName] = true
+	}
+
+	for _, node := range allNodes {
+		if targetNodeMap[node.Name] {
+			targetNodes = append(targetNodes, node)
+		}
+	}
+
+	return targetNodes, nil
+}
+
+// manageJobCreation manages the creation of jobs based on concurrency and stop-on-failure settings
+func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	log := logf.FromContext(ctx)
+
+	// Get target nodes
+	targetNodes, err := r.getTargetNodes(ctx, nodeOp)
+	if err != nil {
+		return err
+	}
+
+	// Initialize status if needed
+	if nodeOp.Status.NodeStatuses == nil {
+		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
+	}
+
+	// Check if we should stop creating new jobs due to failures
+	if nodeOp.Spec.StopOnFailure && r.hasFailedJobs(nodeOp) {
+		log.Info("StopOnFailure is enabled and jobs have failed, not creating new jobs", "nodeOp", nodeOp.Name)
+		return nil
+	}
+
+	// Count currently running jobs
+	runningCount := r.countRunningJobs(nodeOp)
+
+	// Determine how many new jobs we can start
+	var maxConcurrency int32
+	if nodeOp.Spec.Concurrency == 0 {
+		// 0 means unlimited concurrency
+		maxConcurrency = int32(len(targetNodes))
+	} else {
+		maxConcurrency = nodeOp.Spec.Concurrency
+	}
+
+	availableSlots := maxConcurrency - runningCount
+	if availableSlots <= 0 {
+		log.V(1).Info("No available slots for new jobs",
+			"nodeOp", nodeOp.Name,
+			"running", runningCount,
+			"maxConcurrency", maxConcurrency)
+		return nil
+	}
+
+	// Find nodes that don't have jobs yet
+	var nodesNeedingJobs []corev1.Node
+	for _, node := range targetNodes {
+		if _, exists := nodeOp.Status.NodeStatuses[node.Name]; !exists {
+			nodesNeedingJobs = append(nodesNeedingJobs, node)
+		}
+	}
+
+	if len(nodesNeedingJobs) == 0 {
+		log.V(1).Info("All target nodes already have jobs", "nodeOp", nodeOp.Name)
+		return nil
+	}
+
+	// Create jobs up to the available slots
+	jobsToCreate := int(availableSlots)
+	if jobsToCreate > len(nodesNeedingJobs) {
+		jobsToCreate = len(nodesNeedingJobs)
+	}
+
+	log.Info("Creating jobs for nodes",
+		"nodeOp", nodeOp.Name,
+		"jobsToCreate", jobsToCreate,
+		"availableSlots", availableSlots,
+		"nodesNeedingJobs", len(nodesNeedingJobs))
+
+	// Create reboot pods first if needed
+	if nodeOp.Spec.RebootOnSuccess {
+		for i := 0; i < jobsToCreate; i++ {
+			node := nodesNeedingJobs[i]
+			fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
+			jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
+
+			if err := r.createRebootPod(ctx, nodeOp, node.Name, jobBaseName); err != nil {
+				log.Error(err, "Failed to create reboot pod for node", "node", node.Name)
+				// Continue with other nodes
+			}
+		}
+	}
+
+	// Create jobs for the selected nodes
+	for i := 0; i < jobsToCreate; i++ {
+		node := nodesNeedingJobs[i]
+		if err := r.createNodeJob(ctx, nodeOp, node); err != nil {
+			log.Error(err, "Failed to create Job for node, continuing with other nodes", "node", node.Name)
+			continue
+		}
+	}
+
+	return nil
+}
+
+// hasFailedJobs checks if any jobs have failed
+func (r *NodeOpReconciler) hasFailedJobs(nodeOp *kairosiov1alpha1.NodeOp) bool {
+	for _, status := range nodeOp.Status.NodeStatuses {
+		if status.Phase == phaseFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// countRunningJobs counts the number of currently running or pending jobs
+func (r *NodeOpReconciler) countRunningJobs(nodeOp *kairosiov1alpha1.NodeOp) int32 {
+	var count int32
+	for _, status := range nodeOp.Status.NodeStatuses {
+		// A job is considered "running" if:
+		// 1. It's in Pending or Running phase, OR
+		// 2. It's Completed but reboot is still pending (node is busy rebooting)
+		if status.Phase == "Pending" || status.Phase == "Running" ||
+			(status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending) {
+			count++
+		}
+	}
+	return count
 }

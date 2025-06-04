@@ -53,6 +53,16 @@ spec:
                 items:
                   type: string
                 type: array
+              concurrency:
+                default: 0
+                description: |-
+                  Concurrency specifies the maximum number of nodes that can run the operation simultaneously.
+                  When set to 0 (default), the operation will run on all target nodes at the same time.
+                  When set to a positive number, only that many jobs will run concurrently.
+                  As jobs complete, new jobs will be started on remaining nodes until all target nodes are processed.
+                format: int32
+                minimum: 0
+                type: integer
               cordon:
                 default: false
                 description: |-
@@ -120,6 +130,13 @@ spec:
                 description: |-
                   RebootOnSuccess specifies whether to reboot the node after the operation completes successfully.
                   When true, a privileged pod will be created to trigger a reboot using nsenter.
+                type: boolean
+              stopOnFailure:
+                default: false
+                description: |-
+                  StopOnFailure specifies whether to stop creating new jobs when a job fails.
+                  When true, if any job fails, no new jobs will be created for remaining nodes.
+                  This is useful for canary deployments where you want to stop on the first failure.
                 type: boolean
               targetNodes:
                 description: |-

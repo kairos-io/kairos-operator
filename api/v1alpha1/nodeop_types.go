@@ -70,6 +70,22 @@ type NodeOpSpec struct {
 	// If not specified, defaults to 6 (Kubernetes default).
 	// +optional
 	BackoffLimit *int32 `json:"backoffLimit,omitempty"`
+
+	// Concurrency specifies the maximum number of nodes that can run the operation simultaneously.
+	// When set to 0 (default), the operation will run on all target nodes at the same time.
+	// When set to a positive number, only that many jobs will run concurrently.
+	// As jobs complete, new jobs will be started on remaining nodes until all target nodes are processed.
+	// +optional
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	Concurrency int32 `json:"concurrency,omitempty"`
+
+	// StopOnFailure specifies whether to stop creating new jobs when a job fails.
+	// When true, if any job fails, no new jobs will be created for remaining nodes.
+	// This is useful for canary deployments where you want to stop on the first failure.
+	// +optional
+	// +kubebuilder:default=false
+	StopOnFailure bool `json:"stopOnFailure,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.
