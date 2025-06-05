@@ -122,16 +122,8 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 	// Generate the upgrade command based on the NodeOpUpgrade spec
 	upgradeCommand := r.generateUpgradeCommand(nodeOpUpgrade)
 
-	// Helper function to get bool value with default
-	getBoolValue := func(ptr *bool, defaultValue bool) *bool {
-		if ptr == nil {
-			return &defaultValue
-		}
-		return ptr
-	}
-
 	// Determine if we should reboot on success (true if UpgradeActive is true or nil)
-	shouldReboot := nodeOpUpgrade.Spec.UpgradeActive == nil || *nodeOpUpgrade.Spec.UpgradeActive
+	shouldReboot := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
 	nodeOp := &kairosiov1alpha1.NodeOp{
 		ObjectMeta: metav1.ObjectMeta{
@@ -149,10 +141,10 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 			StopOnFailure:   nodeOpUpgrade.Spec.StopOnFailure,
 			Command:         upgradeCommand,
 			HostMountPath:   hostMountPath,
-			Cordon:          getBoolValue(nil, true), // Always cordon for upgrades
+			Cordon:          asBool(true), // Always cordon for upgrades
 			RebootOnSuccess: &shouldReboot,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
-				Enabled: getBoolValue(nil, true), // Always drain for upgrades
+				Enabled: asBool(true), // Always drain for upgrades
 			},
 		},
 	}
@@ -173,7 +165,7 @@ set -x -e
 `
 
 	// Add version check logic unless force is enabled
-	forceUpgrade := nodeOpUpgrade.Spec.Force != nil && *nodeOpUpgrade.Spec.Force
+	forceUpgrade := getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault)
 	if !forceUpgrade {
 		script += `get_version() {
     local file_path="$1"
@@ -214,16 +206,8 @@ mount --rbind ` + hostMountPath + `/run /run
 
 `
 
-	// Helper function to get boolean value with default
-	getBool := func(ptr *bool, defaultValue bool) bool {
-		if ptr == nil {
-			return defaultValue
-		}
-		return *ptr
-	}
-
-	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, false)
-	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, true) // Default to true
+	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
+	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
 	// Add upgrade logic based on spec
 	if upgradeRecovery && upgradeActive {
