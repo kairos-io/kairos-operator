@@ -114,7 +114,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.Image).To(Equal(nodeOpUpgrade.Spec.Image))
 			Expect(nodeOp.Spec.Concurrency).To(Equal(nodeOpUpgrade.Spec.Concurrency))
 			Expect(nodeOp.Spec.StopOnFailure).To(Equal(nodeOpUpgrade.Spec.StopOnFailure))
-			Expect(nodeOp.Spec.TargetNodes).To(Equal(nodeOpUpgrade.Spec.TargetNodes))
+			Expect(nodeOp.Spec.NodeSelector).To(Equal(nodeOpUpgrade.Spec.NodeSelector))
 			Expect(nodeOp.Spec.HostMountPath).To(Equal("/host"))
 			Expect(*nodeOp.Spec.Cordon).To(BeTrue())
 			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())

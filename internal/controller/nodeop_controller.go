@@ -36,6 +36,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -1093,29 +1094,39 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 
 // getTargetNodes returns the list of nodes that should run the operation
 func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) ([]corev1.Node, error) {
+	log := logf.FromContext(ctx)
+
 	// Get all nodes in the cluster
 	allNodes, err := r.getClusterNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// If no target nodes specified, return all nodes
-	if len(nodeOp.Spec.TargetNodes) == 0 {
+	// If no node selector specified, return all nodes
+	if nodeOp.Spec.NodeSelector == nil {
+		log.V(1).Info("No node selector specified, targeting all nodes", "nodeCount", len(allNodes))
 		return allNodes, nil
 	}
 
-	// Filter nodes based on TargetNodes list
-	var targetNodes []corev1.Node
-	targetNodeMap := make(map[string]bool)
-	for _, nodeName := range nodeOp.Spec.TargetNodes {
-		targetNodeMap[nodeName] = true
+	// Convert label selector to a selector
+	selector, err := metav1.LabelSelectorAsSelector(nodeOp.Spec.NodeSelector)
+	if err != nil {
+		log.Error(err, "Failed to convert NodeSelector to selector")
+		return nil, err
 	}
 
+	// Filter nodes based on label selector
+	var targetNodes []corev1.Node
 	for _, node := range allNodes {
-		if targetNodeMap[node.Name] {
+		if selector.Matches(labels.Set(node.Labels)) {
 			targetNodes = append(targetNodes, node)
 		}
 	}
+
+	log.Info("Found target nodes using selector",
+		"selector", selector.String(),
+		"targetNodeCount", len(targetNodes),
+		"totalNodeCount", len(allNodes))
 
 	return targetNodes, nil
 }

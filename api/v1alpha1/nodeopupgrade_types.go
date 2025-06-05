@@ -22,10 +22,18 @@ import (
 
 // NodeOpUpgradeSpec defines the desired state of NodeOpUpgrade.
 type NodeOpUpgradeSpec struct {
-	// TargetNodes is a list of node names to run the upgrade operation on.
+	// NodeSelector specifies a label selector to target specific nodes for the upgrade operation.
 	// If empty, the operation will run on all nodes.
+	// Examples:
+	//   nodeSelector:
+	//     matchLabels:
+	//       disktype: ssd
+	//     matchExpressions:
+	//     - key: node.kubernetes.io/instance-type
+	//       operator: In
+	//       values: ["t3.large", "t3.xlarge"]
 	// +optional
-	TargetNodes []string `json:"targetNodes,omitempty"`
+	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
 
 	// Image is the container image to use for running the upgrade command.
 	// This should contain the Kairos version and dependencies needed for upgrade.

@@ -1728,6 +1728,16 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 	Context("When testing TargetNodes filtering", func() {
 		It("should only create jobs on specified target nodes", func() {
 			By("Creating a NodeOp targeting only first two nodes")
+			// Assign label 'test-group: A' to first two nodes, 'test-group: B' to the third
+			for i, node := range nodes {
+				if i < 2 {
+					node.Labels = map[string]string{"test-group": "A"}
+				} else {
+					node.Labels = map[string]string{"test-group": "B"}
+				}
+				Expect(k8sClient.Update(ctx, node)).To(Succeed())
+			}
+
 			nodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: "kairos.io/v1alpha1",
@@ -1738,9 +1748,11 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command:     []string{"echo", "test"},
-					TargetNodes: []string{nodeNames[0], nodeNames[1]}, // Only first two nodes
-					Concurrency: 0,                                    // unlimited
+					Command: []string{"echo", "test"},
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"test-group": "A"},
+					},
+					Concurrency: 0, // unlimited
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
@@ -1781,6 +1793,16 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 	Context("When testing combined features", func() {
 		It("should respect both concurrency and target nodes", func() {
 			By("Creating a NodeOp with concurrency=1 and targeting two nodes")
+			// Assign label 'test-group: A' to first two nodes, 'test-group: B' to the third
+			for i, node := range nodes {
+				if i < 2 {
+					node.Labels = map[string]string{"test-group": "A"}
+				} else {
+					node.Labels = map[string]string{"test-group": "B"}
+				}
+				Expect(k8sClient.Update(ctx, node)).To(Succeed())
+			}
+
 			nodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: "kairos.io/v1alpha1",
@@ -1791,8 +1813,10 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command:     []string{"echo", "test"},
-					TargetNodes: []string{nodeNames[0], nodeNames[1]},
+					Command: []string{"echo", "test"},
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"test-group": "A"},
+					},
 					Concurrency: 1,
 				},
 			}
