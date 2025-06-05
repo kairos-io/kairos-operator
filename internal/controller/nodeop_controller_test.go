@@ -855,6 +855,8 @@ var _ = Describe("NodeOp Controller", func() {
 			}, updatedNodeOp)).To(Succeed())
 
 			Expect(updatedNodeOp.Status.NodeStatuses).NotTo(BeEmpty())
+			// Check overall NodeOp status should be Running initially
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Running"), "Overall NodeOp status should be 'Running' initially")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("pending"), "RebootStatus should be 'pending' initially when RebootOnSuccess is true")
 				Expect(nodeStatus.Phase).To(Equal("Pending"))
@@ -890,6 +892,8 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: statusNodeOp.Namespace,
 			}, updatedNodeOp)).To(Succeed())
 
+			// Overall NodeOp should still be Running, not Completed, because reboot pod hasn't completed yet
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Running"), "Overall NodeOp status should remain 'Running' when job completes but reboot pod is still pending")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("pending"), "RebootStatus should remain 'pending' after job completion but before reboot completion")
 				Expect(nodeStatus.Phase).To(Equal("Completed"))
@@ -930,6 +934,8 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: statusNodeOp.Namespace,
 			}, updatedNodeOp)).To(Succeed())
 
+			// Now the overall NodeOp should be Completed since both job and reboot pod are done
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Completed"), "Overall NodeOp status should be 'Completed' only when both job and reboot pod are completed")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("completed"), "RebootStatus should be 'completed' after reboot pod finishes successfully")
 				Expect(nodeStatus.Phase).To(Equal("Completed"))

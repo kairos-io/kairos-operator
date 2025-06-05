@@ -565,8 +565,8 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	}
 
 	// Check all node statuses to determine overall phase
-	allCompleted := true
 	anyFailed := false
+	completedNodes := 0
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
 		// Get the Job status
 		job := &batchv1.Job{}
@@ -608,7 +608,6 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 					status.RebootStatus = rebootStatusNotRequested
 				}
 			}
-			allCompleted = false
 		} else if job.Status.Failed > 0 {
 			status.Phase = phaseFailed
 			status.Message = "Job failed"
@@ -637,16 +636,28 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 					status.RebootStatus = rebootStatusNotRequested
 				}
 			}
-			allCompleted = false
 		}
 		status.LastUpdated = metav1.Now()
 		nodeOp.Status.NodeStatuses[nodeName] = status
+
+		// If RebootOnSuccess is true, we need to check both job and reboot pod status
+		if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+			// Node is only completed when both job and reboot pod are completed
+			if status.Phase == "Completed" && status.RebootStatus == "completed" {
+				completedNodes++
+			}
+		} else {
+			// If RebootOnSuccess is false, we only check job status
+			if status.Phase == "Completed" {
+				completedNodes++
+			}
+		}
 	}
 
 	// Update overall phase
 	if anyFailed {
 		nodeOp.Status.Phase = phaseFailed
-	} else if allCompleted {
+	} else if len(nodeOp.Status.NodeStatuses) > 0 && completedNodes == len(nodeOp.Status.NodeStatuses) {
 		nodeOp.Status.Phase = phaseCompleted
 	} else {
 		nodeOp.Status.Phase = phaseRunning
