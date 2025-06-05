@@ -1260,6 +1260,9 @@ var _ = Describe("NodeOp Controller", func() {
 			testNode := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: testNodeName,
+					Labels: map[string]string{
+						"kubernetes.io/hostname": testNodeName,
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, testNode)).To(Succeed())
