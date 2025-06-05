@@ -1,0 +1,149 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: nodeopupgrades.operator.kairos.io
+spec:
+  group: operator.kairos.io
+  names:
+    kind: NodeOpUpgrade
+    listKind: NodeOpUpgradeList
+    plural: nodeopupgrades
+    singular: nodeopupgrade
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NodeOpUpgrade is the Schema for the nodeopupgrades API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NodeOpUpgradeSpec defines the desired state of NodeOpUpgrade.
+            properties:
+              concurrency:
+                default: 0
+                description: |-
+                  Concurrency specifies the maximum number of nodes that can run the upgrade operation simultaneously.
+                  When set to 0 (default), the operation will run on all target nodes at the same time.
+                  When set to a positive number, only that many jobs will run concurrently.
+                  As jobs complete, new jobs will be started on remaining nodes until all target nodes are processed.
+                format: int32
+                minimum: 0
+                type: integer
+              force:
+                description: |-
+                  Force specifies whether to perform the upgrade without checking if the current version
+                  matches the target version. When true, the upgrade will proceed regardless of version comparison.
+                type: boolean
+              image:
+                description: |-
+                  Image is the container image to use for running the upgrade command.
+                  This should contain the Kairos version and dependencies needed for upgrade.
+                type: string
+              stopOnFailure:
+                description: |-
+                  StopOnFailure specifies whether to stop creating new jobs when a job fails.
+                  When true, if any job fails, no new jobs will be created for remaining nodes.
+                  This is useful for canary deployments where you want to stop on the first failure.
+                type: boolean
+              targetNodes:
+                description: |-
+                  TargetNodes is a list of node names to run the upgrade operation on.
+                  If empty, the operation will run on all nodes.
+                items:
+                  type: string
+                type: array
+              upgradeActive:
+                description: |-
+                  UpgradeActive specifies whether to upgrade the active partition.
+                  When true, the active partition will be upgraded.
+                  This is the default behavior for most upgrade scenarios.
+                type: boolean
+              upgradeRecovery:
+                description: |-
+                  UpgradeRecovery specifies whether to upgrade the recovery partition.
+                  When true, the recovery partition will be upgraded.
+                type: boolean
+            required:
+            - image
+            type: object
+          status:
+            description: NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.
+            properties:
+              lastUpdated:
+                description: LastUpdated is the timestamp of the last status update.
+                format: date-time
+                type: string
+              message:
+                description: Message contains any additional information about the
+                  upgrade operation status.
+                type: string
+              nodeOpName:
+                description: NodeOpName is the name of the NodeOp resource created
+                  to execute this upgrade.
+                type: string
+              nodeStatuses:
+                additionalProperties:
+                  description: NodeStatus represents the status of the operation on
+                    a specific node.
+                  properties:
+                    jobName:
+                      description: JobName is the name of the Job created for this
+                        node.
+                      type: string
+                    lastUpdated:
+                      description: LastUpdated is the timestamp of the last status
+                        update for this node.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message contains any additional information about
+                        the operation status.
+                      type: string
+                    phase:
+                      description: |-
+                        Phase represents the current phase of the operation on this node.
+                        Can be "Pending", "Running", "Completed", or "Failed"
+                      type: string
+                    rebootStatus:
+                      description: |-
+                        RebootStatus represents the reboot state of this node.
+                        Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
+                      type: string
+                  required:
+                  - phase
+                  type: object
+                description: |-
+                  NodeStatuses contains the status of the upgrade operation for each target node.
+                  This is copied from the underlying NodeOp resource.
+                type: object
+              phase:
+                description: |-
+                  Phase represents the current phase of the upgrade operation.
+                  Can be "Pending", "Running", "Completed", or "Failed"
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

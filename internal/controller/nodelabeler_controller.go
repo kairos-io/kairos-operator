@@ -99,7 +99,7 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 							Image:           nodeLabelerImage,
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							SecurityContext: &corev1.SecurityContext{
-								RunAsNonRoot: &[]bool{true}[0],
+								RunAsNonRoot: asBool(true),
 								RunAsUser:    &[]int64{1000}[0],
 							},
 							Env: []corev1.EnvVar{
@@ -254,7 +254,6 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		log := logf.Log.WithName("setup")
 		log.Error(err, "Failed to ensure service account and RBAC")
 		os.Exit(1)
-
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

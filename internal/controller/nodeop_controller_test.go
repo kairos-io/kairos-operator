@@ -356,12 +356,13 @@ var _ = Describe("NodeOp Controller", func() {
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command: []string{"echo", "test"},
-					Cordon:  true,
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+					Cordon:          asBool(true),
 					DrainOptions: &kairosiov1alpha1.DrainOptions{
-						Enabled:          true,
-						Force:            false,
-						IgnoreDaemonSets: true,
+						Enabled:          asBool(true),
+						Force:            asBool(false),
+						IgnoreDaemonSets: asBool(true),
 					},
 				},
 			}
@@ -418,9 +419,38 @@ var _ = Describe("NodeOp Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying node is uncordoned after job completion")
+			By("Simulating reboot pod completion")
+			podList := &corev1.PodList{}
+			err = k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": cordonDrainNodeOp.Name,
+					"kairos.io/reboot": "true",
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podList.Items).To(HaveLen(1))
+
+			rebootPod := podList.Items[0]
+			rebootPod.Status.Phase = corev1.PodSucceeded
+			rebootPod.Annotations = map[string]string{
+				"kairos.io/reboot-state": "completed",
+			}
+			Expect(k8sClient.Status().Update(ctx, &rebootPod)).To(Succeed())
+			Expect(k8sClient.Update(ctx, &rebootPod)).To(Succeed())
+
+			By("Reconciling again to process reboot completion")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      cordonDrainNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying node is uncordoned after job and reboot completion")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
-			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after job completion")
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after job and reboot completion")
 		})
 
 		It("should create a reboot pod when RebootOnSuccess is true and job completes successfully", func() {
@@ -436,8 +466,8 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
-					RebootOnSuccess: true,
-					Cordon:          true,
+					RebootOnSuccess: asBool(true),
+					Cordon:          asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, rebootNodeOp)).To(Succeed())
@@ -598,7 +628,7 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
-					RebootOnSuccess: false,
+					RebootOnSuccess: asBool(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, noRebootNodeOp)).To(Succeed())
@@ -694,7 +724,7 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
-					RebootOnSuccess: true,
+					RebootOnSuccess: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, rebootFirstNodeOp)).To(Succeed())
@@ -791,7 +821,7 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
-					RebootOnSuccess: true,
+					RebootOnSuccess: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, statusNodeOp)).To(Succeed())
@@ -825,6 +855,8 @@ var _ = Describe("NodeOp Controller", func() {
 			}, updatedNodeOp)).To(Succeed())
 
 			Expect(updatedNodeOp.Status.NodeStatuses).NotTo(BeEmpty())
+			// Check overall NodeOp status should be Running initially
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Running"), "Overall NodeOp status should be 'Running' initially")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("pending"), "RebootStatus should be 'pending' initially when RebootOnSuccess is true")
 				Expect(nodeStatus.Phase).To(Equal("Pending"))
@@ -860,6 +892,8 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: statusNodeOp.Namespace,
 			}, updatedNodeOp)).To(Succeed())
 
+			// Overall NodeOp should still be Running, not Completed, because reboot pod hasn't completed yet
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Running"), "Overall NodeOp status should remain 'Running' when job completes but reboot pod is still pending")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("pending"), "RebootStatus should remain 'pending' after job completion but before reboot completion")
 				Expect(nodeStatus.Phase).To(Equal("Completed"))
@@ -900,6 +934,8 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: statusNodeOp.Namespace,
 			}, updatedNodeOp)).To(Succeed())
 
+			// Now the overall NodeOp should be Completed since both job and reboot pod are done
+			Expect(updatedNodeOp.Status.Phase).To(Equal("Completed"), "Overall NodeOp status should be 'Completed' only when both job and reboot pod are completed")
 			for _, nodeStatus := range updatedNodeOp.Status.NodeStatuses {
 				Expect(nodeStatus.RebootStatus).To(Equal("completed"), "RebootStatus should be 'completed' after reboot pod finishes successfully")
 				Expect(nodeStatus.Phase).To(Equal("Completed"))
@@ -919,7 +955,7 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
-					RebootOnSuccess: true,
+					RebootOnSuccess: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, failedJobNodeOp)).To(Succeed())
@@ -1022,7 +1058,7 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"exit", "1"}, // This will cause the job to fail
-					RebootOnSuccess: false,
+					RebootOnSuccess: asBool(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, noRebootFailedJobNodeOp)).To(Succeed())
@@ -1226,7 +1262,7 @@ var _ = Describe("NodeOp Controller", func() {
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
 					BackoffLimit:    &customBackoffLimit,
-					RebootOnSuccess: true,
+					RebootOnSuccess: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, rebootBackoffNodeOp)).To(Succeed())
@@ -1566,7 +1602,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:       []string{"echo", "test"},
 					Concurrency:   1,
-					StopOnFailure: true,
+					StopOnFailure: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
@@ -1638,7 +1674,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:       []string{"echo", "test"},
 					Concurrency:   1,
-					StopOnFailure: false,
+					StopOnFailure: asBool(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
@@ -1852,7 +1888,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
 					Concurrency:     1,
-					RebootOnSuccess: true,
+					RebootOnSuccess: asBool(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())

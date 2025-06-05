@@ -218,6 +218,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeLabeler")
 		os.Exit(1)
 	}
+
+	if err = (&controller.NodeOpUpgradeReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NodeOpUpgrade")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

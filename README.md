@@ -2,6 +2,15 @@
 
 > ⚠️ **WARNING: This operator is currently a work in progress and not ready for production use.** Until it's ready for consumption, this README won't always reflect the current state of things.
 
+
+# TODO:
+
+- When we have label filtering for NodeOpUpgrade, we should explain to the user that the Label should always include a master node (unless they are already upgraded). The reason is because the cluster could end up in a deadlock situation if the operator is running on a worker node, the user does a "canary upgrade" (e.g. one-by-one Node) and the new k3s version is not compatible with the master nodes. This will result in the operator never becoming ready after its Node's restart, thus not creating the rest of the upgrade Jobs. This cluster won't recover unless the operator is scheduled on one of the still running Nodes.
+  The solution to this is to always perform the upgrade on master nodes first. Optionally, we can refuse to upgrade is there is no master node in the target list or check that we have at least one master node already running the target k8s version, but this is harder to implement (we don't know what k8s version is in the upgrade image).
+  Let's just document the situation. Most people will allow the ugprade to run on all nodes. So, by simply performing the upgrade on the master nodes first, we should be good.
+  Even if the deadlock occurs, usually it's enough to kill the operator Pod and let it be restarted on a Node that is still usable.
+
+
 [![Tests](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml/badge.svg)](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml)
 
 ## Implementation Plan (TODO list)
