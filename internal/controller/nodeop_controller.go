@@ -295,7 +295,7 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		}
 
 		// Skip DaemonSet pods if IgnoreDaemonSets is true
-		if getBool(drainOptions.IgnoreDaemonSets, true) {
+		if getBool(drainOptions.IgnoreDaemonSets, DrainIgnoreDaemonSetsDefault) {
 			isDaemonSet := false
 			for _, ownerRef := range pod.OwnerReferences {
 				if ownerRef.Kind == "DaemonSet" {
@@ -309,7 +309,7 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		}
 
 		// Skip pods without a controller if Force is false
-		if !getBool(drainOptions.Force, false) {
+		if !getBool(drainOptions.Force, DrainForceDefault) {
 			hasController := false
 			for _, ownerRef := range pod.OwnerReferences {
 				if ownerRef.Controller != nil && *ownerRef.Controller {
@@ -460,13 +460,13 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	log := logf.FromContext(ctx)
 
 	// If cordoning is requested, cordon the node first
-	if getBool(nodeOp.Spec.Cordon, false) {
+	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
 		if err := r.cordonNode(ctx, &node); err != nil {
 			return err
 		}
 
 		// If draining is also requested, drain the node
-		if nodeOp.Spec.DrainOptions != nil && getBool(nodeOp.Spec.DrainOptions.Enabled, false) {
+		if nodeOp.Spec.DrainOptions != nil && getBool(nodeOp.Spec.DrainOptions.Enabled, DrainEnabledDefault) {
 			if err := r.drainNode(ctx, &node, nodeOp.Spec.DrainOptions); err != nil {
 				// If draining fails, uncordon the node
 				if uncordonErr := r.uncordonNode(ctx, &node); uncordonErr != nil {
@@ -489,7 +489,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	// Create the appropriate JobSpec based on whether reboot is required
 	var jobSpec batchv1.JobSpec
-	if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 		jobSpec = r.createRebootJobSpec(nodeOp, node, backoffLimit)
 	} else {
 		jobSpec = r.createStandardJobSpec(nodeOp, node, backoffLimit)
@@ -529,7 +529,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	// Determine initial reboot status
 	rebootStatus := rebootStatusNotRequested
-	if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 		rebootStatus = rebootStatusPending
 	}
 
@@ -602,7 +602,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Message = "Job is running"
 			// Keep existing reboot status during running phase
 			if status.RebootStatus == "" {
-				if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+				if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 					status.RebootStatus = rebootStatusPending
 				} else {
 					status.RebootStatus = rebootStatusNotRequested
@@ -614,7 +614,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			anyFailed = true
 
 			// Handle reboot-related cleanup and status based on whether reboot was originally requested
-			if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+			if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 				status.RebootStatus = rebootStatusCancelled // Reboot was requested but cancelled due to job failure
 
 				// Clean up reboot pod for failed job
@@ -630,7 +630,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			status.Message = "Job is pending"
 			// Keep existing reboot status during pending phase
 			if status.RebootStatus == "" {
-				if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+				if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 					status.RebootStatus = rebootStatusPending
 				} else {
 					status.RebootStatus = rebootStatusNotRequested
@@ -641,7 +641,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		nodeOp.Status.NodeStatuses[nodeName] = status
 
 		// If RebootOnSuccess is true, we need to check both job and reboot pod status
-		if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 			// Node is only completed when both job and reboot pod are completed
 			if status.Phase == "Completed" && status.RebootStatus == "completed" {
 				completedNodes++
@@ -1042,7 +1042,7 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 	status.Message = "Job completed successfully"
 
 	// Set reboot status based on whether reboot was requested
-	if !getBool(nodeOp.Spec.RebootOnSuccess, false) {
+	if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 		status.RebootStatus = rebootStatusNotRequested
 	} else {
 		// If reboot is requested, check if reboot pod is completed
@@ -1059,10 +1059,10 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 	}
 
 	// If the node was cordoned, check if we should uncordon it
-	if getBool(nodeOp.Spec.Cordon, false) {
+	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
 		shouldUncordon := false
 
-		if !getBool(nodeOp.Spec.RebootOnSuccess, false) {
+		if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 			// If reboot is not requested, uncordon immediately when job completes
 			shouldUncordon = true
 		} else {
@@ -1136,8 +1136,8 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 	}
 
 	// Check if we should stop creating new jobs due to failures
-	if getBool(nodeOp.Spec.StopOnFailure, false) && r.hasFailedJobs(nodeOp) {
-		log.Info("StopOnFailure is enabled and jobs have failed, not creating new jobs", "nodeOp", nodeOp.Name)
+	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
+		log.Info("Stopping job creation due to failure and StopOnFailure=true")
 		return nil
 	}
 
@@ -1188,7 +1188,7 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 		"nodesNeedingJobs", len(nodesNeedingJobs))
 
 	// Create reboot pods first if needed
-	if getBool(nodeOp.Spec.RebootOnSuccess, false) {
+	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 		for i := 0; i < jobsToCreate; i++ {
 			node := nodesNeedingJobs[i]
 			fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
