@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -85,6 +86,7 @@ type NodeOpReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	log.Info("Reconciling NodeOp", "request", req)
 
 	// Get the NodeOp resource
 	nodeOp, err := r.getNodeOp(ctx, req)
@@ -469,6 +471,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		// If draining is also requested, drain the node
 		if nodeOp.Spec.DrainOptions != nil && getBool(nodeOp.Spec.DrainOptions.Enabled, DrainEnabledDefault) {
 			if err := r.drainNode(ctx, &node, nodeOp.Spec.DrainOptions); err != nil {
+				log.Error(err, "Failed to drain node", "node", node.Name)
 				// If draining fails, uncordon the node
 				if uncordonErr := r.uncordonNode(ctx, &node); uncordonErr != nil {
 					log.Error(uncordonErr, "Failed to uncordon node after drain failure", "node", node.Name)
@@ -569,6 +572,14 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	anyFailed := false
 	completedNodes := 0
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
+		// Skip processing if the node status is already in a terminal state
+		if status.Phase == phaseCompleted || status.Phase == phaseFailed {
+			log.V(1).Info("Node status already in terminal state, skipping processing",
+				"node", nodeName,
+				"currentPhase", status.Phase)
+			continue
+		}
+
 		// Get the Job status
 		job := &batchv1.Job{}
 		err := r.Get(ctx, types.NamespacedName{
@@ -594,6 +605,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Update node status based on Job status
 		if job.Status.Succeeded > 0 {
 			var err error
+			log.Info("Job succeeded", "node", nodeName, "job", job.Name)
 			status, err = r.handleJobSuccess(ctx, nodeOp, nodeName, status)
 			if err != nil {
 				return err
@@ -1092,6 +1104,13 @@ func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosi
 	return status, nil
 }
 
+// isMasterNode returns true if the node has a master or control-plane label
+func isMasterNode(n corev1.Node) bool {
+	_, master := n.Labels["node-role.kubernetes.io/master"]
+	_, controlPlane := n.Labels["node-role.kubernetes.io/control-plane"]
+	return master || controlPlane
+}
+
 // getTargetNodes returns the list of nodes that should run the operation
 func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) ([]corev1.Node, error) {
 	log := logf.FromContext(ctx)
@@ -1123,12 +1142,19 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 		}
 	}
 
+	// Sort nodes: masters first (by label 'node-role.kubernetes.io/master' or 'node-role.kubernetes.io/control-plane')
+	sortedNodes := make([]corev1.Node, len(targetNodes))
+	copy(sortedNodes, targetNodes)
+	sort.SliceStable(sortedNodes, func(i, j int) bool {
+		return isMasterNode(sortedNodes[i]) && !isMasterNode(sortedNodes[j])
+	})
+
 	log.Info("Found target nodes using selector",
 		"selector", selector.String(),
-		"targetNodeCount", len(targetNodes),
+		"targetNodeCount", len(sortedNodes),
 		"totalNodeCount", len(allNodes))
 
-	return targetNodes, nil
+	return sortedNodes, nil
 }
 
 // manageJobCreation manages the creation of jobs based on concurrency and stop-on-failure settings
