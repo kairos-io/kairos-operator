@@ -25,6 +25,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -113,4 +116,68 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// Helper function to mark a job as successfully completed with proper conditions
+func markJobAsCompleted(ctx context.Context, k8sClient client.Client, job *batchv1.Job) error {
+	now := metav1.Now()
+
+	// Set the job status fields
+	job.Status.Succeeded = 1
+	job.Status.Active = 0
+	job.Status.Failed = 0
+	job.Status.StartTime = &now
+	job.Status.CompletionTime = &now
+
+	// Add both SuccessCriteriaMet and JobComplete conditions (Kubernetes requires both)
+	job.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:               batchv1.JobSuccessCriteriaMet,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "SuccessCriteriaMet",
+			Message:            "Job success criteria met",
+		},
+		{
+			Type:               batchv1.JobComplete,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "JobCompleted",
+			Message:            "Job completed successfully",
+		},
+	}
+
+	return k8sClient.Status().Update(ctx, job)
+}
+
+// Helper function to mark a job as failed with proper conditions
+func markJobAsFailed(ctx context.Context, k8sClient client.Client, job *batchv1.Job) error {
+	now := metav1.Now()
+
+	// Set the job status fields
+	job.Status.Succeeded = 0
+	job.Status.Active = 0
+	job.Status.Failed = 1
+	job.Status.StartTime = &now
+	// CompletionTime is not set for failed jobs typically
+
+	// Add both FailureTarget and JobFailed conditions (Kubernetes requires both)
+	job.Status.Conditions = []batchv1.JobCondition{
+		{
+			Type:               batchv1.JobFailureTarget,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "FailureTarget",
+			Message:            "Job failure target reached",
+		},
+		{
+			Type:               batchv1.JobFailed,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "JobFailed",
+			Message:            "Job failed",
+		},
+	}
+
+	return k8sClient.Status().Update(ctx, job)
 }
