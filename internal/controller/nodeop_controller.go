@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -36,6 +37,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -84,6 +86,7 @@ type NodeOpReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	log.Info("Reconciling NodeOp", "request", req)
 
 	// Get the NodeOp resource
 	nodeOp, err := r.getNodeOp(ctx, req)
@@ -468,6 +471,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		// If draining is also requested, drain the node
 		if nodeOp.Spec.DrainOptions != nil && getBool(nodeOp.Spec.DrainOptions.Enabled, DrainEnabledDefault) {
 			if err := r.drainNode(ctx, &node, nodeOp.Spec.DrainOptions); err != nil {
+				log.Error(err, "Failed to drain node", "node", node.Name)
 				// If draining fails, uncordon the node
 				if uncordonErr := r.uncordonNode(ctx, &node); uncordonErr != nil {
 					log.Error(uncordonErr, "Failed to uncordon node after drain failure", "node", node.Name)
@@ -568,87 +572,60 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	anyFailed := false
 	completedNodes := 0
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
-		// Get the Job status
-		job := &batchv1.Job{}
-		err := r.Get(ctx, types.NamespacedName{
-			Namespace: nodeOp.Namespace,
-			Name:      status.JobName,
-		}, job)
-		if err != nil {
-			if client.IgnoreNotFound(err) != nil {
-				log.Error(err, "Failed to get Job status",
-					"node", nodeName,
-					"job", status.JobName)
-				return err
-			}
-			// Job not found, mark as failed
-			status.Phase = phaseFailed
-			status.Message = "Job not found"
-			status.LastUpdated = metav1.Now()
-			nodeOp.Status.NodeStatuses[nodeName] = status
-			anyFailed = true
-			continue
-		}
-
-		// Update node status based on Job status
-		if job.Status.Succeeded > 0 {
-			var err error
-			status, err = r.handleJobSuccess(ctx, nodeOp, nodeName, status)
+		// Process job status if not already in terminal state
+		if status.Phase != phaseCompleted && status.Phase != phaseFailed {
+			updatedStatus, err := r.processJobStatus(ctx, nodeOp, nodeName, status)
 			if err != nil {
 				return err
 			}
-		} else if job.Status.Active > 0 {
-			status.Phase = "Running"
-			status.Message = "Job is running"
-			// Keep existing reboot status during running phase
-			if status.RebootStatus == "" {
-				if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-					status.RebootStatus = rebootStatusPending
-				} else {
-					status.RebootStatus = rebootStatusNotRequested
-				}
-			}
-		} else if job.Status.Failed > 0 {
-			status.Phase = phaseFailed
-			status.Message = "Job failed"
-			anyFailed = true
-
-			// Handle reboot-related cleanup and status based on whether reboot was originally requested
-			if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-				status.RebootStatus = rebootStatusCancelled // Reboot was requested but cancelled due to job failure
-
-				// Clean up reboot pod for failed job
-				if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
-					log.Error(err, "Failed to cleanup reboot pod for failed job", "node", nodeName)
-					// Don't return error, just log it and continue
-				}
-			} else {
-				status.RebootStatus = rebootStatusNotRequested // Reboot was never requested
-			}
+			status = updatedStatus
 		} else {
-			status.Phase = phasePending
-			status.Message = "Job is pending"
-			// Keep existing reboot status during pending phase
-			if status.RebootStatus == "" {
-				if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-					status.RebootStatus = rebootStatusPending
-				} else {
-					status.RebootStatus = rebootStatusNotRequested
+			log.V(1).Info("Job status already in terminal state, skipping job processing",
+				"node", nodeName,
+				"currentPhase", status.Phase)
+		}
+
+		// Process reboot status
+		updatedStatus, err := r.processRebootStatus(ctx, nodeOp, nodeName, status)
+		if err != nil {
+			return err
+		}
+		status = updatedStatus
+
+		// Update the status map with any changes
+		nodeOp.Status.NodeStatuses[nodeName] = status
+
+		// Handle uncordoning for completed nodes
+		if status.Phase == phaseCompleted && getBool(nodeOp.Spec.Cordon, CordonDefault) {
+			rebootOnSuccess := getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault)
+
+			if (rebootOnSuccess && status.RebootStatus == rebootStatusCompleted) || !rebootOnSuccess {
+				node := &corev1.Node{}
+				if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+					log.Error(err, "Failed to get node for uncordoning after reboot completion", "node", nodeName)
+					return err
+				}
+				if err := r.uncordonNode(ctx, node); err != nil {
+					log.Error(err, "Failed to uncordon node after reboot completion", "node", nodeName)
+					return err
 				}
 			}
 		}
-		status.LastUpdated = metav1.Now()
-		nodeOp.Status.NodeStatuses[nodeName] = status
 
-		// If RebootOnSuccess is true, we need to check both job and reboot pod status
+		// Count failed jobs
+		if status.Phase == phaseFailed {
+			anyFailed = true
+		}
+
+		// Count completed nodes based on whether reboot is required
 		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 			// Node is only completed when both job and reboot pod are completed
-			if status.Phase == "Completed" && status.RebootStatus == "completed" {
+			if status.Phase == phaseCompleted && status.RebootStatus == rebootStatusCompleted {
 				completedNodes++
 			}
 		} else {
 			// If RebootOnSuccess is false, we only check job status
-			if status.Phase == "Completed" {
+			if status.Phase == phaseCompleted {
 				completedNodes++
 			}
 		}
@@ -671,6 +648,99 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	}
 
 	return nil
+}
+
+// processJobStatus processes the job status for a specific node
+func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, status kairosiov1alpha1.NodeStatus) (kairosiov1alpha1.NodeStatus, error) {
+	log := logf.FromContext(ctx)
+
+	// Get the Job status
+	job := &batchv1.Job{}
+	err := r.Get(ctx, types.NamespacedName{
+		Namespace: nodeOp.Namespace,
+		Name:      status.JobName,
+	}, job)
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			log.Error(err, "Failed to get Job status",
+				"node", nodeName,
+				"job", status.JobName)
+			return status, err
+		}
+		// Job not found, mark as failed
+		status.Phase = phaseFailed
+		status.Message = "Job not found"
+		status.LastUpdated = metav1.Now()
+		return status, nil
+	}
+
+	// Update node status based on Job status
+	if job.Status.Succeeded > 0 {
+		log.Info("Job succeeded", "node", nodeName, "job", job.Name)
+		status.Phase = phaseCompleted
+		status.Message = "Job completed successfully"
+	} else if job.Status.Active > 0 {
+		status.Phase = phaseRunning
+		status.Message = "Job is running"
+	} else if job.Status.Failed > 0 {
+		status.Phase = phaseFailed
+		status.Message = "Job failed"
+	} else {
+		status.Phase = phasePending
+		status.Message = "Job is pending"
+	}
+	status.LastUpdated = metav1.Now()
+
+	return status, nil
+}
+
+// processRebootStatus processes the reboot status for a specific node
+func (r *NodeOpReconciler) processRebootStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, status kairosiov1alpha1.NodeStatus) (kairosiov1alpha1.NodeStatus, error) {
+	log := logf.FromContext(ctx)
+
+	// Initialize reboot status if empty based on NodeOp configuration
+	if status.RebootStatus == "" {
+		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
+			status.RebootStatus = rebootStatusPending
+		} else {
+			status.RebootStatus = rebootStatusNotRequested
+		}
+		status.LastUpdated = metav1.Now()
+		return status, nil
+	}
+
+	// Handle reboot cleanup for failed or missing jobs
+	if status.Phase == phaseFailed && getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
+		if status.RebootStatus != rebootStatusCancelled {
+			status.RebootStatus = rebootStatusCancelled
+			status.LastUpdated = metav1.Now()
+
+			// Clean up reboot pod for failed job
+			if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
+				log.Error(err, "Failed to cleanup reboot pod for failed job", "node", nodeName)
+				// Don't return error, just log it and continue
+			}
+		}
+		return status, nil
+	}
+
+	// Process reboot completion for successfully completed jobs
+	if status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending {
+		// Check if reboot pod is completed
+		rebootCompleted, err := r.isRebootPodCompleted(ctx, nodeOp, nodeName)
+		if err != nil {
+			log.Error(err, "Failed to check reboot pod status", "node", nodeName)
+			return status, err
+		}
+
+		if rebootCompleted {
+			status.RebootStatus = rebootStatusCompleted
+			status.Message = "Job and reboot completed successfully"
+			status.LastUpdated = metav1.Now()
+		}
+	}
+
+	return status, nil
 }
 
 // findNodeOpsForJob finds NodeOps that own the given Job
@@ -1034,90 +1104,57 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 	return true, nil
 }
 
-// handleJobSuccess handles the logic when a job completes successfully
-func (r *NodeOpReconciler) handleJobSuccess(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, status kairosiov1alpha1.NodeStatus) (kairosiov1alpha1.NodeStatus, error) {
-	log := logf.FromContext(ctx)
-
-	status.Phase = phaseCompleted
-	status.Message = "Job completed successfully"
-
-	// Set reboot status based on whether reboot was requested
-	if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		status.RebootStatus = rebootStatusNotRequested
-	} else {
-		// If reboot is requested, check if reboot pod is completed
-		rebootCompleted, err := r.isRebootPodCompleted(ctx, nodeOp, nodeName)
-		if err != nil {
-			log.Error(err, "Failed to check reboot pod status", "node", nodeName)
-			return status, err
-		}
-		if rebootCompleted {
-			status.RebootStatus = rebootStatusCompleted
-		} else {
-			status.RebootStatus = rebootStatusPending
-		}
-	}
-
-	// If the node was cordoned, check if we should uncordon it
-	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
-		shouldUncordon := false
-
-		if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-			// If reboot is not requested, uncordon immediately when job completes
-			shouldUncordon = true
-		} else {
-			// If reboot is requested, only uncordon when both job and reboot pod are completed
-			if status.RebootStatus == rebootStatusCompleted {
-				shouldUncordon = true
-				status.Message = "Job and reboot completed successfully"
-			} else {
-				status.Message = "Job completed successfully, waiting for reboot"
-			}
-		}
-
-		if shouldUncordon {
-			node := &corev1.Node{}
-			if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
-				log.Error(err, "Failed to get node for uncordoning", "node", nodeName)
-				return status, err
-			}
-			if err := r.uncordonNode(ctx, node); err != nil {
-				log.Error(err, "Failed to uncordon node after completion", "node", nodeName)
-				return status, err
-			}
-		}
-	}
-
-	return status, nil
+// isMasterNode returns true if the node has a master or control-plane label
+func isMasterNode(n corev1.Node) bool {
+	_, master := n.Labels["node-role.kubernetes.io/master"]
+	_, controlPlane := n.Labels["node-role.kubernetes.io/control-plane"]
+	return master || controlPlane
 }
 
 // getTargetNodes returns the list of nodes that should run the operation
 func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) ([]corev1.Node, error) {
+	log := logf.FromContext(ctx)
+
 	// Get all nodes in the cluster
 	allNodes, err := r.getClusterNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// If no target nodes specified, return all nodes
-	if len(nodeOp.Spec.TargetNodes) == 0 {
+	// If no node selector specified, return all nodes
+	if nodeOp.Spec.NodeSelector == nil {
+		log.V(1).Info("No node selector specified, targeting all nodes", "nodeCount", len(allNodes))
 		return allNodes, nil
 	}
 
-	// Filter nodes based on TargetNodes list
-	var targetNodes []corev1.Node
-	targetNodeMap := make(map[string]bool)
-	for _, nodeName := range nodeOp.Spec.TargetNodes {
-		targetNodeMap[nodeName] = true
+	// Convert label selector to a selector
+	selector, err := metav1.LabelSelectorAsSelector(nodeOp.Spec.NodeSelector)
+	if err != nil {
+		log.Error(err, "Failed to convert NodeSelector to selector")
+		return nil, err
 	}
 
+	// Filter nodes based on label selector
+	var targetNodes []corev1.Node
 	for _, node := range allNodes {
-		if targetNodeMap[node.Name] {
+		if selector.Matches(labels.Set(node.Labels)) {
 			targetNodes = append(targetNodes, node)
 		}
 	}
 
-	return targetNodes, nil
+	// Sort nodes: masters first (by label 'node-role.kubernetes.io/master' or 'node-role.kubernetes.io/control-plane')
+	sortedNodes := make([]corev1.Node, len(targetNodes))
+	copy(sortedNodes, targetNodes)
+	sort.SliceStable(sortedNodes, func(i, j int) bool {
+		return isMasterNode(sortedNodes[i]) && !isMasterNode(sortedNodes[j])
+	})
+
+	log.Info("Found target nodes using selector",
+		"selector", selector.String(),
+		"targetNodeCount", len(sortedNodes),
+		"totalNodeCount", len(allNodes))
+
+	return sortedNodes, nil
 }
 
 // manageJobCreation manages the creation of jobs based on concurrency and stop-on-failure settings

@@ -25,10 +25,18 @@ import (
 
 // NodeOpSpec defines the desired state of NodeOp.
 type NodeOpSpec struct {
-	// TargetNodes is a list of node names to run the operation on.
+	// NodeSelector specifies a label selector to target specific nodes for the operation.
 	// If empty, the operation will run on all nodes.
+	// Examples:
+	//   nodeSelector:
+	//     matchLabels:
+	//       disktype: ssd
+	//     matchExpressions:
+	//     - key: node.kubernetes.io/instance-type
+	//       operator: In
+	//       values: ["t3.large", "t3.xlarge"]
 	// +optional
-	TargetNodes []string `json:"targetNodes,omitempty"`
+	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
 
 	// Command is the command to run on the target nodes.
 	// This will be executed in a container with the node's root filesystem mounted.

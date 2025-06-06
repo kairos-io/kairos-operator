@@ -135,7 +135,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 			},
 		},
 		Spec: kairosiov1alpha1.NodeOpSpec{
-			TargetNodes:     nodeOpUpgrade.Spec.TargetNodes,
+			NodeSelector:    nodeOpUpgrade.Spec.NodeSelector,
 			Image:           nodeOpUpgrade.Spec.Image,
 			Concurrency:     nodeOpUpgrade.Spec.Concurrency,
 			StopOnFailure:   nodeOpUpgrade.Spec.StopOnFailure,

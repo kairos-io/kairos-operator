@@ -39,14 +39,19 @@ import (
 
 var _ = Describe("NodeOp Controller", func() {
 	const (
-		NodeOpName      = "test-nodeop"
 		NodeOpNamespace = "default"
 		timeout         = time.Second * 10
 		interval        = time.Millisecond * 250
 		kindNodeOp      = "NodeOp"
 	)
+	var (
+		NodeOpName string
+	)
 
 	Context("When creating a NodeOp", func() {
+		BeforeEach(func() {
+			NodeOpName = fmt.Sprintf("test-nodeop-%d", time.Now().UnixNano())
+		})
 		It("Should create successfully", func() {
 			By("Creating a new NodeOp")
 			ctx := context.Background()
@@ -461,7 +466,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-reboot",
+					Name:      fmt.Sprintf("%s-reboot", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -623,7 +628,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-no-reboot",
+					Name:      fmt.Sprintf("%s-no-reboot", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -719,7 +724,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-reboot-first",
+					Name:      fmt.Sprintf("%s-reboot-first", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -816,7 +821,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-status",
+					Name:      fmt.Sprintf("%s-status", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -950,7 +955,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-failed",
+					Name:      fmt.Sprintf("%s-failed", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -1053,7 +1058,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-no-reboot-failed",
+					Name:      fmt.Sprintf("%s-no-reboot-failed", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -1145,7 +1150,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-backoff",
+					Name:      fmt.Sprintf("%s-backoff", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -1200,7 +1205,7 @@ var _ = Describe("NodeOp Controller", func() {
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-default-backoff",
+					Name:      fmt.Sprintf("%s-default-backoff", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -1250,27 +1255,45 @@ var _ = Describe("NodeOp Controller", func() {
 		It("should apply custom BackoffLimit to Jobs even when RebootOnSuccess is true", func() {
 			By("Creating a NodeOp with custom BackoffLimit and RebootOnSuccess=true")
 			customBackoffLimit := int32(15)
+			// Create a unique node for this test
+			testNodeName := fmt.Sprintf("%s-reboot-backoff-node", resourceName)
+			testNode := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testNodeName,
+					Labels: map[string]string{
+						"kubernetes.io/hostname": testNodeName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, testNode)).To(Succeed())
+
 			rebootBackoffNodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: "kairos.io/v1alpha1",
 					Kind:       "NodeOp",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-reboot-backoff",
+					Name:      fmt.Sprintf("%s-reboot-backoff", resourceName),
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command:         []string{"echo", "test"},
 					BackoffLimit:    &customBackoffLimit,
 					RebootOnSuccess: asBool(true),
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/hostname": testNodeName},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, rebootBackoffNodeOp)).To(Succeed())
 
-			// Cleanup this test's NodeOp
+			// Cleanup this test's NodeOp and Node
 			DeferCleanup(func() {
 				Eventually(func() error {
 					return k8sClient.Delete(ctx, rebootBackoffNodeOp)
+				}, timeout, interval).Should(Succeed())
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, testNode)
 				}, timeout, interval).Should(Succeed())
 			})
 
@@ -1728,6 +1751,18 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 	Context("When testing TargetNodes filtering", func() {
 		It("should only create jobs on specified target nodes", func() {
 			By("Creating a NodeOp targeting only first two nodes")
+			// Assign label 'test-group: A' to first two nodes, 'test-group: B' to the third
+			labelA := fmt.Sprintf("A-%s", resourceName)
+			labelB := fmt.Sprintf("B-%s", resourceName)
+			for i, node := range nodes {
+				if i < 2 {
+					node.Labels = map[string]string{"test-group": labelA}
+				} else {
+					node.Labels = map[string]string{"test-group": labelB}
+				}
+				Expect(k8sClient.Update(ctx, node)).To(Succeed())
+			}
+
 			nodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: "kairos.io/v1alpha1",
@@ -1738,9 +1773,11 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command:     []string{"echo", "test"},
-					TargetNodes: []string{nodeNames[0], nodeNames[1]}, // Only first two nodes
-					Concurrency: 0,                                    // unlimited
+					Command: []string{"echo", "test"},
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"test-group": labelA},
+					},
+					Concurrency: 0, // unlimited
 				},
 			}
 			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
@@ -1781,6 +1818,18 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 	Context("When testing combined features", func() {
 		It("should respect both concurrency and target nodes", func() {
 			By("Creating a NodeOp with concurrency=1 and targeting two nodes")
+			// Assign label 'test-group: A' to first two nodes, 'test-group: B' to the third
+			labelA := fmt.Sprintf("A-%s", resourceName)
+			labelB := fmt.Sprintf("B-%s", resourceName)
+			for i, node := range nodes {
+				if i < 2 {
+					node.Labels = map[string]string{"test-group": labelA}
+				} else {
+					node.Labels = map[string]string{"test-group": labelB}
+				}
+				Expect(k8sClient.Update(ctx, node)).To(Succeed())
+			}
+
 			nodeOp := &kairosiov1alpha1.NodeOp{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: "kairos.io/v1alpha1",
@@ -1791,8 +1840,10 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 					Namespace: "default",
 				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command:     []string{"echo", "test"},
-					TargetNodes: []string{nodeNames[0], nodeNames[1]},
+					Command: []string{"echo", "test"},
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"test-group": labelA},
+					},
 					Concurrency: 1,
 				},
 			}

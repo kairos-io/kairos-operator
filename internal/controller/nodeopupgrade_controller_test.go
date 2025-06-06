@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var _ = Describe("NodeOpUpgrade Controller", func() {
@@ -38,12 +40,14 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			nodeOpUpgradeName string
 			nodeOpUpgrade     *kairosiov1alpha1.NodeOpUpgrade
 			ctx               context.Context
+			createdNodeNames  []string
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
 			// Generate a unique name for this test
 			nodeOpUpgradeName = fmt.Sprintf("test-nodeopupgrade-%d", time.Now().UnixNano())
+			createdNodeNames = []string{}
 
 			// Create a basic NodeOpUpgrade resource
 			nodeOpUpgrade = &kairosiov1alpha1.NodeOpUpgrade{
@@ -83,6 +87,15 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 					Expect(k8sClient.Delete(ctx, &nodeOp, deleteOpts)).To(Succeed())
 				}
 			}
+
+			// Clean up any created corev1.Node resources
+			for _, nodeName := range createdNodeNames {
+				node := &corev1.Node{}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
+				if err == nil {
+					_ = k8sClient.Delete(ctx, node)
+				}
+			}
 		})
 
 		It("should create a NodeOp resource when NodeOpUpgrade is created", func() {
@@ -114,7 +127,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.Image).To(Equal(nodeOpUpgrade.Spec.Image))
 			Expect(nodeOp.Spec.Concurrency).To(Equal(nodeOpUpgrade.Spec.Concurrency))
 			Expect(nodeOp.Spec.StopOnFailure).To(Equal(nodeOpUpgrade.Spec.StopOnFailure))
-			Expect(nodeOp.Spec.TargetNodes).To(Equal(nodeOpUpgrade.Spec.TargetNodes))
+			Expect(nodeOp.Spec.NodeSelector).To(Equal(nodeOpUpgrade.Spec.NodeSelector))
 			Expect(nodeOp.Spec.HostMountPath).To(Equal("/host"))
 			Expect(*nodeOp.Spec.Cordon).To(BeTrue())
 			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
@@ -536,5 +549,184 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			}, nodeOp)).To(Succeed())
 			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeTrue())
 		})
+
+		It("should upgrade master nodes before worker nodes in canary upgrade", func() {
+			By("Creating 3 master and 3 worker nodes in random order")
+			uniqueSuffix := fmt.Sprintf("-%d", time.Now().UnixNano())
+			nodeNames := []string{"master-1", "worker-1", "master-2", "worker-2", "worker-3", "master-3"}
+			nodes := make([]*corev1.Node, len(nodeNames))
+			for i, name := range nodeNames {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   name + uniqueSuffix,
+						Labels: map[string]string{},
+					},
+				}
+				if strings.HasPrefix(name, "master") {
+					node.Labels["node-role.kubernetes.io/master"] = "true"
+				}
+				nodes[i] = node
+				Expect(k8sClient.Create(ctx, node)).To(Succeed())
+				createdNodeNames = append(createdNodeNames, name+uniqueSuffix)
+			}
+
+			By("Targeting 2 masters and 2 workers for upgrade")
+			targetNodeNames := []string{"master-1", "master-2", "worker-1", "worker-2"}
+			targetLabel := "upgrade-test-" + uniqueSuffix
+			for _, n := range nodes {
+				for _, t := range targetNodeNames {
+					if n.Name == t+uniqueSuffix {
+						if n.Labels == nil {
+							n.Labels = map[string]string{}
+						}
+						n.Labels[targetLabel] = "true"
+						Expect(k8sClient.Update(ctx, n)).To(Succeed())
+						break // Exit inner loop once we find a match
+					}
+				}
+			}
+
+			for _, targetNodeName := range targetNodeNames {
+				node := &corev1.Node{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetNodeName + uniqueSuffix}, node)).To(Succeed())
+				Expect(node.Labels[targetLabel]).To(Equal("true"))
+				// Verify master nodes still have master label
+				if strings.HasPrefix(targetNodeName, "master") {
+					Expect(node.Labels["node-role.kubernetes.io/master"]).To(Equal("true"))
+				}
+			}
+
+			nodeOpUpgradeName := fmt.Sprintf("test-master-first-upgrade-%d", time.Now().UnixNano())
+			nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+					Image:           "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+					UpgradeActive:   asBool(false), // Avoid having to complete reboot pods
+					UpgradeRecovery: asBool(true),
+					Concurrency:     1,
+					NodeSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{targetLabel: "true"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			controllerReconciler := &NodeOpUpgradeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling to create the NodeOp")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying NodeOp was created and has correct configuration")
+			nodeOp := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
+
+			// Verify NodeOp has the correct node selector
+			Expect(nodeOp.Spec.NodeSelector).NotTo(BeNil())
+			Expect(nodeOp.Spec.NodeSelector.MatchLabels).To(HaveKeyWithValue(targetLabel, "true"))
+			Expect(nodeOp.Spec.Concurrency).To(Equal(int32(1)))
+
+			By("Reconciling NodeOp to start jobs one-by-one and simulating completions")
+			nodeOpReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			// Track the order of job creation/completion
+			var jobOrder []string
+			var completedJobs []string
+
+			for i := range len(targetNodeNames) {
+				By(fmt.Sprintf("Iteration %d: Reconciling NodeOp to create next job", i+1))
+
+				// Reconcile NodeOp to create the next job
+				_, err := nodeOpReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      nodeOpUpgradeName,
+						Namespace: "default",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				jobList := &batchv1.JobList{}
+				err = k8sClient.List(ctx, jobList, client.InNamespace("default"), client.MatchingLabels{
+					"kairos.io/nodeop": nodeOpUpgradeName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Find a job that hasn't been completed yet
+				var activeJob *batchv1.Job
+				for _, job := range jobList.Items {
+					jobName := job.Name
+					if !contains(completedJobs, jobName) {
+						jobCopy := job
+						activeJob = &jobCopy
+						break
+					}
+				}
+
+				Expect(activeJob).NotTo(BeNil(), "Should find an active job to complete")
+
+				// Get the node name from the job label and track the order
+				if nodeName, exists := activeJob.Labels["kairos.io/node"]; exists {
+					jobOrder = append(jobOrder, nodeName)
+				}
+
+				// Complete the active job
+				activeJob.Status.Succeeded = 1
+				activeJob.Status.Active = 0
+				activeJob.Status.Failed = 0
+				Expect(k8sClient.Status().Update(ctx, activeJob)).To(Succeed())
+
+				// Track this job as completed
+				completedJobs = append(completedJobs, activeJob.Name)
+				By(fmt.Sprintf("Completed job %s", activeJob.Name))
+			}
+
+			// Ensure we processed exactly 4 nodes
+			Expect(jobOrder).To(HaveLen(4), "Expected to process exactly 4 nodes")
+
+			By("Verifying that master nodes were upgraded before worker nodes")
+			// Fetch fresh node objects from API server to verify labels
+			// The first two in jobOrder should be master nodes
+			for i := 0; i < 2; i++ {
+				name := jobOrder[i]
+				node := &corev1.Node{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)).To(Succeed())
+				_, isMaster := node.Labels["node-role.kubernetes.io/master"]
+				Expect(isMaster).To(BeTrue(), fmt.Sprintf("Node %s should be a master", name))
+			}
+			// The last two should be workers
+			for i := 2; i < 4; i++ {
+				name := jobOrder[i]
+				node := &corev1.Node{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)).To(Succeed())
+				_, isMaster := node.Labels["node-role.kubernetes.io/master"]
+				Expect(isMaster).To(BeFalse(), fmt.Sprintf("Node %s should be a worker", name))
+			}
+		})
 	})
 })
+
+// Helper for string slice contains
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
