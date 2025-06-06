@@ -261,8 +261,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(nodeop.Status.NodeStatuses).ToNot(BeEmpty())
 
 			// Update Job status to simulate completion
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			// Reconcile again to update NodeOp status
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -317,10 +316,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Update Job status to simulate failure
 			job := ownedJobs[0]
-			job.Status.Succeeded = 0
-			job.Status.Active = 0
-			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+			Expect(markJobAsFailed(ctx, k8sClient, &job)).To(Succeed())
 
 			// Reconcile again to update NodeOp status
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -412,8 +408,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating job completion")
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling again to process job completion")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -517,8 +512,7 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Simulate job completion
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			// Reconcile again to trigger reboot pod creation
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -690,8 +684,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"echo", "test"}))
 
 			By("Simulating job completion and verifying rebootStatus is 'not-requested'")
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			// Reconcile again to process job completion
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -879,8 +872,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1))
 
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			// Reconcile to process job completion
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1010,10 +1002,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1))
 
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 0
-			job.Status.Active = 0
-			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsFailed(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1113,10 +1102,7 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(jobList.Items).To(HaveLen(1))
 
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 0
-			job.Status.Active = 0
-			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsFailed(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1523,8 +1509,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating first job completion")
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling again to trigger next job creation")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1586,8 +1571,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating one job completion")
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling again to trigger third job creation")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1652,8 +1636,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating job failure")
 			job := &jobList.Items[0]
-			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsFailed(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling again after job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1724,8 +1707,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating job failure")
 			job := &jobList.Items[0]
-			job.Status.Failed = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsFailed(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling to process job failure")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1871,8 +1853,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating job completion")
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling again to trigger second job creation")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -1897,8 +1878,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			// Complete the second job
 			for _, j := range jobList.Items {
 				if j.Status.Succeeded == 0 {
-					j.Status.Succeeded = 1
-					Expect(k8sClient.Status().Update(ctx, &j)).To(Succeed())
+					Expect(markJobAsCompleted(ctx, k8sClient, &j)).To(Succeed())
 					break
 				}
 			}
@@ -1966,8 +1946,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating job completion (but reboot still pending)")
 			job := &jobList.Items[0]
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
 			By("Reconciling to process job completion")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{

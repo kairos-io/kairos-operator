@@ -274,11 +274,6 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			continue
 		}
 
-		// Skip pods that are part of the kube-system namespace
-		if pod.Namespace == "kube-system" {
-			continue
-		}
-
 		// Skip the controller's own pod if environment variables are set
 		if controllerPodName != "" && controllerPodNamespace != "" {
 			if pod.Name == controllerPodName && pod.Namespace == controllerPodNamespace {
@@ -571,26 +566,18 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	// Check all node statuses to determine overall phase
 	anyFailed := false
 	completedNodes := 0
+	var err error
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
-		// Process job status if not already in terminal state
-		if status.Phase != phaseCompleted && status.Phase != phaseFailed {
-			updatedStatus, err := r.processJobStatus(ctx, nodeOp, nodeName, status)
-			if err != nil {
-				return err
-			}
-			status = updatedStatus
-		} else {
-			log.V(1).Info("Job status already in terminal state, skipping job processing",
-				"node", nodeName,
-				"currentPhase", status.Phase)
-		}
-
-		// Process reboot status
-		updatedStatus, err := r.processRebootStatus(ctx, nodeOp, nodeName, status)
+		status, err = r.processJobStatus(ctx, nodeOp, nodeName, status)
 		if err != nil {
 			return err
 		}
-		status = updatedStatus
+
+		// Process reboot status
+		status, err = r.processRebootStatus(ctx, nodeOp, nodeName, status)
+		if err != nil {
+			return err
+		}
 
 		// Update the status map with any changes
 		nodeOp.Status.NodeStatuses[nodeName] = status
@@ -674,21 +661,25 @@ func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosi
 		return status, nil
 	}
 
-	// Update node status based on Job status
-	if job.Status.Succeeded > 0 {
-		log.Info("Job succeeded", "node", nodeName, "job", job.Name)
-		status.Phase = phaseCompleted
-		status.Message = "Job completed successfully"
-	} else if job.Status.Active > 0 {
-		status.Phase = phaseRunning
-		status.Message = "Job is running"
-	} else if job.Status.Failed > 0 {
-		status.Phase = phaseFailed
-		status.Message = "Job failed"
-	} else {
-		status.Phase = phasePending
-		status.Message = "Job is pending"
+	for _, condition := range job.Status.Conditions {
+		if condition.Status == corev1.ConditionTrue {
+			switch condition.Type {
+			case batchv1.JobFailed, batchv1.JobFailureTarget:
+				status.Phase = phaseFailed
+				status.Message = "Job failed"
+				status.LastUpdated = metav1.Now()
+				return status, nil
+			case batchv1.JobSuccessCriteriaMet, batchv1.JobComplete:
+				status.Phase = phaseCompleted
+				status.Message = "Job completed successfully"
+				status.LastUpdated = metav1.Now()
+				return status, nil
+			}
+		}
 	}
+
+	status.Phase = phaseRunning
+	status.Message = "Job is running"
 	status.LastUpdated = metav1.Now()
 
 	return status, nil
@@ -920,33 +911,44 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 					Command: []string{
 						"/bin/sh",
 						"-c",
-						fmt.Sprintf(`
-							echo "=== Checking for existing reboot annotation ==="
-							EXISTING_ANNOTATION=$(kubectl get pod $POD_NAME --namespace $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\.io/reboot-state}' 2>/dev/null || echo "")
-							if [ "$EXISTING_ANNOTATION" = "%s" ]; then
-								echo "Reboot annotation already exists, reboot was already performed. Exiting successfully."
-								exit 0
-							fi
-							echo "No reboot annotation found, proceeding with reboot process..."
-							ls -la /sentinel/ || echo "Cannot list /sentinel directory"
-							while true; do
-								SENTINEL_FILE=$(find /sentinel -name "%s-*" -type f 2>/dev/null | head -1)
-								if [ -n "$SENTINEL_FILE" ]; then
-									echo "Found sentinel file: $SENTINEL_FILE"
-									echo "Deleting sentinel file before reboot..."
-									rm -f "$SENTINEL_FILE"
-									echo "Attempting to patch pod..."
-									kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"%s"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
-									echo "Giving 5 seconds to the Job Pod to exit gracefully..."
-									sleep 5
-									echo "Attempting reboot with nsenter..."
-									nsenter -i -m -t 1 -- reboot || echo "nsenter reboot failed"
-									break
-								fi
-								echo "No matching sentinel file found, sleeping..."
-								sleep 10
-							done
-						`, rebootStatusCompleted, jobBaseName, rebootStatusCompleted),
+						`echo "=== Checking for existing reboot annotation ==="
+EXISTING_ANNOTATION=$(kubectl get pod $POD_NAME --namespace $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\.io/reboot-state}' 2>/dev/null || echo "")
+if [ "$EXISTING_ANNOTATION" = "` + rebootStatusCompleted + `" ]; then
+	echo "Reboot annotation already exists, reboot was already performed. Exiting successfully."
+	exit 0
+fi
+echo "No reboot annotation found, proceeding with reboot process..."
+
+ls -la /sentinel/ || echo "Cannot list /sentinel directory"
+
+echo "=== Cleaning up any leftover sentinel files ==="
+LEFTOVER_SENTINELS=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null || true)
+if [ -n "$LEFTOVER_SENTINELS" ]; then
+	echo "Found leftover sentinel files from previous runs:"
+	echo "$LEFTOVER_SENTINELS"
+	find /sentinel -name "` + jobBaseName + `-*" -type f -delete 2>/dev/null || true
+	echo "Cleaned up leftover sentinel files"
+else
+	echo "No leftover sentinel files found"
+fi
+
+while true; do
+	SENTINEL_FILE=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null | head -1)
+	if [ -n "$SENTINEL_FILE" ]; then
+		echo "Found sentinel file: $SENTINEL_FILE"
+		echo "Deleting sentinel file before reboot..."
+		rm -f "$SENTINEL_FILE"
+		echo "Attempting to patch pod..."
+		kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"` + rebootStatusCompleted + `"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
+		echo "Giving 5 seconds to the Job Pod to exit gracefully..."
+		sleep 5
+		echo "Attempting reboot with nsenter..."
+		nsenter -i -m -t 1 -- reboot || echo "nsenter reboot failed"
+		break
+	fi
+	echo "No matching sentinel file found, sleeping..."
+	sleep 10
+done`,
 					},
 					SecurityContext: &corev1.SecurityContext{
 						Privileged: asBool(true),

@@ -686,10 +686,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				}
 
 				// Complete the active job
-				activeJob.Status.Succeeded = 1
-				activeJob.Status.Active = 0
-				activeJob.Status.Failed = 0
-				Expect(k8sClient.Status().Update(ctx, activeJob)).To(Succeed())
+				Expect(markJobAsCompleted(ctx, k8sClient, activeJob)).To(Succeed())
 
 				// Track this job as completed
 				completedJobs = append(completedJobs, activeJob.Name)
