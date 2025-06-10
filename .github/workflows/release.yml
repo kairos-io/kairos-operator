@@ -188,9 +188,9 @@ jobs:
       - name: Update version in kustomization files
         run: |
           # Update operator image version
-          sed -i "s|value: quay.io/kairos/operator:v[0-9.]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
+          sed -i "s|value: quay.io/kairos/operator:v[^[:space:]]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
           # Update node-labeler image version
-          sed -i "s|value: quay.io/kairos/operator-node-labeler:v[0-9.]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
+          sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
 
       - name: Commit and push changes
         run: |
