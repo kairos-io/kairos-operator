@@ -48,7 +48,7 @@ patches:
   patch: |-
     - op: replace
       path: /spec/template/spec/containers/0/image
-      value: quay.io/kairos/operator:v0.0.1
+      value: quay.io/kairos/operator:v0.0.1-rc6
 
 # Patch to update the node-labeler image
 - target:
@@ -59,7 +59,7 @@ patches:
       path: /spec/template/spec/containers/0/env/-
       value:
         name: NODE_LABELER_IMAGE
-        value: quay.io/kairos/operator-node-labeler:v0.0.1-rc4
+        value: quay.io/kairos/operator-node-labeler:v0.0.1-rc6
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
