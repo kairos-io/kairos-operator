@@ -1,210 +1,196 @@
 # Kairos Operator
 
-> ⚠️ **WARNING: This operator is currently a work in progress and not ready for production use.** Until it's ready for consumption, this README won't always reflect the current state of things.
-
-
-# TODO:
-
-- When we have label filtering for NodeOpUpgrade, we should explain to the user that the Label should always include a master node (unless they are already upgraded). The reason is because the cluster could end up in a deadlock situation if the operator is running on a worker node, the user does a "canary upgrade" (e.g. one-by-one Node) and the new k3s version is not compatible with the master nodes. This will result in the operator never becoming ready after its Node's restart, thus not creating the rest of the upgrade Jobs. This cluster won't recover unless the operator is scheduled on one of the still running Nodes.
-  The solution to this is to always perform the upgrade on master nodes first. Optionally, we can refuse to upgrade is there is no master node in the target list or check that we have at least one master node already running the target k8s version, but this is harder to implement (we don't know what k8s version is in the upgrade image).
-  Let's just document the situation. Most people will allow the ugprade to run on all nodes. So, by simply performing the upgrade on the master nodes first, we should be good.
-  Even if the deadlock occurs, usually it's enough to kill the operator Pod and let it be restarted on a Node that is still usable.
-
-
 [![Tests](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml/badge.svg)](https://github.com/kairos-io/kairos-operator/actions/workflows/test.yml)
 
-## Implementation Plan (TODO list)
+## Table of Contents
+- [Overview](#overview)
+- [Deploying the operator](#deploying-the-operator)
+- [Removing the operator](#removing-the-operator)
+- [Running an operation on the Nodes](#running-an-operation-on-the-nodes)
+- [Upgrading Kairos](#upgrading-kairos)
+- [Getting Started](#getting-started)
+- [Development notes](#development-notes)
+- [Contributing](#contributing)
+- [License](#license)
 
+## Overview
 
-- Deploy a **DaemonSet (`KairosNodeStatus`)** on all nodes.
-  - Mount `/etc/kairos-release` and `/etc/os-release` using `hostPath`.
-  - Detect if the node is Kairos-based.
-  - If so, create or update a `KairosNode` CR named after the node.
-  - Only update the `status` field (e.g., `observedVersion`, `cloudConfigHash`, `upgradeState`).
+This is the Kubernetes operator of [kairos](https://kairos.io). It's for day-2 operations of a Kairos kubernetes cluster. It provides 2 custom resources:
 
-- Define a **`KairosNode` CRD**:
-  - `.spec`: desired version, active/recovery images, config hash, etc.
-  - `.status`: current version, upgrade progress, timestamps.
+- NodeOp: Use for generic operations on the Kubernetes nodes (kairos or not). It allows mounting the host's root filesystem using `hostMountPath` to allow user's scripts to manipulate it or use it (e.g. mount `/dev` to perform upgrades).
 
-- The **Operator**:
-  - Watches `KairosNode` resources.
-  - Compares `spec.version` vs `status.observedVersion`.
-  - Triggers an **upgrade Job** when needed and `upgradeState != InProgress`.
-  - The Job:
-    - Drains the node (excluding upgrade and status Pods).
-    - Performs upgrade and reboots the node.
-    - Optionally uncordons the node.
+- NodeOpUpgrade: A Kairos specific custom resource. Under the hood it creates a NodeOp with a specific script suitable to upgrade Kairos nodes.
 
-- After reboot, the DaemonSet resumes and updates `KairosNode.status`.
-- Operator detects successful upgrade and marks the state as `Completed`.
+## Deploying the operator
 
----
+To deploy the operator you can use kubectl (provided that the `git` command is available):
 
-## 🔐 Security & Permissions
+``` bash
+# Using local directory
+kubectl apply -k config/default
 
-- DaemonSet Pods:
-  - Run unprivileged.
-  - Mount only required files (`hostPath: /etc/kairos-release`, etc).
-  - Use a dedicated `ServiceAccount` with RBAC:
-    ```yaml
-    apiGroups: ["kairos.io"]
-    resources: ["kairosnodes/status"]
-    verbs: ["get", "patch", "update"]
-    ```
-
-- Use **projected service account tokens** with:
-  - Short expiration (e.g., `600s`)
-  - Custom audience (e.g., `kairos-operator`)
-
----
-
-## 🧠 Behavioral Logic
-
-- DaemonSet creates CRs only for **Kairos nodes** (detected via `/etc/os-release`).
-- `KairosNode.status.upgradeState` acts as a state machine:
-  - `Idle` → `InProgress` → `Completed`
-- Node is uncordoned by:
-  - Upgrade Job (preferred), or
-  - Operator after detecting version match.
-
----
-
-## 📌 Notes
-
-- Do **not** create `KairosNode` for non-Kairos nodes.
-- Operator does **not** update built-in `Node` resources.
-- Optional: label Kairos nodes for visibility:
-  ```yaml
-  labels:
-    kairos.io/managed: "true"
-
-
-## Getting Started
-
-### Prerequisites
-- go version v1.23.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
-
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/operator:tag
+# Or using GitHub URL
+kubectl apply -k https://github.com/kairos-io/kairos-operator/config/default
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don't work.
+When the operator starts it will detect which Nodes are running Kairos OS and still label them with the label `kairos.io/managed: true`. This label can be used to target Kairosnodes if you are on a hybrid cluster (both Kairos and non-Kairos nodes).
 
-**Install the CRDs into the cluster:**
+## Removing the operator
 
-```sh
-make install
+```bash
+# Using local directory
+kubectl delete -k config/default
+
+# Or using GitHub URL
+kubectl delete -k https://github.com/kairos-io/kairos-operator/config/default
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## Running an operation on the Nodes
 
-```sh
-make deploy IMG=<some-registry>/operator:tag
+This is an example of a basic NodeOp resource:
+
+```yaml
+apiVersion: operator.kairos.io/v1alpha1
+kind: NodeOp
+metadata:
+  name: example-nodeop
+  namespace: default
+spec:
+  # NodeSelector to target specific nodes (optional)
+  nodeSelector:
+    matchLabels:
+      kairos.io/managed: "true"
+    matchExpressions:
+    - key: node-role.kubernetes.io/control-plane
+      operator: In
+      values: ["true"]
+
+  # The container image to run on each node
+  image: busybox:latest
+
+  # The command to execute in the container
+  command: 
+    - sh
+    - -c
+    - |
+      echo "Running on node $(hostname)"
+      ls -la /host/etc/kairos-release
+      cat /host/etc/kairos-release
+
+  # Path where the node's root filesystem will be mounted (defaults to /host)
+  hostMountPath: /host
+
+  # Whether to cordon the node before running the operation
+  cordon: true
+
+  # Drain options for pod eviction
+  drainOptions:
+    # Enable draining
+    enabled: true
+    # Force eviction of pods without a controller
+    force: false
+    # Grace period for pod termination (in seconds)
+    gracePeriodSeconds: 30
+    # Ignore DaemonSet pods
+    ignoreDaemonSets: true
+    # Delete data in emptyDir volumes
+    deleteEmptyDirData: false
+    # Timeout for drain operation (in seconds)
+    timeoutSeconds: 300
+
+  # Whether to reboot the node after successful operation
+  rebootOnSuccess: true
+
+  # Number of retries before marking the job failed
+  backoffLimit: 3
+
+  # Maximum number of nodes that can run the operation simultaneously
+  # 0 means run on all nodes at once
+  concurrency: 1
+
+  # Whether to stop creating new jobs when a job fails
+  # Useful for canary deployments
+  stopOnFailure: true
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+The above example is only trying to demonstrate the various available fields. Not all of them are required, especially for a script like the one in the example.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
 
-```sh
-kubectl apply -k config/samples/
+## Upgrading Kairos
+
+Although a NodeOp can be used to upgrade Kairos, it makes it a lot easier to use NodeOpUpgrade which exposes only the necessary fields for a Kairos upgrade. The actual script and the rest of the NodeOp fields are atomatically taken care of.
+
+The following is an example of a "canary upgrade", which upgrades Kairos node one-by-one (master nodes first). It will stop upgrading if one of the Nodes doesn't complete the upgrade and reboot successfully.
+
+```yaml
+apiVersion: operator.kairos.io/v1alpha1
+kind: NodeOpUpgrade
+metadata:
+  name: kairos-upgrade
+  namespace: default
+spec:
+  # The container image containing the new Kairos version
+  image: quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1
+
+  # NodeSelector to target specific nodes (optional)
+  nodeSelector:
+    matchLabels:
+      kairos.io/managed: "true"
+
+  # Maximum number of nodes that can run the upgrade simultaneously
+  # 0 means run on all nodes at once
+  concurrency: 1
+
+  # Whether to stop creating new jobs when a job fails
+  # Useful for canary deployments
+  stopOnFailure: true
+
+  # Whether to upgrade the active partition (defaults to true)
+  # upgradeActive: true
+
+  # Whether to upgrade the recovery partition (defaults to false)
+  # upgradeRecovery: false
+
+  # Whether to force the upgrade without version checks
+  # force: false
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+Some options where left as comments to show what else is possible, but 4 keys is all it takes to upgrade the whole cluster in a safe way.
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+### How upgrade is performed
 
-```sh
-kubectl delete -k config/samples/
+Before you attempt an upgrade, it's good to know what to expect. Here is how the process works.
+
+- The operator is notified about the NodeOpUpgrade resource and creates a NodeOp with the appropriate script and options.
+- The operator creates a list of matching Nodes using the provided label. If no label is provided, all Nodes will match.
+- The list is sorted with master nodes first, and based on the `concurrency` value, the first batch of Nodes will be upgraded (could be just 1 Node).
+- Before the upgrade Job is created, the operator creates a Pod that will perform the reboot when the Job completes. Then a `Job` is created that performs the upgrade.
+- The Job has one InitContainer, which performs the upgrade and a container which runs only if the upgrade script completes successfully. When the InitContainer exits, the container creates a sentinel file on the host's filesystem which is what the "reboot" Pod waits for, in order to perform the reboot. This way the Job completes successfully before the Node is completed. This is important because it prevents the Job from re-creating its Pod after reboot (which would be the case if the Job performed the reboot before it exited gracefully).
+- After the reboot of the Node, the "reboot Pod" will be restarted but it will detect that reboot has already happened (using an annotation on itself that works as a sentinel) and will exit with `0`.
+- If everything worked successfully, the operator will create another Job to replace the one that finished, resulting in `concurrency` number of Nodes being upgraded in parallel.
+
+The result of the above process it that each upgrade Job finishes successfully, with no uneccessary restarts. The iupgrade logs can be found in the Job's Pod logs.
+
+The NodeOpUpgrade stores the statuses of the various Jobs it creates so it can be used to monitor the summary of the operation.
+
+## Development notes
+
+This project is managed with [kubebuilder](https://book.kubebuilder.io).
+
+### Running tests
+
+There are 2 tests suites in this project. The end-to-end suite can be run with:
+
+```bash
+ginkgo test/e2e
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+the controllers test suite can be run with:
 
-```sh
-make uninstall
+```bash
+ginkgo internal/controller
 ```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
-## License
-
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+TODO
