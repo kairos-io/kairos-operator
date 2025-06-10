@@ -1932,6 +1932,10 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			job := &jobList.Items[0]
 			Expect(markJobAsCompleted(ctx, k8sClient, job)).To(Succeed())
 
+			// Get the node name that this job was assigned to
+			jobNodeName, exists := job.Labels["kairos.io/node"]
+			Expect(exists).To(BeTrue(), "Job should have node label")
+
 			By("Reconciling to process job completion")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -1948,11 +1952,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			}, nodeOp)
 			Expect(err).NotTo(HaveOccurred())
 
-			var nodeStatus kairosiov1alpha1.NodeStatus
-			for _, status := range nodeOp.Status.NodeStatuses {
-				nodeStatus = status
-				break // We only have one node in this test
-			}
+			Expect(nodeOp.Status.NodeStatuses).To(HaveKey(jobNodeName), "Should have status for the job's node")
+			nodeStatus := nodeOp.Status.NodeStatuses[jobNodeName]
 			Expect(nodeStatus.Phase).To(Equal("Completed"))
 			Expect(nodeStatus.RebootStatus).To(Equal("pending"))
 
@@ -2011,10 +2012,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			}, nodeOp)
 			Expect(err).NotTo(HaveOccurred())
 
-			for _, status := range nodeOp.Status.NodeStatuses {
-				nodeStatus = status
-				break // We only have one node in this test
-			}
+			Expect(nodeOp.Status.NodeStatuses).To(HaveKey(jobNodeName), "Should have status for the job's node")
+			nodeStatus = nodeOp.Status.NodeStatuses[jobNodeName]
 			Expect(nodeStatus.Phase).To(Equal("Completed"))
 			Expect(nodeStatus.RebootStatus).To(Equal("completed"))
 
@@ -2027,7 +2026,7 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying new job can now be created (if more target nodes exist)")
+			By("Verifying new job can now be created for other nodes")
 			err = k8sClient.List(ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
@@ -2035,8 +2034,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 				}),
 			)
 			Expect(err).NotTo(HaveOccurred())
-			// In this test we have 3 nodes total, so we should now have 2 jobs
-			// (first one completed with reboot completed, second one just started)
+			// Since we have 3 nodes and concurrency=1, we should now have 2 jobs
+			// (first one completed with reboot completed, second one just started for another node)
 			Expect(jobList.Items).To(HaveLen(2), "Should create second job after reboot is completed")
 		})
 	})
