@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -124,6 +125,11 @@ func (in *NodeOpSpec) DeepCopyInto(out *NodeOpSpec) {
 	if in.Command != nil {
 		in, out := &in.Command, &out.Command
 		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ImagePullSecrets != nil {
+		in, out := &in.ImagePullSecrets, &out.ImagePullSecrets
+		*out = make([]corev1.LocalObjectReference, len(*in))
 		copy(*out, *in)
 	}
 	if in.Cordon != nil {
@@ -252,6 +258,11 @@ func (in *NodeOpUpgradeSpec) DeepCopyInto(out *NodeOpUpgradeSpec) {
 		in, out := &in.NodeSelector, &out.NodeSelector
 		*out = new(v1.LabelSelector)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ImagePullSecrets != nil {
+		in, out := &in.ImagePullSecrets, &out.ImagePullSecrets
+		*out = make([]corev1.LocalObjectReference, len(*in))
+		copy(*out, *in)
 	}
 	if in.StopOnFailure != nil {
 		in, out := &in.StopOnFailure, &out.StopOnFailure

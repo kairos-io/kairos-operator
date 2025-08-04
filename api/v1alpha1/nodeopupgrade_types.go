@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -23,6 +24,12 @@ type NodeOpUpgradeSpec struct {
 	// This should contain the Kairos version and dependencies needed for upgrade.
 	// +required
 	Image string `json:"image"`
+
+	// ImagePullSecrets is an optional list of references to secrets in the same namespace
+	// to use for pulling any of the images used by this NodeOpUpgrade.
+	// If specified, these secrets will be used to authenticate with the container registry.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
 	// Concurrency specifies the maximum number of nodes that can run the upgrade operation simultaneously.
 	// When set to 0 (default), the operation will run on all target nodes at the same time.

@@ -119,14 +119,15 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrad
 			},
 		},
 		Spec: kairosiov1alpha1.NodeOpSpec{
-			NodeSelector:    nodeOpUpgrade.Spec.NodeSelector,
-			Image:           nodeOpUpgrade.Spec.Image,
-			Concurrency:     nodeOpUpgrade.Spec.Concurrency,
-			StopOnFailure:   nodeOpUpgrade.Spec.StopOnFailure,
-			Command:         upgradeCommand,
-			HostMountPath:   hostMountPath,
-			Cordon:          asBool(true), // Always cordon for upgrades
-			RebootOnSuccess: &shouldReboot,
+			NodeSelector:     nodeOpUpgrade.Spec.NodeSelector,
+			Image:            nodeOpUpgrade.Spec.Image,
+			ImagePullSecrets: nodeOpUpgrade.Spec.ImagePullSecrets,
+			Concurrency:      nodeOpUpgrade.Spec.Concurrency,
+			StopOnFailure:    nodeOpUpgrade.Spec.StopOnFailure,
+			Command:          upgradeCommand,
+			HostMountPath:    hostMountPath,
+			Cordon:           asBool(true), // Always cordon for upgrades
+			RebootOnSuccess:  &shouldReboot,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
 				Enabled: asBool(true), // Always drain for upgrades
 			},
