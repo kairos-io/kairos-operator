@@ -18,6 +18,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+const (
+	timeout  = time.Second * 10
+	interval = time.Millisecond * 250
+)
+
 var _ = Describe("NodeOpUpgrade Controller", func() {
 	Context("When reconciling a NodeOpUpgrade resource", func() {
 		var (
@@ -134,6 +139,68 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Namespace: "default",
 			}, updatedNodeOpUpgrade)).To(Succeed())
 			Expect(updatedNodeOpUpgrade.Status.Phase).To(Equal("Initializing"))
+		})
+
+		It("should pass ImagePullSecrets from NodeOpUpgrade to created NodeOp", func() {
+			By("Creating a NodeOpUpgrade with ImagePullSecrets")
+			nodeOpUpgradeWithSecrets := &kairosiov1alpha1.NodeOpUpgrade{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-imagepull", nodeOpUpgradeName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+					Image:           "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+					UpgradeActive:   asBool(true),
+					UpgradeRecovery: asBool(false),
+					Force:           asBool(false),
+					Concurrency:     1,
+					StopOnFailure:   asBool(false),
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "registry-secret"},
+						{Name: "docker-secret"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOpUpgradeWithSecrets)).To(Succeed())
+
+			// Cleanup this test's NodeOpUpgrade
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, nodeOpUpgradeWithSecrets)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling the created NodeOpUpgrade")
+			controllerReconciler := &NodeOpUpgradeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeWithSecrets.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that a NodeOp was created with correct ImagePullSecrets")
+			nodeOp := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeWithSecrets.Name,
+				Namespace: "default",
+			}, nodeOp)).To(Succeed())
+
+			By("Verifying NodeOp has correct ImagePullSecrets")
+			Expect(nodeOp.Spec.ImagePullSecrets).To(HaveLen(2))
+			Expect(nodeOp.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "registry-secret"}))
+			Expect(nodeOp.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "docker-secret"}))
+
+			By("Verifying NodeOp has other correct configuration")
+			Expect(nodeOp.Spec.Image).To(Equal(nodeOpUpgradeWithSecrets.Spec.Image))
+			Expect(nodeOp.Spec.Concurrency).To(Equal(nodeOpUpgradeWithSecrets.Spec.Concurrency))
+			Expect(nodeOp.Spec.StopOnFailure).To(Equal(nodeOpUpgradeWithSecrets.Spec.StopOnFailure))
+			Expect(nodeOp.Spec.NodeSelector).To(Equal(nodeOpUpgradeWithSecrets.Spec.NodeSelector))
 		})
 
 		It("should generate correct upgrade command for active partition only", func() {
