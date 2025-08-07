@@ -8,6 +8,7 @@
 - [Removing the operator](#removing-the-operator)
 - [Running an operation on the Nodes](#running-an-operation-on-the-nodes)
 - [Upgrading Kairos](#upgrading-kairos)
+- [Using Private Registries](#using-private-registries)
 - [Getting Started](#getting-started)
 - [Development notes](#development-notes)
 - [Contributing](#contributing)
@@ -68,6 +69,10 @@ spec:
   # The container image to run on each node
   image: busybox:latest
 
+  # ImagePullSecrets for private registries (optional)
+  imagePullSecrets:
+  - name: private-registry-secret
+
   # The command to execute in the container
   command: 
     - sh
@@ -115,7 +120,6 @@ spec:
 
 The above example is only trying to demonstrate the various available fields. Not all of them are required, especially for a script like the one in the example.
 
-
 ## Upgrading Kairos
 
 Although a NodeOp can be used to upgrade Kairos, it makes it a lot easier to use NodeOpUpgrade which exposes only the necessary fields for a Kairos upgrade. The actual script and the rest of the NodeOp fields are atomatically taken care of.
@@ -131,6 +135,10 @@ metadata:
 spec:
   # The container image containing the new Kairos version
   image: quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1
+
+  # ImagePullSecrets for private registries (optional)
+  imagePullSecrets:
+  - name: private-registry-secret
 
   # NodeSelector to target specific nodes (optional)
   nodeSelector:
@@ -172,6 +180,107 @@ Before you attempt an upgrade, it's good to know what to expect. Here is how the
 The result of the above process it that each upgrade Job finishes successfully, with no uneccessary restarts. The iupgrade logs can be found in the Job's Pod logs.
 
 The NodeOpUpgrade stores the statuses of the various Jobs it creates so it can be used to monitor the summary of the operation.
+
+## Using Private Registries
+
+The Kairos Operator supports `imagePullSecrets` for both `NodeOp` and `NodeOpUpgrade` resources, allowing you to pull images from private container registries.
+
+### Creating Image Pull Secrets
+
+Before using `imagePullSecrets`, you need to create a Kubernetes secret containing your registry credentials. Here are examples for different registry types ([See also here](https://kubernetes.io/docs/concepts/containers/images/#creating-a-secret-with-a-docker-config)):
+
+#### Docker Hub
+
+```bash
+kubectl create secret docker-registry private-registry-secret \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username=your-username \
+  --docker-password=your-password \
+  --docker-email=your-email@example.com
+```
+
+#### Private Registry
+
+```bash
+kubectl create secret docker-registry private-registry-secret \
+  --docker-server=private-registry.example.com \
+  --docker-username=your-username \
+  --docker-password=your-password \
+  --docker-email=your-email@example.com
+```
+
+#### Using a .docker/config.json file
+
+```bash
+kubectl create secret generic private-registry-secret \
+  --from-file=.dockerconfigjson=/path/to/.docker/config.json \
+  --type=kubernetes.io/dockerconfigjson
+```
+
+### Example with Private Registry
+
+```yaml
+apiVersion: operator.kairos.io/v1alpha1
+kind: NodeOp
+metadata:
+  name: operation-with-private-image
+  namespace: default
+spec:
+  # The container image from private registry
+  image: private-registry.example.com/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1
+
+  # ImagePullSecrets to authenticate with the private registry
+  imagePullSecrets:
+  - name: private-registry-secret
+
+  # Target specific nodes
+  nodeSelector:
+    matchLabels:
+      kairos.io/managed: "true"
+
+  # Run one node at a time
+  concurrency: 1
+
+  # Stop if any job fails
+  stopOnFailure: true
+
+  # Reboot after successful operation
+  rebootOnSuccess: true
+
+  # Cordon and drain nodes before operation
+  cordon: true
+  drainOptions:
+    enabled: true
+    force: false
+    gracePeriodSeconds: 30
+    ignoreDaemonSets: true
+    deleteEmptyDirData: false
+    timeoutSeconds: 300
+
+  # The command to run on each node
+  command:
+    - /bin/sh
+    - -c
+    - |
+      #!/bin/bash
+      echo "Running on node $(hostname)"
+      ls -la /host/etc/kairos-release
+      cat /host/etc/kairos-release
+```
+
+### How It Works
+
+1. When you specify `imagePullSecrets` in a `NodeOp` or `NodeOpUpgrade` resource, the operator will include these secrets in the Pod spec of the jobs it creates.
+
+2. For `NodeOpUpgrade` resources, the `imagePullSecrets` are automatically passed to the underlying `NodeOp` resource that gets created.
+
+3. The Kubernetes kubelet on each node will use these secrets to authenticate with the container registry when pulling the specified images.
+
+### Notes
+
+- The secrets must exist in the same namespace as the NodeOp or NodeOpUpgrade resource
+- Multiple secrets can be specified if needed
+- The secrets are only used for pulling the main operation image, not for any additional images that might be used internally by the operator
 
 ## Development notes
 

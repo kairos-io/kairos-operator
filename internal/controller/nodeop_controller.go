@@ -329,7 +329,8 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{
-				NodeName: node.Name,
+				NodeName:         node.Name,
+				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
 				InitContainers: []corev1.Container{
 					{
 						Name:    "nodeop",
@@ -404,7 +405,8 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{
-				NodeName: node.Name,
+				NodeName:         node.Name,
+				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
 				Containers: []corev1.Container{
 					{
 						Name:    "nodeop",

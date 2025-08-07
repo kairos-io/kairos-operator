@@ -265,6 +265,127 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(nodeop.Status.Phase).To(Equal("Completed"))
 		})
 
+		It("should respect ImagePullSecrets setting in created Jobs", func() {
+			By("Creating a NodeOp with ImagePullSecrets")
+			imagePullSecretsNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-imagepull", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{"echo", "test"},
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "test-registry-secret"},
+						{Name: "another-secret"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, imagePullSecretsNodeOp)).To(Succeed())
+
+			// Cleanup this test's NodeOp
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, imagePullSecretsNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling the NodeOp")
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      imagePullSecretsNodeOp.Name,
+					Namespace: imagePullSecretsNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Job was created with correct ImagePullSecrets")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": imagePullSecretsNodeOp.Name,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1))
+
+			job := &jobList.Items[0]
+			Expect(job.Spec.Template.Spec.ImagePullSecrets).To(HaveLen(2))
+			Expect(job.Spec.Template.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "test-registry-secret"}))
+			Expect(job.Spec.Template.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "another-secret"}))
+		})
+
+		It("should respect ImagePullSecrets setting in Jobs with RebootOnSuccess", func() {
+			By("Creating a NodeOp with ImagePullSecrets and RebootOnSuccess=true")
+			imagePullSecretsRebootNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-imagepull-reboot", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "test-registry-secret"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, imagePullSecretsRebootNodeOp)).To(Succeed())
+
+			// Cleanup this test's NodeOp
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, imagePullSecretsRebootNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling the NodeOp")
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      imagePullSecretsRebootNodeOp.Name,
+					Namespace: imagePullSecretsRebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Job was created with correct ImagePullSecrets even with reboot enabled")
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{
+					"kairos.io/nodeop": imagePullSecretsRebootNodeOp.Name,
+				}),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(jobList.Items).To(HaveLen(1))
+
+			job := &jobList.Items[0]
+			Expect(job.Spec.Template.Spec.ImagePullSecrets).To(HaveLen(1))
+			Expect(job.Spec.Template.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "test-registry-secret"}))
+
+			By("Verifying Job structure is correct for reboot case")
+			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(1), "Job should have InitContainer for user command")
+			Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1), "Job should have main container for sentinel")
+		})
+
 		It("should handle Job failures", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &NodeOpReconciler{
