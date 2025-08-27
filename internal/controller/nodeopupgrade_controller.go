@@ -154,7 +154,7 @@ set -x -e
 		script += `get_version() {
     local file_path="$1"
     # shellcheck disable=SC1090
-    source "$file_path"
+    . "$file_path"
 
     echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
 }
