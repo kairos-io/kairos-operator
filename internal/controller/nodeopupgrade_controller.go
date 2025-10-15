@@ -193,35 +193,40 @@ mount --rbind ` + hostMountPath + `/run /run
 
 	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
 	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
+	upgradeSource := "dir:/"
 
 	// Add upgrade logic based on spec
 	if upgradeRecovery && upgradeActive {
 		// Both recovery and active
-		script += `# Upgrade recovery partition
-kairos-agent upgrade --recovery --source dir:/
+		scriptTemplate := `# Upgrade recovery partition
+kairos-agent upgrade --recovery --source %s
 
 # Upgrade active partition
-kairos-agent upgrade --source dir:/
+kairos-agent upgrade --source %s
 exit 0
 `
+		script += fmt.Sprintf(scriptTemplate, upgradeSource, upgradeSource)
 	} else if upgradeRecovery {
 		// Recovery only
-		script += `# Upgrade recovery partition only
-kairos-agent upgrade --recovery --source dir:/
+		scriptTemplate := `# Upgrade recovery partition only
+kairos-agent upgrade --recovery --source %s
 exit 0
 `
+		script += fmt.Sprintf(scriptTemplate, upgradeSource)
 	} else if upgradeActive {
 		// Active only (default behavior)
-		script += `# Upgrade active partition
-kairos-agent upgrade --source dir:/
+		scriptTemplate := `# Upgrade active partition
+kairos-agent upgrade --source %s
 exit 0
 `
+		script += fmt.Sprintf(scriptTemplate, upgradeSource)
 	} else {
 		// Neither specified - default to active
-		script += `# Upgrade active partition (default)
-kairos-agent upgrade --source dir:/
+		scriptTemplate := `# Upgrade active partition (default)
+kairos-agent upgrade --source %s
 exit 0
 `
+		script += fmt.Sprintf(scriptTemplate, upgradeSource)
 	}
 
 	// Build the complete command
