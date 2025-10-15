@@ -193,7 +193,7 @@ mount --rbind ` + hostMountPath + `/run /run
 
 	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
 	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
-	upgradeSource := "dir:/"
+	upgradeSource := "\"oci:${KAIROS_OCI_IMAGE}\""
 
 	// Add upgrade logic based on spec
 	if upgradeRecovery && upgradeActive {

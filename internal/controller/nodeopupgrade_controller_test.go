@@ -237,7 +237,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.Command[1]).To(Equal("-c"))
 
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source \"oci:${KAIROS_OCI_IMAGE}\""))
 			Expect(script).To(ContainSubstring("get_version()"))
 			Expect(script).To(ContainSubstring("mount --rbind"))
 			Expect(script).NotTo(ContainSubstring("--recovery"))
@@ -274,7 +274,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			}, nodeOp)).To(Succeed())
 
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source \"oci:${KAIROS_OCI_IMAGE}\""))
 		})
 
 		It("should generate correct upgrade command for both partitions", func() {
@@ -308,9 +308,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			script := nodeOp.Spec.Command[2]
 			Expect(script).To(ContainSubstring("# Upgrade recovery partition"))
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source \"oci:${KAIROS_OCI_IMAGE}\""))
 			Expect(script).To(ContainSubstring("# Upgrade active partition"))
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source \"oci:${KAIROS_OCI_IMAGE}\""))
 		})
 
 		It("should generate correct upgrade command with force enabled", func() {
