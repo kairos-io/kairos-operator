@@ -72,10 +72,15 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@$(KIND) get clusters | grep -q 'kind' || { \
-		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
-		exit 1; \
-	}
+	# E2E suite creates its own cluster, so we just need to ensure kind is available
+	go test ./test/e2e/ -v -ginkgo.v
+
+.PHONY: kind-e2e-tests
+kind-e2e-tests: kind-setup install deploy-dev ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
+	@echo "Note: The E2E test suite creates its own cluster, so this target mainly ensures kind is set up."
+	@kubectl cluster-info --context kind-$(CLUSTER_NAME) || true
+	@kubectl wait --for=condition=Ready node/$(CLUSTER_NAME)-control-plane --timeout=5m || true
+	@kubectl get nodes -o wide
 	go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: lint
@@ -170,7 +175,12 @@ undeploy-dev: kustomize ## Undeploy controller from the K8s cluster specified in
 
 .PHONY: kind-setup
 kind-setup: ## Create a kind cluster for testing
-	$(KIND) create cluster --name $(CLUSTER_NAME) || true
+	@if ! $(KIND) get clusters | grep -q "$(CLUSTER_NAME)"; then \
+		echo "Creating kind cluster $(CLUSTER_NAME)..."; \
+		$(KIND) create cluster --name $(CLUSTER_NAME) --config test/e2e/kind-2node.yaml || true; \
+	else \
+		echo "Kind cluster $(CLUSTER_NAME) already exists"; \
+	fi
 	$(MAKE) kind-setup-image
 
 .PHONY: kind-setup-image
