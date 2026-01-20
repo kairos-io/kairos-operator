@@ -4,6 +4,7 @@
 resources:
 - bases/operator.kairos.io_nodeops.yaml
 - bases/operator.kairos.io_nodeopupgrades.yaml
+- bases/build.kairos.io_osartifacts.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
