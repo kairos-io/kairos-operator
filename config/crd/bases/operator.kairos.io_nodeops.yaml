@@ -17,172 +17,76 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: NodeOp is the Schema for the nodeops API.
         properties:
           apiVersion:
-            description: |-
-              APIVersion defines the versioned schema of this representation of an object.
-              Servers should convert recognized schemas to the latest internal value, and
-              may reject unrecognized values.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: |-
-              Kind is a string value representing the REST resource this object represents.
-              Servers may infer this from the endpoint the client submits requests to.
-              Cannot be updated.
-              In CamelCase.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
           spec:
-            description: NodeOpSpec defines the desired state of NodeOp.
             properties:
               backoffLimit:
-                description: |-
-                  BackoffLimit specifies the number of retries before marking this job failed.
-                  This directly maps to the Job spec.backoffLimit field.
-                  If not specified, defaults to 6 (Kubernetes default).
                 format: int32
                 type: integer
               command:
-                description: |-
-                  Command is the command to run on the target nodes.
-                  This will be executed in a container with the node's root filesystem mounted.
                 items:
                   type: string
                 type: array
               concurrency:
                 default: 0
-                description: |-
-                  Concurrency specifies the maximum number of nodes that can run the operation simultaneously.
-                  When set to 0 (default), the operation will run on all target nodes at the same time.
-                  When set to a positive number, only that many jobs will run concurrently.
-                  As jobs complete, new jobs will be started on remaining nodes until all target nodes are processed.
                 format: int32
                 minimum: 0
                 type: integer
               cordon:
                 default: false
-                description: |-
-                  Cordon specifies whether to cordon the node before running the operation.
-                  When true, the node will be marked as unschedulable before the operation starts
-                  and will be uncordoned after the operation completes successfully.
                 type: boolean
               drainOptions:
-                description: |-
-                  DrainOptions specifies the options for draining the node before running the operation.
-                  When enabled, pods will be evicted from the node before the operation starts.
-                  This requires the Cordon field to be true.
                 properties:
                   deleteEmptyDirData:
                     default: false
-                    description: |-
-                      DeleteEmptyDirData specifies whether to delete local data in emptyDir volumes.
-                      When true, data in emptyDir volumes will be deleted during the drain operation.
                     type: boolean
                   enabled:
                     default: false
-                    description: |-
-                      Enabled specifies whether to drain the node.
-                      When true, pods will be evicted from the node before the operation starts.
                     type: boolean
                   force:
                     default: false
-                    description: |-
-                      Force specifies whether to force the drain operation.
-                      When true, pods that do not have a controller will be evicted.
                     type: boolean
                   gracePeriodSeconds:
-                    description: |-
-                      GracePeriodSeconds is the time in seconds given to each pod to terminate gracefully.
-                      If negative, the default value specified in the pod will be used.
                     format: int32
                     type: integer
                   ignoreDaemonSets:
                     default: true
-                    description: |-
-                      IgnoreDaemonSets specifies whether to ignore DaemonSet-managed pods.
-                      When true, DaemonSet-managed pods will be ignored during the drain operation.
                     type: boolean
                   timeoutSeconds:
-                    description: |-
-                      TimeoutSeconds is the length of time to wait before giving up on the drain operation.
-                      If not specified, a default timeout will be used.
                     format: int32
                     type: integer
                 type: object
               hostMountPath:
                 default: /host
-                description: |-
-                  HostMountPath is the path where the node's root filesystem will be mounted.
-                  Defaults to "/host"
                 type: string
               image:
                 default: busybox:latest
-                description: |-
-                  Image is the container image to use for running the command.
-                  Defaults to "busybox:latest"
                 type: string
               imagePullSecrets:
-                description: |-
-                  ImagePullSecrets is an optional list of references to secrets in the same namespace
-                  to use for pulling any of the images used by this NodeOp.
-                  If specified, these secrets will be used to authenticate with the container registry.
                 items:
-                  description: |-
-                    LocalObjectReference contains enough information to let you locate the
-                    referenced object inside the same namespace.
                   properties:
                     name:
                       default: ""
-                      description: |-
-                        Name of the referent.
-                        This field is effectively required, but due to backwards compatibility is
-                        allowed to be empty. Instances of this type with an empty value here are
-                        almost certainly wrong.
-                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                       type: string
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
               nodeSelector:
-                description: |-
-                  NodeSelector specifies a label selector to target specific nodes for the operation.
-                  If empty, the operation will run on all nodes.
-                  Examples:
-                    nodeSelector:
-                      matchLabels:
-                        disktype: ssd
-                      matchExpressions:
-                      - key: node.kubernetes.io/instance-type
-                        operator: In
-                        values: ["t3.large", "t3.xlarge"]
                 properties:
                   matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
                     items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
                       properties:
                         key:
-                          description: key is the label key that the selector applies
-                            to.
                           type: string
                         operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
                           type: string
                         values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
                           items:
                             type: string
                           type: array
@@ -196,74 +100,42 @@ spec:
                   matchLabels:
                     additionalProperties:
                       type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
               rebootOnSuccess:
                 default: false
-                description: |-
-                  RebootOnSuccess specifies whether to reboot the node after the operation completes successfully.
-                  When true, a privileged pod will be created to trigger a reboot using nsenter.
                 type: boolean
               stopOnFailure:
                 default: false
-                description: |-
-                  StopOnFailure specifies whether to stop creating new jobs when a job fails.
-                  When true, if any job fails, no new jobs will be created for remaining nodes.
-                  This is useful for canary deployments where you want to stop on the first failure.
                 type: boolean
             required:
             - command
             type: object
           status:
-            description: NodeOpStatus defines the observed state of NodeOp.
             properties:
               lastUpdated:
-                description: LastUpdated is the timestamp of the last status update.
                 format: date-time
                 type: string
               nodeStatuses:
                 additionalProperties:
-                  description: NodeStatus represents the status of the operation on
-                    a specific node.
                   properties:
                     jobName:
-                      description: JobName is the name of the Job created for this
-                        node.
                       type: string
                     lastUpdated:
-                      description: LastUpdated is the timestamp of the last status
-                        update for this node.
                       format: date-time
                       type: string
                     message:
-                      description: Message contains any additional information about
-                        the operation status.
                       type: string
                     phase:
-                      description: |-
-                        Phase represents the current phase of the operation on this node.
-                        Can be "Pending", "Running", "Completed", or "Failed"
                       type: string
                     rebootStatus:
-                      description: |-
-                        RebootStatus represents the reboot state of this node.
-                        Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
                       type: string
                   required:
                   - phase
                   type: object
-                description: NodeStatuses contains the status of the operation for
-                  each target node.
                 type: object
               phase:
-                description: |-
-                  Phase represents the current phase of the operation.
-                  Can be "Pending", "Running", "Completed", or "Failed"
                 type: string
             type: object
         type: object

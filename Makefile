@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+CLUSTER_NAME ?= kairos-operator-e2e
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -43,7 +44,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:maxDescLen=0 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -152,9 +153,37 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
+.PHONY: deploy-dev
+deploy-dev: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config using dev config.
+	cd config/dev && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: undeploy-dev
+undeploy-dev: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config using dev config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) build config/dev | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f - || true
+
+##@ Testing with Kind
+
+.PHONY: kind-setup
+kind-setup: ## Create a kind cluster for testing
+	$(KIND) create cluster --name $(CLUSTER_NAME) || true
+	$(MAKE) kind-setup-image
+
+.PHONY: kind-setup-image
+kind-setup-image: docker-build ## Load the controller image into the kind cluster
+	$(KIND) load docker-image --name $(CLUSTER_NAME) $(IMG)
+
+.PHONY: kind-teardown
+kind-teardown: ## Delete the kind cluster
+	$(KIND) delete cluster --name $(CLUSTER_NAME) || true
+
+.PHONY: controller-tests
+controller-tests: kind-setup install undeploy-dev deploy-dev ## Run controller tests that require a real cluster (OSArtifact tests)
+	USE_EXISTING_CLUSTER=true go test ./internal/controller/... -v -ginkgo.v -ginkgo.focus="OSArtifact"
 
 ##@ Dependencies
 
