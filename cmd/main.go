@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	"github.com/kairos-io/kairos-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -36,6 +37,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(batchv1.AddToScheme(scheme))
 	utilruntime.Must(kairosiov1alpha1.AddToScheme(scheme))
+	utilruntime.Must(buildv1alpha2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

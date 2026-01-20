@@ -17,4 +17,13 @@ resources:
   kind: NodeOp
   path: github.com/kairos-io/kairos-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kairos.io
+  group: build
+  kind: OSArtifact
+  path: github.com/kairos-io/kairos-operator/api/v1alpha2
+  version: v1alpha2
 version: "3"
