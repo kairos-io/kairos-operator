@@ -116,7 +116,8 @@ func (tc *TestClients) CreateArtifact(artifact *buildv1alpha2.OSArtifact) (strin
 	Expect(err).ToNot(HaveOccurred())
 	artifactName := resp.GetName()
 
-	artifactLabelSelectorReq, err := labels.NewRequirement("build.kairos.io/artifact", selection.Equals, []string{artifactName})
+	artifactLabelSelectorReq, err := labels.NewRequirement(
+		"build.kairos.io/artifact", selection.Equals, []string{artifactName})
 	Expect(err).ToNot(HaveOccurred())
 	artifactLabelSelector := labels.NewSelector().Add(*artifactLabelSelectorReq)
 

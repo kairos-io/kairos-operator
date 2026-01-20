@@ -35,6 +35,13 @@ linters:
           - dupl
           - lll
         path: internal/*
+      - linters:
+          - revive
+        text: "should not use dot imports"
+        path: ".*_test.go$"
+      - linters:
+          - lll
+        path: ".*_test.go$"
     paths:
       - third_party$
       - builtin$

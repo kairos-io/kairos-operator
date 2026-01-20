@@ -21,9 +21,9 @@ import (
 	"strings"
 
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	corev1 "k8s.io/api/core/v1"
 )
 
 func unpackContainer(id, containerImage, pullImage string) corev1.Container {
@@ -66,7 +66,8 @@ func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtif
 		Command:         []string{"/bin/bash", "-cxe"},
 		Args: []string{
 			fmt.Sprintf(
-				"tar -czvpf test.tar -C /rootfs . && luet util pack %[1]s test.tar %[2]s.tar && chmod +r %[2]s.tar && mv %[2]s.tar /artifacts",
+				"tar -czvpf test.tar -C /rootfs . && luet util pack %[1]s test.tar %[2]s.tar && "+
+					"chmod +r %[2]s.tar && mv %[2]s.tar /artifacts",
 				imageName,
 				artifact.Name,
 			),
@@ -197,7 +198,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 		cloudImgCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	cloudImgCmd.WriteString(fmt.Sprintf(" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw", artifact.Name))
+	cloudImgCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+		artifact.Name))
 
 	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
@@ -270,7 +273,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	azureCmd.WriteString(fmt.Sprintf(" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd", artifact.Name))
+	azureCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+		artifact.Name))
 	buildAzureCloudImageContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
@@ -295,7 +300,10 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	gceCmd.WriteString(fmt.Sprintf(" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.gce.tar.gz", artifact.Name))
+	gceCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+			"mv \"$file\" /artifacts/%s.gce.tar.gz",
+		artifact.Name))
 	buildGCECloudImageContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
@@ -374,7 +382,8 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName))
 	} else { // Existing Kairos base image
-		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName))
+		podSpec.InitContainers = append(podSpec.InitContainers,
+			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName))
 	}
 
 	// If base image was a non kairos one, either one we built with kaniko or prebuilt,

@@ -32,12 +32,13 @@ type OSArtifactSpec struct {
 	// Points to a vanilla (non-Kairos) image. osbuilder will try to convert this to a Kairos image
 	BaseImageName string `json:"baseImageName,omitempty"`
 
-	// Points to a Secret that contains a Dockerfile. osbuilder will build the image using that Dockerfile and will try to create a Kairos image from it.
+	// Points to a Secret that contains a Dockerfile. osbuilder will build the image using that Dockerfile
+	// and will try to create a Kairos image from it.
 	BaseImageDockerfile *SecretKeySelector `json:"baseImageDockerfile,omitempty"`
 
 	ISO bool `json:"iso,omitempty"`
 
-	//Disk-only stuff
+	// Disk-only stuff
 	DiskSize   string `json:"diskSize,omitempty"`
 	CloudImage bool   `json:"cloudImage,omitempty"`
 	AzureImage bool   `json:"azureImage,omitempty"`
@@ -80,8 +81,8 @@ type OSArtifactStatus struct {
 	Phase ArtifactPhase `json:"phase,omitempty"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // OSArtifact is the Schema for the osartifacts API
@@ -93,7 +94,7 @@ type OSArtifact struct {
 	Status OSArtifactStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // OSArtifactList contains a list of OSArtifact
 type OSArtifactList struct {

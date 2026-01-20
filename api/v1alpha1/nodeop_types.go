@@ -155,7 +155,8 @@ type NodeStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// RebootStatus represents the reboot state of this node.
-	// Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
+	// Can be "not-requested" (reboot not requested), "cancelled" (reboot was requested but cancelled
+	// due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
 	// +optional
 	RebootStatus string `json:"rebootStatus,omitempty"`
 

@@ -48,20 +48,20 @@ const (
 // OSArtifactReconciler reconciles a OSArtifact object
 type OSArtifactReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	ServingImage  string
-	ToolImage     string
-	CopierImage   string
+	Scheme       *runtime.Scheme
+	ServingImage string
+	ToolImage    string
+	CopierImage  string
 }
 
-//+kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/finalizers,verbs=update
-//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
-//+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;
-//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;
-//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -115,7 +115,8 @@ func (r *OSArtifactReconciler) CreateConfigMap(ctx context.Context, artifact *bu
 	return nil
 }
 
-func (r *OSArtifactReconciler) createPVC(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (*corev1.PersistentVolumeClaim, error) {
+func (r *OSArtifactReconciler) createPVC(ctx context.Context,
+	artifact *buildv1alpha2.OSArtifact) (*corev1.PersistentVolumeClaim, error) {
 	pvc := r.newArtifactPVC(artifact)
 	if pvc.Labels == nil {
 		pvc.Labels = map[string]string{}
@@ -139,7 +140,8 @@ func (r *OSArtifactReconciler) createPVC(ctx context.Context, artifact *buildv1a
 	return pvc, nil
 }
 
-func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
+func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *buildv1alpha2.OSArtifact,
+	pvc *corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
 	pod := r.newBuilderPod(pvc.Name, artifact)
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
@@ -156,7 +158,8 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
-func (r *OSArtifactReconciler) startBuild(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+func (r *OSArtifactReconciler) startBuild(ctx context.Context,
+	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	err := r.CreateConfigMap(ctx, artifact)
 	if err != nil {
 		return ctrl.Result{Requeue: true}, err
@@ -180,7 +183,8 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context, artifact *buildv1
 	return ctrl.Result{}, nil
 }
 
-func (r *OSArtifactReconciler) checkBuild(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+func (r *OSArtifactReconciler) checkBuild(ctx context.Context,
+	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, &client.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{
@@ -206,7 +210,8 @@ func (r *OSArtifactReconciler) checkBuild(ctx context.Context, artifact *buildv1
 	return r.startBuild(ctx, artifact)
 }
 
-func (r *OSArtifactReconciler) checkExport(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+func (r *OSArtifactReconciler) checkExport(ctx context.Context,
+	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, &client.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{
@@ -227,7 +232,9 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context, artifact *buildv
 
 	var pvcs corev1.PersistentVolumeClaimList
 	var pvc *corev1.PersistentVolumeClaim
-	if err := r.List(ctx, &pvcs, &client.ListOptions{LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name})}); err != nil {
+	if err := r.List(ctx, &pvcs, &client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+	}); err != nil {
 		return ctrl.Result{Requeue: true}, err
 	}
 
@@ -319,7 +326,7 @@ func (r *OSArtifactReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *OSArtifactReconciler) findOwningArtifact(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *OSArtifactReconciler) findOwningArtifact(_ context.Context, obj client.Object) []reconcile.Request {
 	if obj.GetLabels() == nil {
 		return nil
 	}

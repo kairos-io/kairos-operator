@@ -31,6 +31,56 @@ var _ = Describe("OSArtifactReconciler", func() {
 	var clientset *kubernetes.Clientset
 	var err error
 
+	// findContainerByName finds a container by name in a pod
+	findContainerByName := func(pod *corev1.Pod, name string) *corev1.Container {
+		for i := range pod.Spec.Containers {
+			if pod.Spec.Containers[i].Name == name {
+				return &pod.Spec.Containers[i]
+			}
+		}
+		return nil
+	}
+
+	// testContainerCommand tests that a container exists with expected command substrings
+	testContainerCommand := func(containerName string, expectedSubstrings []string) {
+		pvc, err := r.createPVC(context.TODO(), artifact)
+		Expect(err).ToNot(HaveOccurred())
+
+		pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+		Expect(err).ToNot(HaveOccurred())
+
+		container := findContainerByName(pod, containerName)
+		Expect(container).ToNot(BeNil())
+		Expect(container.Args).To(HaveLen(1))
+		for _, substr := range expectedSubstrings {
+			Expect(container.Args[0]).To(ContainSubstring(substr))
+		}
+	}
+
+	// testCloudConfigInclusion tests that cloud-config flag is included in container args
+	testCloudConfigInclusion := func(containerName string) {
+		secretName := artifact.Name + "-cloudconfig"
+		_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: namespace,
+				},
+				StringData: map[string]string{
+					"cloud-config.yaml": "#cloud-config\nusers:\n  - name: test",
+				},
+				Type: "Opaque",
+			}, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		artifact.Spec.CloudConfigRef = &buildv1alpha2.SecretKeySelector{
+			Name: secretName,
+			Key:  "cloud-config.yaml",
+		}
+
+		testContainerCommand(containerName, []string{"--cloud-config /cloud-config.yaml"})
+	}
+
 	BeforeEach(func() {
 		// These tests require a real cluster (USE_EXISTING_CLUSTER=true)
 		// Skip if running in envtest environment
@@ -173,65 +223,18 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("creates build-cloud-image container with correct auroraboot command", func() {
-				pvc, err := r.createPVC(context.TODO(), artifact)
-				Expect(err).ToNot(HaveOccurred())
-
-				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-				Expect(err).ToNot(HaveOccurred())
-
-				var cloudImageContainer *corev1.Container
-				for i := range pod.Spec.Containers {
-					if pod.Spec.Containers[i].Name == "build-cloud-image" {
-						cloudImageContainer = &pod.Spec.Containers[i]
-						break
-					}
-				}
-				Expect(cloudImageContainer).ToNot(BeNil())
-				Expect(cloudImageContainer.Args).To(HaveLen(1))
-				Expect(cloudImageContainer.Args[0]).To(ContainSubstring("auroraboot --debug --set 'disk.raw=true'"))
-				Expect(cloudImageContainer.Args[0]).To(ContainSubstring("--set 'state_dir=/artifacts'"))
-				Expect(cloudImageContainer.Args[0]).To(ContainSubstring("dir:/rootfs"))
-				Expect(cloudImageContainer.Args[0]).To(ContainSubstring(fmt.Sprintf("file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw", artifact.Name)))
+				testContainerCommand("build-cloud-image", []string{
+					"auroraboot --debug --set 'disk.raw=true'",
+					"--set 'state_dir=/artifacts'",
+					"dir:/rootfs",
+					fmt.Sprintf("file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+						artifact.Name),
+				})
 			})
 
 			When("CloudConfigRef is set", func() {
-				BeforeEach(func() {
-					secretName := artifact.Name + "-cloudconfig"
-					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
-						&corev1.Secret{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      secretName,
-								Namespace: namespace,
-							},
-							StringData: map[string]string{
-								"cloud-config.yaml": "#cloud-config\nusers:\n  - name: test",
-							},
-							Type: "Opaque",
-						}, metav1.CreateOptions{})
-					Expect(err).ToNot(HaveOccurred())
-
-					artifact.Spec.CloudConfigRef = &buildv1alpha2.SecretKeySelector{
-						Name: secretName,
-						Key:  "cloud-config.yaml",
-					}
-				})
-
 				It("includes cloud-config flag in auroraboot command", func() {
-					pvc, err := r.createPVC(context.TODO(), artifact)
-					Expect(err).ToNot(HaveOccurred())
-
-					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-					Expect(err).ToNot(HaveOccurred())
-
-					var cloudImageContainer *corev1.Container
-					for i := range pod.Spec.Containers {
-						if pod.Spec.Containers[i].Name == "build-cloud-image" {
-							cloudImageContainer = &pod.Spec.Containers[i]
-							break
-						}
-					}
-					Expect(cloudImageContainer).ToNot(BeNil())
-					Expect(cloudImageContainer.Args[0]).To(ContainSubstring("--cloud-config /cloud-config.yaml"))
+					testCloudConfigInclusion("build-cloud-image")
 				})
 			})
 		})
@@ -272,65 +275,18 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("creates build-azure-cloud-image container with correct auroraboot command", func() {
-				pvc, err := r.createPVC(context.TODO(), artifact)
-				Expect(err).ToNot(HaveOccurred())
-
-				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-				Expect(err).ToNot(HaveOccurred())
-
-				var azureContainer *corev1.Container
-				for i := range pod.Spec.Containers {
-					if pod.Spec.Containers[i].Name == "build-azure-cloud-image" {
-						azureContainer = &pod.Spec.Containers[i]
-						break
-					}
-				}
-				Expect(azureContainer).ToNot(BeNil())
-				Expect(azureContainer.Args).To(HaveLen(1))
-				Expect(azureContainer.Args[0]).To(ContainSubstring("auroraboot --debug --set 'disk.vhd=true'"))
-				Expect(azureContainer.Args[0]).To(ContainSubstring("--set 'state_dir=/artifacts'"))
-				Expect(azureContainer.Args[0]).To(ContainSubstring("dir:/rootfs"))
-				Expect(azureContainer.Args[0]).To(ContainSubstring(fmt.Sprintf("file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd", artifact.Name)))
+				testContainerCommand("build-azure-cloud-image", []string{
+					"auroraboot --debug --set 'disk.vhd=true'",
+					"--set 'state_dir=/artifacts'",
+					"dir:/rootfs",
+					fmt.Sprintf("file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+						artifact.Name),
+				})
 			})
 
 			When("CloudConfigRef is set", func() {
-				BeforeEach(func() {
-					secretName := artifact.Name + "-cloudconfig"
-					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
-						&corev1.Secret{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      secretName,
-								Namespace: namespace,
-							},
-							StringData: map[string]string{
-								"cloud-config.yaml": "#cloud-config\nusers:\n  - name: test",
-							},
-							Type: "Opaque",
-						}, metav1.CreateOptions{})
-					Expect(err).ToNot(HaveOccurred())
-
-					artifact.Spec.CloudConfigRef = &buildv1alpha2.SecretKeySelector{
-						Name: secretName,
-						Key:  "cloud-config.yaml",
-					}
-				})
-
 				It("includes cloud-config flag in auroraboot command", func() {
-					pvc, err := r.createPVC(context.TODO(), artifact)
-					Expect(err).ToNot(HaveOccurred())
-
-					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-					Expect(err).ToNot(HaveOccurred())
-
-					var azureContainer *corev1.Container
-					for i := range pod.Spec.Containers {
-						if pod.Spec.Containers[i].Name == "build-azure-cloud-image" {
-							azureContainer = &pod.Spec.Containers[i]
-							break
-						}
-					}
-					Expect(azureContainer).ToNot(BeNil())
-					Expect(azureContainer.Args[0]).To(ContainSubstring("--cloud-config /cloud-config.yaml"))
+					testCloudConfigInclusion("build-azure-cloud-image")
 				})
 			})
 		})
@@ -341,65 +297,19 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("creates build-gce-cloud-image container with correct auroraboot command", func() {
-				pvc, err := r.createPVC(context.TODO(), artifact)
-				Expect(err).ToNot(HaveOccurred())
-
-				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-				Expect(err).ToNot(HaveOccurred())
-
-				var gceContainer *corev1.Container
-				for i := range pod.Spec.Containers {
-					if pod.Spec.Containers[i].Name == "build-gce-cloud-image" {
-						gceContainer = &pod.Spec.Containers[i]
-						break
-					}
-				}
-				Expect(gceContainer).ToNot(BeNil())
-				Expect(gceContainer.Args).To(HaveLen(1))
-				Expect(gceContainer.Args[0]).To(ContainSubstring("auroraboot --debug --set 'disk.gce=true'"))
-				Expect(gceContainer.Args[0]).To(ContainSubstring("--set 'state_dir=/artifacts'"))
-				Expect(gceContainer.Args[0]).To(ContainSubstring("dir:/rootfs"))
-				Expect(gceContainer.Args[0]).To(ContainSubstring(fmt.Sprintf("file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.gce.tar.gz", artifact.Name)))
+				testContainerCommand("build-gce-cloud-image", []string{
+					"auroraboot --debug --set 'disk.gce=true'",
+					"--set 'state_dir=/artifacts'",
+					"dir:/rootfs",
+					fmt.Sprintf("file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+						"mv \"$file\" /artifacts/%s.gce.tar.gz",
+						artifact.Name),
+				})
 			})
 
 			When("CloudConfigRef is set", func() {
-				BeforeEach(func() {
-					secretName := artifact.Name + "-cloudconfig"
-					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
-						&corev1.Secret{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      secretName,
-								Namespace: namespace,
-							},
-							StringData: map[string]string{
-								"cloud-config.yaml": "#cloud-config\nusers:\n  - name: test",
-							},
-							Type: "Opaque",
-						}, metav1.CreateOptions{})
-					Expect(err).ToNot(HaveOccurred())
-
-					artifact.Spec.CloudConfigRef = &buildv1alpha2.SecretKeySelector{
-						Name: secretName,
-						Key:  "cloud-config.yaml",
-					}
-				})
-
 				It("includes cloud-config flag in auroraboot command", func() {
-					pvc, err := r.createPVC(context.TODO(), artifact)
-					Expect(err).ToNot(HaveOccurred())
-
-					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
-					Expect(err).ToNot(HaveOccurred())
-
-					var gceContainer *corev1.Container
-					for i := range pod.Spec.Containers {
-						if pod.Spec.Containers[i].Name == "build-gce-cloud-image" {
-							gceContainer = &pod.Spec.Containers[i]
-							break
-						}
-					}
-					Expect(gceContainer).ToNot(BeNil())
-					Expect(gceContainer.Args[0]).To(ContainSubstring("--cloud-config /cloud-config.yaml"))
+					testCloudConfigInclusion("build-gce-cloud-image")
 				})
 			})
 		})
