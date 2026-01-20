@@ -187,7 +187,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("checking if an init container was created")
-				initContainerNames := []string{}
+				initContainerNames := make([]string, 0, len(pod.Spec.InitContainers))
 				for _, c := range pod.Spec.InitContainers {
 					initContainerNames = append(initContainerNames, c.Name)
 				}

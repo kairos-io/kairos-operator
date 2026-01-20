@@ -693,7 +693,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			}
 			// Track the order of job creation/completion
 			var jobOrder []string
-			var completedJobs []string
+			completedJobs := make([]string, 0, len(targetNodeNames))
 
 			for i := range len(targetNodeNames) {
 				By(fmt.Sprintf("Iteration %d: Reconciling NodeOp to create next job", i+1))

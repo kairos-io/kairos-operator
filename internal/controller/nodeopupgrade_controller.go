@@ -226,7 +226,9 @@ exit 0
 	}
 
 	// Build the complete command
-	command := []string{"/bin/sh", "-c"}
+	command := make([]string, 2, 3)
+	command[0] = "/bin/sh"
+	command[1] = "-c"
 
 	command = append(command, script)
 	return command
