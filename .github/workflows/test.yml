@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    name: Run on Ubuntu
+    name: Run unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
@@ -22,3 +22,33 @@ jobs:
         run: |
           go mod tidy
           make test
+
+  controller-tests:
+    name: Run controller tests (OSArtifact)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install kind
+        uses: engineerd/setup-kind@v0.7.0
+        with:
+          version: "v0.20.0"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Running Controller Tests
+        run: |
+          go mod tidy
+          make controller-tests
+        env:
+          USE_EXISTING_CLUSTER: "true"
