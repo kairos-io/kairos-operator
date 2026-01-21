@@ -175,8 +175,8 @@ func createRandomNamespace(clientset *kubernetes.Clientset) string {
 	return name
 }
 
-// deleteNamepace deletes a namespace and waits for it to be fully deleted
-func deleteNamepace(clientset *kubernetes.Clientset, name string) {
+// deleteNamespace deletes a namespace and waits for it to be fully deleted
+func deleteNamespace(clientset *kubernetes.Clientset, name string) {
 	err := clientset.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
 	Expect(err).ToNot(HaveOccurred())
 

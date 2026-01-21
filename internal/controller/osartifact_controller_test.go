@@ -138,7 +138,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 	})
 
 	AfterEach(func() {
-		deleteNamepace(clientset, namespace)
+		deleteNamespace(clientset, namespace)
 	})
 
 	Describe("CreateConfigMap", func() {
