@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+CLUSTER_NAME ?= kairos-operator-e2e
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -43,7 +44,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:maxDescLen=0 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -66,16 +67,21 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: manifests generate fmt vet ginkgo ## Run the e2e tests. Expected an isolated environment using Kind.
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@$(KIND) get clusters | grep -q 'kind' || { \
-		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
-		exit 1; \
-	}
-	go test ./test/e2e/ -v -ginkgo.v
+	# E2E suite creates its own cluster, so we just need to ensure kind is available
+	$(GINKGO) -r -v ./test/e2e
+
+.PHONY: kind-e2e-tests
+kind-e2e-tests: kind-setup install deploy-dev ginkgo ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
+	@echo "Note: The E2E test suite creates its own cluster, so this target mainly ensures kind is set up."
+	@kubectl cluster-info --context kind-$(CLUSTER_NAME) || true
+	@kubectl wait --for=condition=Ready node/$(CLUSTER_NAME)-control-plane --timeout=5m || true
+	@kubectl get nodes -o wide
+	$(GINKGO) -r -v ./test/e2e
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -152,9 +158,42 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
+.PHONY: deploy-dev
+deploy-dev: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config using dev config.
+	cd config/dev && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: undeploy-dev
+undeploy-dev: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config using dev config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) build config/dev | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f - || true
+
+##@ Testing with Kind
+
+.PHONY: kind-setup
+kind-setup: ## Create a kind cluster for testing
+	@if ! $(KIND) get clusters | grep -q "$(CLUSTER_NAME)"; then \
+		echo "Creating kind cluster $(CLUSTER_NAME)..."; \
+		$(KIND) create cluster --name $(CLUSTER_NAME) --config test/e2e/kind-2node.yaml || true; \
+	else \
+		echo "Kind cluster $(CLUSTER_NAME) already exists"; \
+	fi
+	$(MAKE) kind-setup-image
+
+.PHONY: kind-setup-image
+kind-setup-image: docker-build ## Load the controller image into the kind cluster
+	$(KIND) load docker-image --name $(CLUSTER_NAME) $(IMG)
+
+.PHONY: kind-teardown
+kind-teardown: ## Delete the kind cluster
+	$(KIND) delete cluster --name $(CLUSTER_NAME) || true
+
+.PHONY: controller-tests
+controller-tests: kind-setup install undeploy-dev deploy-dev ## Run controller tests that require a real cluster (OSArtifact tests)
+	USE_EXISTING_CLUSTER=true go test ./internal/controller/... -v -ginkgo.v -ginkgo.focus="OSArtifact"
 
 ##@ Dependencies
 
@@ -170,6 +209,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GINKGO ?= $(LOCALBIN)/ginkgo
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -178,7 +218,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.17.2
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v1.63.4
+GOLANGCI_LINT_VERSION ?= v2.8.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -206,7 +246,12 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
+$(GINKGO): $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install -mod=mod github.com/onsi/ginkgo/v2/ginkgo@latest
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

@@ -102,7 +102,8 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // createNodeOp creates a NodeOp resource based on the NodeOpUpgrade spec
-func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context, nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) error {
+func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) error {
 	// Generate the upgrade command based on the NodeOpUpgrade spec
 	upgradeCommand := r.generateUpgradeCommand(nodeOpUpgrade)
 
@@ -225,14 +226,17 @@ exit 0
 	}
 
 	// Build the complete command
-	command := []string{"/bin/sh", "-c"}
+	command := make([]string, 2, 3)
+	command[0] = "/bin/sh"
+	command[1] = "-c"
 
 	command = append(command, script)
 	return command
 }
 
 // updateStatusFromNodeOp updates the NodeOpUpgrade status based on the NodeOp status
-func (r *NodeOpUpgradeReconciler) updateStatusFromNodeOp(ctx context.Context, nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade, nodeOp *kairosiov1alpha1.NodeOp) error {
+func (r *NodeOpUpgradeReconciler) updateStatusFromNodeOp(ctx context.Context,
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade, nodeOp *kairosiov1alpha1.NodeOp) error {
 	// Copy status from NodeOp to NodeOpUpgrade
 	statusChanged := false
 
@@ -292,7 +296,8 @@ func (r *NodeOpUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // findNodeOpUpgradesForNodeOp finds NodeOpUpgrade resources that own the given NodeOp
-func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
+	obj client.Object) []reconcile.Request {
 	nodeOp := obj.(*kairosiov1alpha1.NodeOp)
 
 	// Look for the owning NodeOpUpgrade using labels

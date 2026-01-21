@@ -2,16 +2,20 @@ package controller
 
 import (
 	"context"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -47,6 +52,8 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	err = kairosiov1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = buildv1alpha2.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
@@ -132,6 +139,52 @@ func markJobAsCompleted(ctx context.Context, k8sClient client.Client, job *batch
 	}
 
 	return k8sClient.Status().Update(ctx, job)
+}
+
+// randStringRunes generates a random string of specified length
+func randStringRunes(n int) string {
+	var letterRunes = []rune("abcdefghijklmnopqrstuvwxyz")
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
+// createRandomNamespace creates a random namespace for testing
+func createRandomNamespace(clientset *kubernetes.Clientset) string {
+	name := randStringRunes(10)
+	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}, metav1.CreateOptions{})
+	Expect(err).ToNot(HaveOccurred())
+
+	// Create default service account to avoid pod creation errors
+	_, err = clientset.CoreV1().ServiceAccounts(name).Create(context.Background(), &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: name,
+		},
+	}, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	return name
+}
+
+// deleteNamespace deletes a namespace and waits for it to be fully deleted
+func deleteNamespace(clientset *kubernetes.Clientset, name string) {
+	err := clientset.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
+	Expect(err).ToNot(HaveOccurred())
+
+	// Wait for the namespace to be fully deleted to ensure clean test isolation
+	Eventually(func() bool {
+		_, err := clientset.CoreV1().Namespaces().Get(context.Background(), name, metav1.GetOptions{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Minute, 1*time.Second).Should(BeTrue(), "namespace should be deleted")
 }
 
 // Helper function to mark a job as failed with proper conditions

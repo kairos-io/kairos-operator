@@ -1,0 +1,12 @@
+bases:
+- ../default
+
+# Override the image patch from default to use controller:latest
+patches:
+- target:
+    kind: Deployment
+    name: kairos-operator
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/image
+      value: controller:latest

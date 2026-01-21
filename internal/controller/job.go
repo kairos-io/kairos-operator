@@ -1,0 +1,512 @@
+/*
+Copyright 2022.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"fmt"
+	"strings"
+
+	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func unpackContainer(id, containerImage, pullImage string) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            fmt.Sprintf("pull-image-%s", id),
+		Image:           containerImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			fmt.Sprintf(
+				"luet util unpack %s %s",
+				pullImage,
+				"/rootfs",
+			),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "rootfs",
+				MountPath: "/rootfs",
+			},
+		},
+	}
+}
+
+func pushImageName(artifact *buildv1alpha2.OSArtifact) string {
+	pushName := artifact.Spec.ImageName
+	if pushName != "" {
+		return pushName
+	}
+	return artifact.Name
+}
+
+func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
+	imageName := pushImageName(artifact)
+
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "create-image",
+		Image:           containerImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			fmt.Sprintf(
+				"tar -czvpf test.tar -C /rootfs . && luet util pack %[1]s test.tar %[2]s.tar && "+
+					"chmod +r %[2]s.tar && mv %[2]s.tar /artifacts",
+				imageName,
+				artifact.Name,
+			),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "rootfs",
+				MountPath: "/rootfs",
+			},
+			{
+				Name:      "artifacts",
+				MountPath: "/artifacts",
+			},
+		},
+	}
+}
+
+func osReleaseContainer(containerImage string) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "os-release",
+		Image:           containerImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			"cp -rfv /etc/os-release /rootfs/etc/os-release",
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/os-release",
+				SubPath:   "os-release",
+			},
+			{
+				Name:      "rootfs",
+				MountPath: "/rootfs",
+			},
+		},
+	}
+}
+
+func kairosReleaseContainer(containerImage string) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "kairos-release",
+		Image:           containerImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			"cp -rfv /etc/kairos-release /rootfs/etc/kairos-release",
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/kairos-release",
+				SubPath:   "kairos-release",
+			},
+			{
+				Name:      "rootfs",
+				MountPath: "/rootfs",
+			},
+		},
+	}
+}
+
+func (r *OSArtifactReconciler) newArtifactPVC(artifact *buildv1alpha2.OSArtifact) *corev1.PersistentVolumeClaim {
+	if artifact.Spec.Volume == nil {
+		artifact.Spec.Volume = &corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteOnce,
+			},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: map[corev1.ResourceName]resource.Quantity{
+					"storage": resource.MustParse("10Gi"),
+				},
+			},
+		}
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      artifact.Name + "-artifacts",
+			Namespace: artifact.Namespace,
+		},
+		Spec: *artifact.Spec.Volume,
+	}
+
+	return pvc
+}
+
+func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
+	var cmd strings.Builder
+	cmd.WriteString("auroraboot --debug build-iso")
+	cmd.WriteString(fmt.Sprintf(" --override-name %s", artifact.Name))
+	cmd.WriteString(" --date=false")
+
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "artifacts",
+			MountPath: "/artifacts",
+		},
+		{
+			Name:      "rootfs",
+			MountPath: "/rootfs",
+		},
+	}
+
+	if artifact.Spec.GRUBConfig != "" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "config",
+			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
+			SubPath:   "grub.cfg",
+		})
+	}
+
+	var cloudImgCmd strings.Builder
+	cloudImgCmd.WriteString("auroraboot --debug")
+	cloudImgCmd.WriteString(" --set 'disk.raw=true'")
+	cloudImgCmd.WriteString(" --set 'disable_netboot=true'")
+	cloudImgCmd.WriteString(" --set 'disable_http_server=true'")
+	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
+	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+
+	if artifact.Spec.CloudConfigRef != nil {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "cloudconfig",
+			MountPath: "/cloud-config.yaml",
+			SubPath:   artifact.Spec.CloudConfigRef.Key,
+		})
+		cloudImgCmd.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+
+	cloudImgCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+		artifact.Name))
+
+	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
+		cmd.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+	cmd.WriteString(" --output /artifacts dir:/rootfs")
+
+	buildIsoContainer := corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-iso",
+		Image:           r.ToolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			cmd.String(),
+		},
+		VolumeMounts: volumeMounts,
+	}
+
+	buildCloudImageContainer := corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-cloud-image",
+		Image:           r.ToolImage,
+
+		Command: []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			cloudImgCmd.String(),
+		},
+		VolumeMounts: volumeMounts,
+	}
+
+	if artifact.Spec.DiskSize != "" {
+		buildCloudImageContainer.Env = []corev1.EnvVar{{
+			Name:  "EXTEND",
+			Value: artifact.Spec.DiskSize,
+		}}
+	}
+
+	var netbootCmd strings.Builder
+	netbootCmd.WriteString("auroraboot --debug netboot")
+	netbootCmd.WriteString(fmt.Sprintf(" /artifacts/%s.iso", artifact.Name))
+	netbootCmd.WriteString(" /artifacts")
+	netbootCmd.WriteString(fmt.Sprintf(" %s", artifact.Name))
+
+	extractNetboot := corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-netboot",
+		Image:           r.ToolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Env: []corev1.EnvVar{{
+			Name:  "URL",
+			Value: artifact.Spec.NetbootURL,
+		}},
+		Args: []string{
+			netbootCmd.String(),
+		},
+		VolumeMounts: volumeMounts,
+	}
+
+	var azureCmd strings.Builder
+	azureCmd.WriteString("auroraboot --debug")
+	azureCmd.WriteString(" --set 'disk.vhd=true'")
+	azureCmd.WriteString(" --set 'disable_netboot=true'")
+	azureCmd.WriteString(" --set 'disable_http_server=true'")
+	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
+	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+
+	if artifact.Spec.CloudConfigRef != nil {
+		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+
+	azureCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+		artifact.Name))
+	buildAzureCloudImageContainer := corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-azure-cloud-image",
+		Image:           r.ToolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			azureCmd.String(),
+		},
+		VolumeMounts: volumeMounts,
+	}
+
+	var gceCmd strings.Builder
+	gceCmd.WriteString("auroraboot --debug")
+	gceCmd.WriteString(" --set 'disk.gce=true'")
+	gceCmd.WriteString(" --set 'disable_netboot=true'")
+	gceCmd.WriteString(" --set 'disable_http_server=true'")
+	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
+	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+
+	if artifact.Spec.CloudConfigRef != nil {
+		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+
+	gceCmd.WriteString(fmt.Sprintf(
+		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+			"mv \"$file\" /artifacts/%s.gce.tar.gz",
+		artifact.Name))
+	buildGCECloudImageContainer := corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-gce-cloud-image",
+		Image:           r.ToolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args: []string{
+			gceCmd.String(),
+		},
+		VolumeMounts: volumeMounts,
+	}
+
+	podSpec := corev1.PodSpec{
+		AutomountServiceAccountToken: ptr(false),
+		RestartPolicy:                corev1.RestartPolicyNever,
+		Volumes: []corev1.Volume{
+			{
+				Name: "artifacts",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: pvcName,
+						ReadOnly:  false,
+					},
+				},
+			},
+			{
+				Name:         "rootfs",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			},
+			{
+				Name: "config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: artifact.Name,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if artifact.Spec.BaseImageDockerfile != nil {
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: "dockerfile",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: artifact.Spec.BaseImageDockerfile.Name,
+				},
+			},
+		})
+	}
+
+	if artifact.Spec.CloudConfigRef != nil {
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: "cloudconfig",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: artifact.Spec.CloudConfigRef.Name,
+					Optional:   ptr(true),
+				},
+			},
+		})
+	}
+
+	podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, artifact.Spec.ImagePullSecrets...)
+
+	podSpec.InitContainers = []corev1.Container{}
+	// Base image can be:
+	// - built from a dockerfile and converted to a kairos one
+	// - built by converting an existing image to a kairos one
+	// - a prebuilt kairos image
+	if artifact.Spec.BaseImageDockerfile != nil {
+		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers()...)
+	} else if artifact.Spec.BaseImageName != "" { // Existing base image - non kairos
+		podSpec.InitContainers = append(podSpec.InitContainers,
+			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName))
+	} else { // Existing Kairos base image
+		podSpec.InitContainers = append(podSpec.InitContainers,
+			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName))
+	}
+
+	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
+	// convert it to a Kairos one, in a best effort manner.
+	// TODO: Implement this conversion with kairos-init?
+	// if artifact.Spec.BaseImageDockerfile != nil || artifact.Spec.BaseImageName != "" {
+	// 	podSpec.InitContainers = append(podSpec.InitContainers,
+	// 		corev1.Container{
+	// 			ImagePullPolicy: corev1.PullAlways,
+	// 			Name:            "convert-to-kairos",
+	// 			Image:           "busybox",
+	// 			Command:         []string{"/bin/echo"},
+	// 			Args:            []string{"TODO"},
+	// 			VolumeMounts: []corev1.VolumeMount{
+	// 				{
+	// 					Name:      "rootfs",
+	// 					MountPath: "/rootfs",
+	// 				},
+	// 			},
+	// 		})
+	// }
+
+	for i, bundle := range artifact.Spec.Bundles {
+		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle))
+	}
+
+	if artifact.Spec.OSRelease != "" {
+		podSpec.InitContainers = append(podSpec.InitContainers, osReleaseContainer(r.ToolImage))
+	}
+	if artifact.Spec.KairosRelease != "" {
+		podSpec.InitContainers = append(podSpec.InitContainers, kairosReleaseContainer(r.ToolImage))
+	}
+
+	// build-iso runs as an init container to ensure it completes before build-netboot
+	// (which extracts artifacts from the ISO). Init containers run sequentially and must
+	// succeed before regular containers start.
+	if artifact.Spec.ISO || artifact.Spec.Netboot {
+		podSpec.InitContainers = append(podSpec.InitContainers, buildIsoContainer)
+	}
+
+	if artifact.Spec.Netboot {
+		podSpec.Containers = append(podSpec.Containers, extractNetboot)
+	}
+
+	if artifact.Spec.CloudImage {
+		podSpec.Containers = append(podSpec.Containers, buildCloudImageContainer)
+	}
+
+	if artifact.Spec.AzureImage {
+		podSpec.Containers = append(podSpec.Containers, buildAzureCloudImageContainer)
+	}
+
+	if artifact.Spec.GCEImage {
+		podSpec.Containers = append(podSpec.Containers, buildGCECloudImageContainer)
+	}
+
+	podSpec.Containers = append(podSpec.Containers, createImageContainer(r.ToolImage, artifact))
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: artifact.Name + "-",
+			Namespace:    artifact.Namespace,
+		},
+		Spec: podSpec,
+	}
+}
+
+func ptr[T any](val T) *T {
+	return &val
+}
+
+func baseImageBuildContainers() []corev1.Container {
+	return []corev1.Container{
+		{
+			ImagePullPolicy: corev1.PullAlways,
+			Name:            "kaniko-build",
+			Image:           "gcr.io/kaniko-project/executor:latest",
+			Args: []string{
+				"--dockerfile", "dockerfile/Dockerfile",
+				"--context", "dir://workspace",
+				"--destination", "whatever", // We don't push, but it needs this
+				"--tar-path", "/rootfs/image.tar",
+				"--no-push",
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "rootfs",
+					MountPath: "/rootfs",
+				},
+				{
+					Name:      "dockerfile",
+					MountPath: "/workspace/dockerfile",
+				},
+			},
+		},
+		{
+			ImagePullPolicy: corev1.PullAlways,
+			Name:            "image-extractor",
+			Image:           "quay.io/luet/base",
+			Args: []string{
+				"util", "unpack", "--local", "file:////rootfs/image.tar", "/rootfs",
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "rootfs",
+					MountPath: "/rootfs",
+				},
+			},
+		},
+		{
+			ImagePullPolicy: corev1.PullAlways,
+			Name:            "cleanup",
+			Image:           "busybox",
+			Command:         []string{"/bin/rm"},
+			Args: []string{
+				"/rootfs/image.tar",
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "rootfs",
+					MountPath: "/rootfs",
+				},
+			},
+		},
+	}
+}

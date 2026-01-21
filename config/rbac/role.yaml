@@ -9,6 +9,7 @@ rules:
   resources:
   - configmaps
   verbs:
+  - create
   - get
   - list
   - watch
@@ -25,6 +26,16 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   - serviceaccounts
   verbs:
@@ -35,6 +46,12 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
 - apiGroups:
   - batch
   resources:
@@ -51,6 +68,32 @@ rules:
   - batch
   resources:
   - jobs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - build.kairos.io
+  resources:
+  - osartifacts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - build.kairos.io
+  resources:
+  - osartifacts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - build.kairos.io
+  resources:
+  - osartifacts/status
   verbs:
   - get
   - patch

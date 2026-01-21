@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    name: Run on Ubuntu
+    name: Run unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
@@ -22,3 +22,37 @@ jobs:
         run: |
           go mod tidy
           make test
+
+  controller-tests:
+    name: Run controller tests (OSArtifact)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Verify kind installation
+        run: kind version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Running Controller Tests
+        run: |
+          go mod tidy
+          make controller-tests
+        env:
+          USE_EXISTING_CLUSTER: "true"

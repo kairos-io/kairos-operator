@@ -19,9 +19,36 @@ import (
 )
 
 const (
-	timeout  = time.Second * 10
-	interval = time.Millisecond * 250
+	timeout   = time.Second * 10
+	interval  = time.Millisecond * 250
+	labelTrue = "true"
 )
+
+// reconcileNodeOpUpgrade is a helper that reconciles a NodeOpUpgrade and returns the resulting NodeOp
+func reconcileNodeOpUpgrade(ctx context.Context, k8sClient client.Client,
+	nodeOpUpgradeName string) (*kairosiov1alpha1.NodeOp, error) {
+	controllerReconciler := &NodeOpUpgradeReconciler{
+		Client: k8sClient,
+		Scheme: k8sClient.Scheme(),
+	}
+
+	_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      nodeOpUpgradeName,
+			Namespace: "default",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	nodeOp := &kairosiov1alpha1.NodeOp{}
+	err = k8sClient.Get(ctx, types.NamespacedName{
+		Name:      nodeOpUpgradeName,
+		Namespace: "default",
+	}, nodeOp)
+	return nodeOp, err
+}
 
 var _ = Describe("NodeOpUpgrade Controller", func() {
 	Context("When reconciling a NodeOpUpgrade resource", func() {
@@ -286,26 +313,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			By("Reconciling the created NodeOpUpgrade")
-			controllerReconciler := &NodeOpUpgradeReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				},
-			})
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying the generated command")
-			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nodeOpUpgradeName,
-				Namespace: "default",
-			}, nodeOp)).To(Succeed())
-
 			script := nodeOp.Spec.Command[2]
 			Expect(script).To(ContainSubstring("# Upgrade recovery partition"))
 			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
@@ -322,26 +333,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			By("Reconciling the created NodeOpUpgrade")
-			controllerReconciler := &NodeOpUpgradeReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      nodeOpUpgradeName,
-					Namespace: "default",
-				},
-			})
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying the generated command")
-			nodeOp := &kairosiov1alpha1.NodeOp{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nodeOpUpgradeName,
-				Namespace: "default",
-			}, nodeOp)).To(Succeed())
-
 			script := nodeOp.Spec.Command[2]
 			Expect(script).NotTo(ContainSubstring("get_version()"))
 			Expect(script).To(ContainSubstring("mount --rbind"))
@@ -614,7 +609,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 					},
 				}
 				if strings.HasPrefix(name, "master") {
-					node.Labels["node-role.kubernetes.io/master"] = "true"
+					node.Labels["node-role.kubernetes.io/master"] = labelTrue
 				}
 				nodes[i] = node
 				Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -630,7 +625,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 						if n.Labels == nil {
 							n.Labels = map[string]string{}
 						}
-						n.Labels[targetLabel] = "true"
+						n.Labels[targetLabel] = labelTrue
 						Expect(k8sClient.Update(ctx, n)).To(Succeed())
 						break // Exit inner loop once we find a match
 					}
@@ -640,10 +635,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			for _, targetNodeName := range targetNodeNames {
 				node := &corev1.Node{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetNodeName + uniqueSuffix}, node)).To(Succeed())
-				Expect(node.Labels[targetLabel]).To(Equal("true"))
+				Expect(node.Labels[targetLabel]).To(Equal(labelTrue))
 				// Verify master nodes still have master label
 				if strings.HasPrefix(targetNodeName, "master") {
-					Expect(node.Labels["node-role.kubernetes.io/master"]).To(Equal("true"))
+					Expect(node.Labels["node-role.kubernetes.io/master"]).To(Equal(labelTrue))
 				}
 			}
 
@@ -659,7 +654,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 					UpgradeRecovery: asBool(true),
 					Concurrency:     1,
 					NodeSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{targetLabel: "true"},
+						MatchLabels: map[string]string{targetLabel: labelTrue},
 					},
 				},
 			}
@@ -688,7 +683,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			// Verify NodeOp has the correct node selector
 			Expect(nodeOp.Spec.NodeSelector).NotTo(BeNil())
-			Expect(nodeOp.Spec.NodeSelector.MatchLabels).To(HaveKeyWithValue(targetLabel, "true"))
+			Expect(nodeOp.Spec.NodeSelector.MatchLabels).To(HaveKeyWithValue(targetLabel, labelTrue))
 			Expect(nodeOp.Spec.Concurrency).To(Equal(int32(1)))
 
 			By("Reconciling NodeOp to start jobs one-by-one and simulating completions")
@@ -698,7 +693,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			}
 			// Track the order of job creation/completion
 			var jobOrder []string
-			var completedJobs []string
+			completedJobs := make([]string, 0, len(targetNodeNames))
 
 			for i := range len(targetNodeNames) {
 				By(fmt.Sprintf("Iteration %d: Reconciling NodeOp to create next job", i+1))

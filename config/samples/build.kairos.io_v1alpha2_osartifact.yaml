@@ -1,0 +1,9 @@
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: osartifact-sample
+spec:
+  # TODO(user): Add fields here
+  # Example:
+  # imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  # iso: true

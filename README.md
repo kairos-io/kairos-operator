@@ -8,6 +8,7 @@
 - [Removing the operator](#removing-the-operator)
 - [Running an operation on the Nodes](#running-an-operation-on-the-nodes)
 - [Upgrading Kairos](#upgrading-kairos)
+- [Building OS Artifacts](#building-os-artifacts)
 - [Using Private Registries](#using-private-registries)
 - [Getting Started](#getting-started)
 - [Development notes](#development-notes)
@@ -16,11 +17,13 @@
 
 ## Overview
 
-This is the Kubernetes operator of [kairos](https://kairos.io). It's for day-2 operations of a Kairos kubernetes cluster. It provides 2 custom resources:
+This is the Kubernetes operator of [kairos](https://kairos.io). It's for day-2 operations of a Kairos kubernetes cluster. It provides 3 custom resources:
 
-- NodeOp: Use for generic operations on the Kubernetes nodes (kairos or not). It allows mounting the host's root filesystem using `hostMountPath` to allow user's scripts to manipulate it or use it (e.g. mount `/dev` to perform upgrades).
+- **NodeOp**: Use for generic operations on the Kubernetes nodes (kairos or not). It allows mounting the host's root filesystem using `hostMountPath` to allow user's scripts to manipulate it or use it (e.g. mount `/dev` to perform upgrades).
 
-- NodeOpUpgrade: A Kairos specific custom resource. Under the hood it creates a NodeOp with a specific script suitable to upgrade Kairos nodes.
+- **NodeOpUpgrade**: A Kairos specific custom resource. Under the hood it creates a NodeOp with a specific script suitable to upgrade Kairos nodes.
+
+- **OSArtifact**: Build Linux distribution artifacts (ISO, cloud images, netboot artifacts, etc.) from container images directly in Kubernetes. This allows you to build Kairos OS images and other artifacts as Kubernetes-native resources.
 
 ## Deploying the operator
 
@@ -74,7 +77,7 @@ spec:
   - name: private-registry-secret
 
   # The command to execute in the container
-  command: 
+  command:
     - sh
     - -c
     - |
@@ -180,6 +183,214 @@ Before you attempt an upgrade, it's good to know what to expect. Here is how the
 The result of the above process it that each upgrade Job finishes successfully, with no uneccessary restarts. The iupgrade logs can be found in the Job's Pod logs.
 
 The NodeOpUpgrade stores the statuses of the various Jobs it creates so it can be used to monitor the summary of the operation.
+
+## Building OS Artifacts
+
+The operator includes the **OSArtifact** custom resource that allows you to build Linux distribution artifacts (ISO images, cloud images, netboot artifacts, etc.) from container images directly in Kubernetes. This is particularly useful for building Kairos OS images and other bootable artifacts.
+
+### Basic Example
+
+Here's a simple example that builds an ISO image from a Kairos container image:
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-kairos-iso
+  namespace: default
+spec:
+  # The container image to build from (can be a Kairos image or vanilla Linux image)
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+
+  # Build an ISO image
+  iso: true
+
+  # Optional: Export the artifact using a custom job
+  exporters:
+  - template:
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: copy
+          image: debian:latest
+          command: ["bash", "-c"]
+          args:
+          - |
+            # Copy the built ISO to a location of your choice
+            cp /artifacts/*.iso /output/ || true
+          volumeMounts:
+          - name: artifacts
+            readOnly: true
+            mountPath: /artifacts
+          - name: output
+            mountPath: /output
+        volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: artifact-pvc
+        - name: output
+          # Your output volume configuration
+```
+
+### Supported Artifact Formats
+
+The OSArtifact resource supports building various artifact formats:
+
+#### ISO Images
+```yaml
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  iso: true
+```
+
+#### Cloud Images (Raw Disk)
+```yaml
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  cloudImage: true
+  diskSize: "10G"  # Optional: specify disk size
+```
+
+#### Azure VHD Images
+```yaml
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  azureImage: true
+```
+
+#### GCE Images
+```yaml
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  gceImage: true
+```
+
+#### Netboot Artifacts
+```yaml
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  iso: true
+  netboot: true
+  netbootURL: "http://example.com/netboot"  # URL where artifacts will be served
+```
+
+### Building from Dockerfiles
+
+You can also build from a Dockerfile stored in a Kubernetes Secret:
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: custom-build
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-dockerfile-secret
+    key: Dockerfile  # Optional: defaults to "Dockerfile"
+  iso: true
+```
+
+### Image Sources
+
+The OSArtifact resource supports three ways to specify the source image:
+
+1. **Pre-built Kairos image** (using `imageName`):
+   ```yaml
+   spec:
+     imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+   ```
+
+2. **Vanilla Linux image** (using `baseImageName`):
+   ```yaml
+   spec:
+     baseImageName: opensuse/leap:15.6
+     iso: true
+   ```
+   The operator will attempt to convert this to a Kairos image.
+
+3. **Dockerfile in a Secret** (using `baseImageDockerfile`):
+   ```yaml
+   spec:
+     baseImageDockerfile:
+       name: dockerfile-secret
+       key: Dockerfile
+     iso: true
+   ```
+
+### Monitoring Build Status
+
+The OSArtifact resource tracks the build status through the `status.phase` field:
+
+- `Pending`: The artifact is queued for building
+- `Building`: The build is in progress
+- `Exporting`: The artifact is being exported (if exporters are configured)
+- `Ready`: The artifact build completed successfully
+- `Error`: The build failed
+
+You can check the status with:
+
+```bash
+kubectl get osartifact my-kairos-iso
+kubectl describe osartifact my-kairos-iso
+```
+
+### Accessing Built Artifacts
+
+Built artifacts are stored in a PersistentVolumeClaim (PVC) that is automatically created. You can access them through:
+
+1. **Export Jobs**: Configure `exporters` in the spec to run custom jobs that can copy, upload, or process the artifacts
+2. **Direct PVC Access**: The PVC is labeled with `build.kairos.io/artifact=<artifact-name>` and can be mounted by other pods
+
+### Advanced Configuration
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: advanced-build
+  namespace: default
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+
+  # Build multiple formats
+  iso: true
+  cloudImage: true
+  azureImage: true
+
+  # Custom cloud config
+  cloudConfigRef:
+    name: cloud-config-secret
+    key: cloud-config.yaml
+
+  # Custom GRUB configuration
+  grubConfig: |
+    set timeout=5
+    set default=0
+
+  # OS release information
+  osRelease: "opensuse-leap-15.6"
+  kairosRelease: "v3.6.0"
+
+  # Additional bundles to include
+  bundles:
+  - docker
+  - k3s
+
+  # Image pull secrets for private registries
+  imagePullSecrets:
+  - name: private-registry-secret
+
+  # Custom volume configuration
+  volume:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 50Gi
+```
+
+For more information, see the [Kairos documentation on building artifacts](https://kairos.io/docs/advanced/build/).
 
 ## Using Private Registries
 
@@ -288,17 +499,34 @@ This project is managed with [kubebuilder](https://book.kubebuilder.io).
 
 ### Running tests
 
-There are 2 tests suites in this project. The end-to-end suite can be run with:
+There are multiple test suites in this project:
 
+**Unit tests** (using envtest):
+```bash
+make test
+```
+
+**Controller tests** (OSArtifact tests requiring a real cluster):
+```bash
+make controller-tests
+```
+This will set up a kind cluster, deploy the operator, and run OSArtifact controller tests.
+
+**End-to-end tests**:
+```bash
+make test-e2e
+```
+Or using ginkgo directly:
 ```bash
 ginkgo test/e2e
 ```
 
-the controllers test suite can be run with:
-
+**All controller tests** (including NodeOp, NodeOpUpgrade, and OSArtifact):
 ```bash
 ginkgo internal/controller
 ```
+
+Note: OSArtifact controller tests require `USE_EXISTING_CLUSTER=true` and will be skipped in the unit test suite. Use `make controller-tests` to run them with a real cluster.
 
 ## Contributing
 
