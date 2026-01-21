@@ -388,22 +388,23 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 
 	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
 	// convert it to a Kairos one, in a best effort manner.
-	if artifact.Spec.BaseImageDockerfile != nil || artifact.Spec.BaseImageName != "" {
-		podSpec.InitContainers = append(podSpec.InitContainers,
-			corev1.Container{
-				ImagePullPolicy: corev1.PullAlways,
-				Name:            "convert-to-kairos",
-				Image:           "busybox",
-				Command:         []string{"/bin/echo"},
-				Args:            []string{"TODO"},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "rootfs",
-						MountPath: "/rootfs",
-					},
-				},
-			})
-	}
+	// TODO: Implement this conversion with kairos-init?
+	// if artifact.Spec.BaseImageDockerfile != nil || artifact.Spec.BaseImageName != "" {
+	// 	podSpec.InitContainers = append(podSpec.InitContainers,
+	// 		corev1.Container{
+	// 			ImagePullPolicy: corev1.PullAlways,
+	// 			Name:            "convert-to-kairos",
+	// 			Image:           "busybox",
+	// 			Command:         []string{"/bin/echo"},
+	// 			Args:            []string{"TODO"},
+	// 			VolumeMounts: []corev1.VolumeMount{
+	// 				{
+	// 					Name:      "rootfs",
+	// 					MountPath: "/rootfs",
+	// 				},
+	// 			},
+	// 		})
+	// }
 
 	for i, bundle := range artifact.Spec.Bundles {
 		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle))
