@@ -161,6 +161,11 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	cmd.WriteString("auroraboot --debug build-iso")
 	cmd.WriteString(fmt.Sprintf(" --override-name %s", artifact.Name))
 	cmd.WriteString(" --date=false")
+	cmd.WriteString(" --output /artifacts")
+	if artifact.Spec.Arch != "" {
+		cmd.WriteString(fmt.Sprintf(" --arch %s", artifact.Spec.Arch))
+	}
+	cmd.WriteString(" dir:/rootfs")
 
 	volumeMounts := []corev1.VolumeMount{
 		{
@@ -188,6 +193,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	cloudImgCmd.WriteString(" --set 'disable_http_server=true'")
 	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
 	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if artifact.Spec.Arch != "" {
+		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -205,7 +213,6 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
-	cmd.WriteString(" --output /artifacts dir:/rootfs")
 
 	buildIsoContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -268,6 +275,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	azureCmd.WriteString(" --set 'disable_http_server=true'")
 	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
 	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if artifact.Spec.Arch != "" {
+		azureCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
@@ -295,6 +305,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	gceCmd.WriteString(" --set 'disable_http_server=true'")
 	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
 	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if artifact.Spec.Arch != "" {
+		gceCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")

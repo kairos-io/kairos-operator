@@ -47,6 +47,11 @@ type OSArtifactSpec struct {
 	Netboot    bool   `json:"netboot,omitempty"`
 	NetbootURL string `json:"netbootURL,omitempty"`
 
+	// Architecture to use when building ISOs and images (amd64 or arm64).
+	// When pulling container images for a different architecture than the host,
+	// this must be specified. Defaults to amd64 if not specified.
+	Arch string `json:"arch,omitempty"`
+
 	CloudConfigRef *SecretKeySelector `json:"cloudConfigRef,omitempty"`
 	GRUBConfig     string             `json:"grubConfig,omitempty"`
 
