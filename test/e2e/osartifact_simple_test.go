@@ -32,6 +32,7 @@ var _ = Describe("OSArtifact ISO build test", func() {
 				Exporters: []batchv1.JobSpec{
 					{
 						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{},
 							Spec: corev1.PodSpec{
 								RestartPolicy: corev1.RestartPolicyNever,
 								Containers: []corev1.Container{
