@@ -270,8 +270,8 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 
 			// Clean up template metadata to remove server-managed fields that shouldn't be in JobSpec.Template
 			job.Spec.Template.ObjectMeta = metav1.ObjectMeta{
-				Labels:      job.Spec.Template.ObjectMeta.Labels,
-				Annotations: job.Spec.Template.ObjectMeta.Annotations,
+				Labels:      job.Spec.Template.Labels,
+				Annotations: job.Spec.Template.Annotations,
 			}
 
 			job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, corev1.Volume{
