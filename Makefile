@@ -67,21 +67,21 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: manifests generate fmt vet ginkgo ## Run the e2e tests. Expected an isolated environment using Kind.
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
 	# E2E suite creates its own cluster, so we just need to ensure kind is available
-	go test ./test/e2e/ -v -ginkgo.v
+	$(GINKGO) -r -v ./test/e2e
 
 .PHONY: kind-e2e-tests
-kind-e2e-tests: kind-setup install deploy-dev ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
+kind-e2e-tests: kind-setup install deploy-dev ginkgo ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
 	@echo "Note: The E2E test suite creates its own cluster, so this target mainly ensures kind is set up."
 	@kubectl cluster-info --context kind-$(CLUSTER_NAME) || true
 	@kubectl wait --for=condition=Ready node/$(CLUSTER_NAME)-control-plane --timeout=5m || true
 	@kubectl get nodes -o wide
-	go test ./test/e2e/ -v -ginkgo.v
+	$(GINKGO) -r -v ./test/e2e
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -209,6 +209,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GINKGO ?= $(LOCALBIN)/ginkgo
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -246,6 +247,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
+$(GINKGO): $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install -mod=mod github.com/onsi/ginkgo/v2/ginkgo@latest
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

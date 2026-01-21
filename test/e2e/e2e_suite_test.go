@@ -53,9 +53,10 @@ var (
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
-	projectImage = "quay.io/kairos/operator:v0.0.1"
+	// Using controller:latest to match config/dev/kustomization.yaml
+	projectImage = "controller:latest"
 	// nodeLabelerImage is the name of the node-labeler image
-	nodeLabelerImage = "quay.io/kairos/operator-node-labeler:v0.0.1"
+	nodeLabelerImage = "controller-node-labeler:latest"
 
 	kubeconfig        string
 	clusterName       string
@@ -112,6 +113,33 @@ func SetupTestClients() *TestClients {
 func (tc *TestClients) CreateArtifact(artifact *buildv1alpha2.OSArtifact) (string, labels.Selector) {
 	uArtifact := unstructured.Unstructured{}
 	uArtifact.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(artifact)
+
+	// Clean up template metadata to remove any server-managed fields that shouldn't be in JobSpec.Template
+	if exporters, ok := uArtifact.Object["spec"].(map[string]interface{})["exporters"].([]interface{}); ok {
+		for _, exporter := range exporters {
+			if exporterMap, ok := exporter.(map[string]interface{}); ok {
+				if template, ok := exporterMap["template"].(map[string]interface{}); ok {
+					if metadata, ok := template["metadata"].(map[string]interface{}); ok {
+						// Remove server-managed fields that cause warnings
+						delete(metadata, "creationTimestamp")
+						delete(metadata, "uid")
+						delete(metadata, "resourceVersion")
+						delete(metadata, "generation")
+						// Keep only allowed fields (labels and annotations)
+						cleanedMetadata := make(map[string]interface{})
+						if labels, ok := metadata["labels"].(map[string]interface{}); ok {
+							cleanedMetadata["labels"] = labels
+						}
+						if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+							cleanedMetadata["annotations"] = annotations
+						}
+						template["metadata"] = cleanedMetadata
+					}
+				}
+			}
+		}
+	}
+
 	resp, err := tc.Artifacts.Create(context.TODO(), &uArtifact, metav1.CreateOptions{})
 	Expect(err).ToNot(HaveOccurred())
 	artifactName := resp.GetName()
@@ -320,10 +348,33 @@ func waitUntilControllerIsRunning() {
 }
 
 func installOperator() {
-	By("deploying the operator and node labeler")
-	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/default")
+	By("deploying the operator and node labeler using dev config")
+	// Use config/dev which uses controller:latest image that we built
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/dev")
 	out, err := cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), string(out))
+
+	// Wait for initial rollout to complete (in case deployment already existed)
+	By("waiting for initial deployment rollout to complete")
+	initialRolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
+		"deployment/operator-kairos-operator", "-n", namespace, "--timeout=2m")
+	initialRolloutOut, err := initialRolloutCmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(initialRolloutOut))
+
+	// Patch the node-labeler image environment variable to use the locally built image
+	// The default kustomization adds this env var, but we need to update it to use our local image
+	By("patching node-labeler image environment variable")
+	patchCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "set", "env", "deployment",
+		"operator-kairos-operator", fmt.Sprintf("NODE_LABELER_IMAGE=%s", nodeLabelerImage), "-n", namespace)
+	patchOut, err := patchCmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(patchOut))
+
+	// Wait for the rollout to complete after patching to ensure only one pod is running
+	By("waiting for deployment rollout to complete after patching")
+	rolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
+		"deployment/operator-kairos-operator", "-n", namespace, "--timeout=2m")
+	rolloutOut, err := rolloutCmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(rolloutOut))
 
 	By("waiting for the service account to be created")
 	Eventually(func() error {
