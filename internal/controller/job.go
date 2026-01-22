@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func unpackContainer(id, containerImage, pullImage string) corev1.Container {
@@ -156,14 +158,21 @@ func (r *OSArtifactReconciler) newArtifactPVC(artifact *buildv1alpha2.OSArtifact
 	return pvc
 }
 
-func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
+func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
 	var cmd strings.Builder
+
+	logger := log.FromContext(ctx)
+	arch, err := artifact.Spec.ArchSanitized()
+	if err != nil {
+		logger.Error(err, "reading arch from spec")
+	}
+
 	cmd.WriteString("auroraboot --debug build-iso")
 	cmd.WriteString(fmt.Sprintf(" --override-name %s", artifact.Name))
 	cmd.WriteString(" --date=false")
 	cmd.WriteString(" --output /artifacts")
-	if artifact.Spec.Arch != "" {
-		cmd.WriteString(fmt.Sprintf(" --arch %s", artifact.Spec.Arch))
+	if arch != "" {
+		cmd.WriteString(fmt.Sprintf(" --arch %s", arch))
 	}
 	cmd.WriteString(" dir:/rootfs")
 
@@ -193,8 +202,8 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	cloudImgCmd.WriteString(" --set 'disable_http_server=true'")
 	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
 	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if artifact.Spec.Arch != "" {
-		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	if arch != "" {
+		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {
@@ -275,8 +284,8 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	azureCmd.WriteString(" --set 'disable_http_server=true'")
 	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
 	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if artifact.Spec.Arch != "" {
-		azureCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	if arch != "" {
+		azureCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {
@@ -305,8 +314,8 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	gceCmd.WriteString(" --set 'disable_http_server=true'")
 	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
 	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if artifact.Spec.Arch != "" {
-		gceCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", artifact.Spec.Arch))
+	if arch != "" {
+		gceCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {

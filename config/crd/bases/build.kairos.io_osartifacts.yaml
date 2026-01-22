@@ -31,6 +31,9 @@ spec:
           spec:
             properties:
               arch:
+                enum:
+                - amd64
+                - arm64
                 type: string
               azureImage:
                 type: boolean

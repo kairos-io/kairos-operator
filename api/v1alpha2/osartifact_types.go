@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"errors"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,7 +51,8 @@ type OSArtifactSpec struct {
 
 	// Architecture to use when building ISOs and images (amd64 or arm64).
 	// When pulling container images for a different architecture than the host,
-	// this must be specified. Defaults to amd64 if not specified.
+	// this must be specified. Defaults to the host arch if not specified.
+	// +kubebuilder:validation:Enum=amd64;arm64
 	Arch string `json:"arch,omitempty"`
 
 	CloudConfigRef *SecretKeySelector `json:"cloudConfigRef,omitempty"`
@@ -110,4 +113,12 @@ type OSArtifactList struct {
 
 func init() {
 	SchemeBuilder.Register(&OSArtifact{}, &OSArtifactList{})
+}
+
+func (s *OSArtifactSpec) ArchSanitized() (string, error) {
+	arch := s.Arch
+	if arch != "amd64" && arch != "arm64" && arch != "" {
+		return "", errors.New("arch must be either 'amd64', 'arm64', or empty")
+	}
+	return arch, nil
 }
