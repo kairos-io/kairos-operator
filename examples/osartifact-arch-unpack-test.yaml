@@ -1,0 +1,45 @@
+# Sample OSArtifact to test auroraboot unpack with --arch and export to nginx.
+# Prereqs: deploy nginx, e.g. in the same namespace as the artifact:
+#   kubectl apply -k config/nginx -n default
+# (If nginx is in another namespace, set env NGINX_URL in the exporter to
+#  http://kairos-operator-nginx.<namespace>.svc.cluster.local)
+# Then apply this manifest:
+#   kubectl apply -f examples/osartifact-arch-unpack-test.yaml
+#
+# This uses a Kairos image and sets arch so the pull-image init container
+# runs "auroraboot unpack --arch <arch> <image> /rootfs". After the build,
+# the exporter uploads artifacts to the nginx service via HTTP PUT.
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: arch-unpack-test
+  namespace: default
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-arm64-generic-v3.6.0
+  arch: arm64
+  iso: true
+  exporters:
+  - template:
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: upload-to-nginx
+          image: curlimages/curl
+          command: ["sh", "-ec"]
+          args:
+          - |
+            NGINX_URL="${NGINX_URL:-http://kairos-operator-nginx}"
+            for f in /artifacts/*; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              echo "Uploading $base to $NGINX_URL/$base"
+              curl -fsSL -T "$f" "$NGINX_URL/$base" || exit 1
+            done
+            echo "Upload done"
+          env:
+          - name: NGINX_URL
+            value: "http://kairos-operator-nginx"
+          volumeMounts:
+          - name: artifacts
+            readOnly: true
+            mountPath: /artifacts
