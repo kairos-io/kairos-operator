@@ -28,19 +28,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func unpackContainer(id, containerImage, pullImage string) corev1.Container {
+func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
+	cmd := "auroraboot unpack"
+	if arch != "" {
+		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
+	}
+	cmd = fmt.Sprintf("%s %s /rootfs", cmd, pullImage)
+
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            fmt.Sprintf("pull-image-%s", id),
 		Image:           containerImage,
 		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			fmt.Sprintf(
-				"luet util unpack %s %s",
-				pullImage,
-				"/rootfs",
-			),
-		},
+		Args:            []string{cmd},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      "rootfs",
@@ -402,10 +402,10 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers()...)
 	} else if artifact.Spec.BaseImageName != "" { // Existing base image - non kairos
 		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName))
+			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName, arch))
 	} else { // Existing Kairos base image
 		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName))
+			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName, arch))
 	}
 
 	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
@@ -429,7 +429,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	// }
 
 	for i, bundle := range artifact.Spec.Bundles {
-		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle))
+		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
 	}
 
 	if artifact.Spec.OSRelease != "" {
