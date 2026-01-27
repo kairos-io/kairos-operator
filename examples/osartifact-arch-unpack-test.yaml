@@ -23,6 +23,7 @@ spec:
       spec:
         restartPolicy: Never
         containers:
+        # Requires nginx to be deployed (`kubectly apply -k config/nginx`)
         - name: upload-to-nginx
           image: curlimages/curl
           command: ["sh", "-ec"]
