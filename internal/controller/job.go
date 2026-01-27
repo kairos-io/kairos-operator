@@ -60,6 +60,13 @@ func pushImageName(artifact *buildv1alpha2.OSArtifact) string {
 
 func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
 	imageName := pushImageName(artifact)
+	arch, _ := artifact.Spec.ArchSanitized()
+
+	packCmd := "luet util pack"
+	if arch != "" {
+		packCmd = fmt.Sprintf("luet util pack --arch %s --os linux", arch)
+	}
+	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -68,9 +75,9 @@ func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtif
 		Command:         []string{"/bin/bash", "-cxe"},
 		Args: []string{
 			fmt.Sprintf(
-				"tar -czvpf test.tar -C /rootfs . && luet util pack %[1]s test.tar %[2]s.tar && "+
-					"chmod +r %[2]s.tar && mv %[2]s.tar /artifacts",
-				imageName,
+				"tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
+				packCmd,
+				artifact.Name,
 				artifact.Name,
 			),
 		},
