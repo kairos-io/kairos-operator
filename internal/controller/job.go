@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -24,21 +25,22 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func unpackContainer(id, containerImage, pullImage string) corev1.Container {
+func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
+	cmd := "auroraboot unpack"
+	if arch != "" {
+		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
+	}
+	cmd = fmt.Sprintf("%s %s /rootfs", cmd, pullImage)
+
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            fmt.Sprintf("pull-image-%s", id),
 		Image:           containerImage,
 		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			fmt.Sprintf(
-				"luet util unpack %s %s",
-				pullImage,
-				"/rootfs",
-			),
-		},
+		Args:            []string{cmd},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      "rootfs",
@@ -58,6 +60,13 @@ func pushImageName(artifact *buildv1alpha2.OSArtifact) string {
 
 func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
 	imageName := pushImageName(artifact)
+	arch, _ := artifact.Spec.ArchSanitized()
+
+	packCmd := "luet util pack"
+	if arch != "" {
+		packCmd = fmt.Sprintf("luet util pack --arch %s --os linux", arch)
+	}
+	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -66,9 +75,9 @@ func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtif
 		Command:         []string{"/bin/bash", "-cxe"},
 		Args: []string{
 			fmt.Sprintf(
-				"tar -czvpf test.tar -C /rootfs . && luet util pack %[1]s test.tar %[2]s.tar && "+
-					"chmod +r %[2]s.tar && mv %[2]s.tar /artifacts",
-				imageName,
+				"tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
+				packCmd,
+				artifact.Name,
 				artifact.Name,
 			),
 		},
@@ -156,11 +165,23 @@ func (r *OSArtifactReconciler) newArtifactPVC(artifact *buildv1alpha2.OSArtifact
 	return pvc
 }
 
-func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
+func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
 	var cmd strings.Builder
+
+	logger := log.FromContext(ctx)
+	arch, err := artifact.Spec.ArchSanitized()
+	if err != nil {
+		logger.Error(err, "reading arch from spec")
+	}
+
 	cmd.WriteString("auroraboot --debug build-iso")
 	cmd.WriteString(fmt.Sprintf(" --override-name %s", artifact.Name))
 	cmd.WriteString(" --date=false")
+	cmd.WriteString(" --output /artifacts")
+	if arch != "" {
+		cmd.WriteString(fmt.Sprintf(" --arch %s", arch))
+	}
+	cmd.WriteString(" dir:/rootfs")
 
 	volumeMounts := []corev1.VolumeMount{
 		{
@@ -188,6 +209,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	cloudImgCmd.WriteString(" --set 'disable_http_server=true'")
 	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
 	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -205,7 +229,6 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
-	cmd.WriteString(" --output /artifacts dir:/rootfs")
 
 	buildIsoContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -268,6 +291,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	azureCmd.WriteString(" --set 'disable_http_server=true'")
 	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
 	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		azureCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
@@ -295,6 +321,9 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	gceCmd.WriteString(" --set 'disable_http_server=true'")
 	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
 	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		gceCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
@@ -380,10 +409,10 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers()...)
 	} else if artifact.Spec.BaseImageName != "" { // Existing base image - non kairos
 		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName))
+			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName, arch))
 	} else { // Existing Kairos base image
 		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName))
+			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName, arch))
 	}
 
 	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
@@ -407,7 +436,7 @@ func (r *OSArtifactReconciler) newBuilderPod(pvcName string, artifact *buildv1al
 	// }
 
 	for i, bundle := range artifact.Spec.Bundles {
-		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle))
+		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
 	}
 
 	if artifact.Spec.OSRelease != "" {

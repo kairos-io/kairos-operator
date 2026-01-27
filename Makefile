@@ -76,7 +76,7 @@ test-e2e: manifests generate fmt vet ginkgo ## Run the e2e tests. Expected an is
 	$(GINKGO) -r -v ./test/e2e
 
 .PHONY: kind-e2e-tests
-kind-e2e-tests: kind-setup install deploy-dev ginkgo ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
+kind-e2e-tests: kind-setup deploy-dev ginkgo ## Run e2e tests with pre-setup kind cluster (similar to osbuilder's kind-e2e-tests). Note: E2E suite will still create its own cluster.
 	@echo "Note: The E2E test suite creates its own cluster, so this target mainly ensures kind is set up."
 	@kubectl cluster-info --context kind-$(CLUSTER_NAME) || true
 	@kubectl wait --for=condition=Ready node/$(CLUSTER_NAME)-control-plane --timeout=5m || true

@@ -40,7 +40,7 @@ import (
 
 const (
 	FinalizerName                   = "build.kairos.io/osbuilder-finalizer"
-	CompatibleAurorabootVersion     = "v0.14.0"
+	CompatibleAurorabootVersion     = "v0.19.3"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
 )
@@ -142,7 +142,7 @@ func (r *OSArtifactReconciler) createPVC(ctx context.Context,
 
 func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *buildv1alpha2.OSArtifact,
 	pvc *corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
-	pod := r.newBuilderPod(pvc.Name, artifact)
+	pod := r.newBuilderPod(ctx, pvc.Name, artifact)
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
