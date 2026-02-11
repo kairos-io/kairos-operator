@@ -213,6 +213,10 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
 	}
 
+	if artifact.Spec.DiskSize != "" {
+		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'disk.size=%s'", artifact.Spec.DiskSize))
+	}
+
 	if artifact.Spec.CloudConfigRef != nil {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "cloudconfig",
@@ -253,13 +257,6 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 			cloudImgCmd.String(),
 		},
 		VolumeMounts: volumeMounts,
-	}
-
-	if artifact.Spec.DiskSize != "" {
-		buildCloudImageContainer.Env = []corev1.EnvVar{{
-			Name:  "EXTEND",
-			Value: artifact.Spec.DiskSize,
-		}}
 	}
 
 	var netbootCmd strings.Builder
