@@ -9,6 +9,7 @@
 - [Running an operation on the Nodes](#running-an-operation-on-the-nodes)
 - [Upgrading Kairos](#upgrading-kairos)
 - [Building OS Artifacts](#building-os-artifacts)
+- [Serving Artifacts with Nginx](#serving-artifacts-with-nginx)
 - [Using Private Registries](#using-private-registries)
 - [Getting Started](#getting-started)
 - [Development notes](#development-notes)
@@ -341,6 +342,68 @@ Built artifacts are stored in a PersistentVolumeClaim (PVC) that is automaticall
 
 1. **Export Jobs**: Configure `exporters` in the spec to run custom jobs that can copy, upload, or process the artifacts
 2. **Direct PVC Access**: The PVC is labeled with `build.kairos.io/artifact=<artifact-name>` and can be mounted by other pods
+
+### Serving Artifacts with Nginx
+
+The project includes a ready-to-use nginx kustomization at `config/nginx` that deploys an nginx server with WebDAV upload support. This lets OSArtifact exporters upload built artifacts via HTTP PUT and then serve them for download.
+
+Deploy it with:
+
+```bash
+# Deploy in the same namespace as your OSArtifact resources
+kubectl apply -k config/nginx -n default
+
+# Or using GitHub URL
+kubectl apply -k https://github.com/kairos-io/kairos-operator/config/nginx -n default
+```
+
+This creates:
+- An **nginx Deployment** with a PersistentVolumeClaim for artifact storage
+- A **ConfigMap** with an nginx configuration that enables WebDAV PUT and directory listing
+- A **NodePort Service** (`kairos-operator-nginx`) to expose the server
+- A **Role** (`artifactCopier`) with permissions to list pods and exec into them
+
+Once deployed, configure your OSArtifact exporter to upload artifacts to the nginx service:
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-kairos-iso
+  namespace: default
+spec:
+  imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  iso: true
+  exporters:
+  - template:
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: upload-to-nginx
+          image: curlimages/curl
+          command: ["sh", "-ec"]
+          args:
+          - |
+            NGINX_URL="${NGINX_URL:-http://kairos-operator-nginx}"
+            for f in /artifacts/*; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              echo "Uploading $base to $NGINX_URL/$base"
+              curl -fsSL -T "$f" "$NGINX_URL/$base" || exit 1
+            done
+            echo "Upload done"
+          env:
+          - name: NGINX_URL
+            value: "http://kairos-operator-nginx"
+          volumeMounts:
+          - name: artifacts
+            readOnly: true
+            mountPath: /artifacts
+```
+
+If the nginx service is deployed in a different namespace than the OSArtifact, set the `NGINX_URL` environment variable to `http://kairos-operator-nginx.<namespace>.svc.cluster.local`.
+
+After the exporter completes, artifacts are available for download through the nginx service (accessible via the NodePort or from within the cluster at `http://kairos-operator-nginx`).
 
 ### Advanced Configuration
 
