@@ -1,0 +1,87 @@
+---
+# Secret containing the Dockerfile.
+# The operator builds this with Kaniko, unpacks it to /rootfs, and passes it
+# directly to auroraboot. There is NO automatic "kairosify" step, so the
+# Dockerfile must produce a fully Kairos-compatible image.
+#
+# This example mirrors the pattern from kairos/images/Dockerfile but avoids
+# the multi-stage --mount=type=bind syntax (not reliably supported by Kaniko)
+# by downloading kairos-init directly.
+kind: Secret
+apiVersion: v1
+metadata:
+  name: my-kairos-dockerfile
+  namespace: default
+type: Opaque
+stringData:
+  Dockerfile: |
+    FROM quay.io/kairos/kairos-init:v0.7.0 AS kairos-init
+
+    FROM opensuse/leap:15.6
+    ARG MODEL=generic
+    ARG VERSION=v3.6.0
+
+    COPY --from=kairos-init /kairos-init /kairos-init
+    RUN /kairos-init -l debug -s install -m "${MODEL}" --version "${VERSION}" && \
+        /kairos-init -l debug -s init -m "${MODEL}" --version "${VERSION}" && \
+        rm -f /kairos-init
+---
+# Cloud config (optional, remove if not needed)
+kind: Secret
+apiVersion: v1
+metadata:
+  name: cloud-config
+  namespace: default
+type: Opaque
+stringData:
+  userdata: |
+    #cloud-config
+    users:
+    - name: "kairos"
+      passwd: "kairos"
+    install:
+      device: "auto"
+      reboot: true
+      poweroff: false
+      auto: true
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-custom-kairos
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-kairos-dockerfile
+    key: Dockerfile
+  # imageName is used by the "create-image" container for the OCI tarball name
+  imageName: "my-registry.example.com/my-custom-kairos:latest"
+  iso: true
+  cloudConfigRef:
+    name: cloud-config
+    key: userdata
+  exporters:
+  - template:
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: upload-to-nginx
+          image: curlimages/curl
+          command: ["sh", "-ec"]
+          args:
+          - |
+            NGINX_URL="${NGINX_URL:-http://kairos-operator-nginx}"
+            for f in /artifacts/*; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              echo "Uploading $base to $NGINX_URL/$base"
+              curl -fsSL -T "$f" "$NGINX_URL/$base" || exit 1
+            done
+            echo "Upload done"
+          env:
+          - name: NGINX_URL
+            value: "http://kairos-operator-nginx"
+          volumeMounts:
+          - name: artifacts
+            readOnly: true
+            mountPath: /artifacts

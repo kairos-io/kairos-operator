@@ -496,6 +496,7 @@ func baseImageBuildContainers() []corev1.Container {
 				"--destination", "whatever", // We don't push, but it needs this
 				"--tar-path", "/rootfs/image.tar",
 				"--no-push",
+				"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{
