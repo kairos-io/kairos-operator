@@ -213,6 +213,10 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
 	}
 
+	if artifact.Spec.DiskSize != "" {
+		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'disk.size=%s'", artifact.Spec.DiskSize))
+	}
+
 	if artifact.Spec.CloudConfigRef != nil {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "cloudconfig",
@@ -253,13 +257,6 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 			cloudImgCmd.String(),
 		},
 		VolumeMounts: volumeMounts,
-	}
-
-	if artifact.Spec.DiskSize != "" {
-		buildCloudImageContainer.Env = []corev1.EnvVar{{
-			Name:  "EXTEND",
-			Value: artifact.Spec.DiskSize,
-		}}
 	}
 
 	var netbootCmd strings.Builder
@@ -496,6 +493,7 @@ func baseImageBuildContainers() []corev1.Container {
 				"--destination", "whatever", // We don't push, but it needs this
 				"--tar-path", "/rootfs/image.tar",
 				"--no-push",
+				"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{

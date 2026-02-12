@@ -232,6 +232,45 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 			})
 
+			When("DiskSize is set", func() {
+				BeforeEach(func() {
+					artifact.Spec.DiskSize = "32768"
+				})
+
+				It("passes disk.size to auroraboot via --set flag instead of EXTEND env var", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					container := findContainerByName(pod, "build-cloud-image")
+					Expect(container).ToNot(BeNil())
+					Expect(container.Args).To(HaveLen(1))
+					Expect(container.Args[0]).To(ContainSubstring("--set 'disk.size=32768'"))
+
+					// Ensure the deprecated EXTEND env var is not used
+					for _, env := range container.Env {
+						Expect(env.Name).ToNot(Equal("EXTEND"))
+					}
+				})
+			})
+
+			When("DiskSize is not set", func() {
+				It("does not include disk.size in auroraboot command", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					container := findContainerByName(pod, "build-cloud-image")
+					Expect(container).ToNot(BeNil())
+					Expect(container.Args).To(HaveLen(1))
+					Expect(container.Args[0]).ToNot(ContainSubstring("disk.size"))
+				})
+			})
+
 			When("CloudConfigRef is set", func() {
 				It("includes cloud-config flag in auroraboot command", func() {
 					testCloudConfigInclusion("build-cloud-image")
