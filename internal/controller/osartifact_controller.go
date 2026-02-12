@@ -190,20 +190,20 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
 
-	// Collect template values from the referenced ConfigMap (if any)
+	// Collect template values from the referenced Secret (if any)
 	values := map[string]string{}
 
 	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
-		cm := &corev1.ConfigMap{}
+		valuesSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
 			Name:      artifact.Spec.DockerfileTemplateValuesFrom.Name,
 			Namespace: artifact.Namespace,
-		}, cm); err != nil {
-			return fmt.Errorf("failed to fetch template values ConfigMap %q: %w",
+		}, valuesSecret); err != nil {
+			return fmt.Errorf("failed to fetch template values Secret %q: %w",
 				artifact.Spec.DockerfileTemplateValuesFrom.Name, err)
 		}
-		for k, v := range cm.Data {
-			values[k] = v
+		for k, v := range valuesSecret.Data {
+			values[k] = string(v)
 		}
 	}
 

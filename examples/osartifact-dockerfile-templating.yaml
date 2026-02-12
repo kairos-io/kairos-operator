@@ -26,14 +26,15 @@ stringData:
         /kairos-init -l debug -s init -m "${MODEL}" --version "${VERSION}" && \
         rm -f /kairos-init
 ---
-# ConfigMap with template values. Each key becomes a template variable.
+# Secret with template values. Each key becomes a template variable.
 # For example, the key "BaseImage" is accessed as {{ .BaseImage }} in the Dockerfile.
+kind: Secret
 apiVersion: v1
-kind: ConfigMap
 metadata:
   name: my-template-values
   namespace: default
-data:
+type: Opaque
+stringData:
   KairosInitVersion: "v0.7.0"
   BaseImage: "opensuse/leap:15.6"
   KairosVersion: "v3.6.0"
