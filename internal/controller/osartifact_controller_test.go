@@ -31,6 +31,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 	var clientset *kubernetes.Clientset
 	var err error
 
+	// boolPtr returns a pointer to the given bool value
+	boolPtr := func(v bool) *bool {
+		return &v
+	}
+
 	// findContainerByName finds a container by name in a pod
 	findContainerByName := func(pod *corev1.Pod, name string) *corev1.Container {
 		for i := range pod.Spec.Containers {
@@ -413,7 +418,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 										Kind:       otherArtifact.Kind,
 										Name:       otherArtifact.Name,
 										UID:        otherArtifact.UID,
-										Controller: func() *bool { b := true; return &b }(),
+										Controller: boolPtr(true),
 									},
 								},
 							},
@@ -471,7 +476,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 										Kind:       artifact.Kind,
 										Name:       artifact.Name,
 										UID:        artifact.UID,
-										Controller: func() *bool { b := true; return &b }(),
+										Controller: boolPtr(true),
 									},
 								},
 							},

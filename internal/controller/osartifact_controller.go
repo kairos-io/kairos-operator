@@ -232,12 +232,13 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 
 	// Check if Secret already exists and verify ownership to prevent name collision attacks
 	existingSecret := &corev1.Secret{}
-	secretExists := true
+	secretExists := false
 	if err := r.Get(ctx, client.ObjectKey{Name: renderedSecretName, Namespace: artifact.Namespace}, existingSecret); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to check for existing rendered Secret: %w", err)
 		}
-		secretExists = false
+	} else {
+		secretExists = true
 	}
 
 	// If Secret exists but is not owned by this OSArtifact, refuse to update it
