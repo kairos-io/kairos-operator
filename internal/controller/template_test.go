@@ -111,7 +111,7 @@ var _ = Describe("renderDockerfileTemplate", func() {
 			Expect(result).To(HavePrefix("FROM ubuntu:22.04\n"))
 		})
 
-		It("allows with to set context", func() {
+		It("allows with construct with non-empty value", func() {
 			dockerfile := "FROM ubuntu:22.04\n{{ with .ImageTag }}RUN echo Building tag: {{ . }}\n{{ end }}"
 			values := map[string]string{"ImageTag": "v1.2.3"}
 			result, err := renderDockerfileTemplate(dockerfile, values)
@@ -119,7 +119,7 @@ var _ = Describe("renderDockerfileTemplate", func() {
 			Expect(result).To(Equal("FROM ubuntu:22.04\nRUN echo Building tag: v1.2.3\n"))
 		})
 
-		It("allows with when context value is empty", func() {
+		It("skips with block when context value is empty", func() {
 			dockerfile := "FROM ubuntu:22.04\n{{ with .ImageTag }}RUN echo Building tag: {{ . }}\n{{ end }}RUN echo Done\n"
 			values := map[string]string{}
 			result, err := renderDockerfileTemplate(dockerfile, values)
