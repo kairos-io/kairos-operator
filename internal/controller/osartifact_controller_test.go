@@ -463,8 +463,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			When("the Secret is owned by this OSArtifact", func() {
-				BeforeEach(func() {
-					// Create a Secret owned by this artifact
+				JustBeforeEach(func() {
+					// Create a Secret owned by this artifact (must run after JustBeforeEach
+					// that creates the artifact in K8s, so artifact.UID is populated)
 					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 						&corev1.Secret{
 							ObjectMeta: metav1.ObjectMeta{

@@ -266,7 +266,7 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		renderedSecret.StringData = map[string]string{
 			"Dockerfile": rendered,
 		}
-		return controllerutil.SetOwnerReference(artifact, renderedSecret, r.Scheme)
+		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("failed to create or update rendered Dockerfile secret: %w", err)
 	}
