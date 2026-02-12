@@ -258,7 +258,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
 					Name: valuesSecretName,
 				}
 			})
@@ -294,7 +294,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				// Reset in-memory mutation to simulate a new reconciliation
 				artifact.Spec.BaseImageDockerfile.Name = dockerfileSecretName
-				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
 					Name: valuesSecretName,
 				}
 
@@ -347,7 +347,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
 					Name: valuesSecretName,
 				}
 				// Inline values override Secret values
