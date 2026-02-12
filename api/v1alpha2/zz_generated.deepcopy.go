@@ -79,7 +79,7 @@ func (in *OSArtifactSpec) DeepCopyInto(out *OSArtifactSpec) {
 	}
 	if in.DockerfileTemplateValuesFrom != nil {
 		in, out := &in.DockerfileTemplateValuesFrom, &out.DockerfileTemplateValuesFrom
-		*out = new(SecretKeySelector)
+		*out = new(v1.LocalObjectReference)
 		**out = **in
 	}
 	if in.DockerfileTemplateValues != nil {

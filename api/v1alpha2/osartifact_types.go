@@ -44,8 +44,9 @@ type OSArtifactSpec struct {
 	// References a Secret whose data entries are used as template values
 	// when rendering the Dockerfile template. Each key in the Secret becomes
 	// a template variable (e.g. key "BaseImage" is accessed as {{ .BaseImage }}).
+	// All entries in the Secret are loaded as template values.
 	// +optional
-	DockerfileTemplateValuesFrom *SecretKeySelector `json:"dockerfileTemplateValuesFrom,omitempty"`
+	DockerfileTemplateValuesFrom *corev1.LocalObjectReference `json:"dockerfileTemplateValuesFrom,omitempty"`
 
 	// Inline template values for rendering the Dockerfile template.
 	// Each key becomes a template variable (e.g. key "BaseImage" is accessed
