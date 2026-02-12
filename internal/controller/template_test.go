@@ -100,7 +100,7 @@ var _ = Describe("renderDockerfileTemplate", func() {
 		It("allows range over values", func() {
 			dockerfile := "FROM ubuntu:22.04\n{{range $key, $val := .}}ENV {{$key}}={{$val}}\n{{end}}"
 			values := map[string]string{
-				"APP_ENV":  "production",
+				"APP_ENV":   "production",
 				"LOG_LEVEL": "info",
 			}
 			result, err := renderDockerfileTemplate(dockerfile, values)
