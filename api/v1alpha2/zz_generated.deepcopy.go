@@ -77,6 +77,11 @@ func (in *OSArtifactSpec) DeepCopyInto(out *OSArtifactSpec) {
 		*out = new(SecretKeySelector)
 		**out = **in
 	}
+	if in.DockerfileTemplateValuesFrom != nil {
+		in, out := &in.DockerfileTemplateValuesFrom, &out.DockerfileTemplateValuesFrom
+		*out = new(v1.LocalObjectReference)
+		**out = **in
+	}
 	if in.CloudConfigRef != nil {
 		in, out := &in.CloudConfigRef, &out.CloudConfigRef
 		*out = new(SecretKeySelector)
