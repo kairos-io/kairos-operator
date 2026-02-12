@@ -238,27 +238,28 @@ var _ = Describe("OSArtifactReconciler", func() {
 			artifact.Spec.ImageName = "my-registry.example.com/" + artifact.Name + ":latest"
 		})
 
-		When("a ConfigMap with template values is referenced", func() {
+		When("a Secret with template values is referenced", func() {
 			BeforeEach(func() {
-				_, err := clientset.CoreV1().ConfigMaps(namespace).Create(context.TODO(),
-					&corev1.ConfigMap{
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      artifact.Name + "-template-values",
 							Namespace: namespace,
 						},
-						Data: map[string]string{
+						StringData: map[string]string{
 							"BaseImage":  "opensuse/leap:15.6",
 							"InstallCmd": "zypper install -y curl",
 						},
+						Type: "Opaque",
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
+				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
 					Name: artifact.Name + "-template-values",
 				}
 			})
 
-			It("renders the Dockerfile with ConfigMap values", func() {
+			It("renders the Dockerfile with Secret values", func() {
 				err := r.renderDockerfile(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -271,23 +272,25 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(rendered).To(Equal("FROM opensuse/leap:15.6\nRUN zypper install -y curl\n"))
 			})
 
-			It("updates the rendered Secret when the ConfigMap changes", func() {
+			It("updates the rendered Secret when the values Secret changes", func() {
 				err := r.renderDockerfile(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
-				// Update the ConfigMap with new values
-				cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(
+				// Update the values Secret
+				valuesSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), artifact.Name+"-template-values", metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
-				cm.Data["BaseImage"] = "alpine:3.18"
-				_, err = clientset.CoreV1().ConfigMaps(namespace).Update(
-					context.TODO(), cm, metav1.UpdateOptions{})
+				valuesSecret.StringData = map[string]string{
+					"BaseImage":  "alpine:3.18",
+					"InstallCmd": "zypper install -y curl",
+				}
+				_, err = clientset.CoreV1().Secrets(namespace).Update(
+					context.TODO(), valuesSecret, metav1.UpdateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				// Re-fetch the artifact from API server to reset in-memory mutation
-				// (simulate a new reconciliation)
+				// Reset in-memory mutation to simulate a new reconciliation
 				artifact.Spec.BaseImageDockerfile.Name = dockerfileSecretName
-				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
+				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
 					Name: artifact.Name + "-template-values",
 				}
 

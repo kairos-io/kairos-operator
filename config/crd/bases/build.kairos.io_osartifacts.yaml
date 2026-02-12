@@ -67,11 +67,13 @@ spec:
                 type: string
               dockerfileTemplateValuesFrom:
                 properties:
-                  name:
-                    default: ""
+                  key:
                     type: string
+                  name:
+                    type: string
+                required:
+                - name
                 type: object
-                x-kubernetes-map-type: atomic
               exporters:
                 items:
                   properties:
