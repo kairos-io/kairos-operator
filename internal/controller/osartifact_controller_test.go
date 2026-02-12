@@ -507,6 +507,24 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 			})
 		})
+
+		When("the BaseImageDockerfile key is omitted", func() {
+			BeforeEach(func() {
+				artifact.Spec.BaseImageDockerfile.Key = ""
+			})
+
+			It("defaults to reading the 'Dockerfile' key from the Secret", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM \nRUN \n"))
+			})
+		})
 	})
 
 	Describe("Auroraboot Commands", func() {

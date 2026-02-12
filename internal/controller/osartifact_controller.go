@@ -260,6 +260,9 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 			renderedSecret.Labels = make(map[string]string)
 		}
 		renderedSecret.Labels[artifactLabel] = artifact.Name
+		// The rendered Dockerfile is always stored under the "Dockerfile" key
+		// because kaniko expects the file to be named "Dockerfile" in the
+		// mounted volume (--dockerfile dockerfile/Dockerfile).
 		renderedSecret.StringData = map[string]string{
 			"Dockerfile": rendered,
 		}
@@ -270,7 +273,8 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 
 	// Update the in-memory reference so the pod mounts the rendered Secret.
 	// This does NOT persist to the API server — it only affects the current
-	// reconciliation pass.
+	// reconciliation pass. Key is set to "Dockerfile" because that's what
+	// kaniko expects in the mounted volume.
 	artifact.Spec.BaseImageDockerfile.Name = renderedSecretName
 	artifact.Spec.BaseImageDockerfile.Key = "Dockerfile"
 
