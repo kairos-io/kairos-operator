@@ -96,5 +96,35 @@ var _ = Describe("renderDockerfileTemplate", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(Equal("FROM alpine:3.18\n"))
 		})
+
+		It("allows range over the values map", func() {
+			dockerfile := "FROM ubuntu:22.04\n{{ range $key, $value := . }}ENV {{ $key }}={{ $value }}\n{{ end }}"
+			values := map[string]string{
+				"VAR1": "value1",
+				"VAR2": "value2",
+			}
+			result, err := renderDockerfileTemplate(dockerfile, values)
+			Expect(err).ToNot(HaveOccurred())
+			// Note: map iteration order is not guaranteed in Go, so we check for both lines
+			Expect(result).To(ContainSubstring("ENV VAR1=value1"))
+			Expect(result).To(ContainSubstring("ENV VAR2=value2"))
+			Expect(result).To(HavePrefix("FROM ubuntu:22.04\n"))
+		})
+
+		It("allows with to set context", func() {
+			dockerfile := "FROM ubuntu:22.04\n{{ with .ImageTag }}RUN echo Building tag: {{ . }}\n{{ end }}"
+			values := map[string]string{"ImageTag": "v1.2.3"}
+			result, err := renderDockerfileTemplate(dockerfile, values)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal("FROM ubuntu:22.04\nRUN echo Building tag: v1.2.3\n"))
+		})
+
+		It("allows with when context value is empty", func() {
+			dockerfile := "FROM ubuntu:22.04\n{{ with .ImageTag }}RUN echo Building tag: {{ . }}\n{{ end }}RUN echo Done\n"
+			values := map[string]string{}
+			result, err := renderDockerfileTemplate(dockerfile, values)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal("FROM ubuntu:22.04\nRUN echo Done\n"))
+		})
 	})
 })
