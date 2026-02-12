@@ -190,7 +190,8 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
 
-	// Collect template values from the referenced Secret (if any)
+	// Collect template values. Secret values are loaded first, then inline
+	// values are merged on top so that inline takes precedence on conflicts.
 	values := map[string]string{}
 
 	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
@@ -205,6 +206,10 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		for k, v := range valuesSecret.Data {
 			values[k] = string(v)
 		}
+	}
+
+	for k, v := range artifact.Spec.DockerfileTemplateValues {
+		values[k] = v
 	}
 
 	rendered, err := renderDockerfileTemplate(string(dockerfileContent), values)

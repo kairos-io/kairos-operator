@@ -214,9 +214,13 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 	Describe("Dockerfile Templating", func() {
 		var dockerfileSecretName string
+		var renderedSecretName string
+		var valuesSecretName string
 
 		BeforeEach(func() {
 			dockerfileSecretName = artifact.Name + "-dockerfile"
+			renderedSecretName = artifact.Name + "-rendered-dockerfile"
+			valuesSecretName = artifact.Name + "-template-values"
 
 			_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 				&corev1.Secret{
@@ -243,7 +247,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 					&corev1.Secret{
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      artifact.Name + "-template-values",
+							Name:      valuesSecretName,
 							Namespace: namespace,
 						},
 						StringData: map[string]string{
@@ -255,7 +259,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
-					Name: artifact.Name + "-template-values",
+					Name: valuesSecretName,
 				}
 			})
 
@@ -265,7 +269,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				// The rendered Secret should exist
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), artifact.Name+"-rendered-dockerfile", metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data["Dockerfile"])
@@ -278,7 +282,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				// Update the values Secret
 				valuesSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), artifact.Name+"-template-values", metav1.GetOptions{})
+					context.TODO(), valuesSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 				valuesSecret.StringData = map[string]string{
 					"BaseImage":  "alpine:3.18",
@@ -291,17 +295,77 @@ var _ = Describe("OSArtifactReconciler", func() {
 				// Reset in-memory mutation to simulate a new reconciliation
 				artifact.Spec.BaseImageDockerfile.Name = dockerfileSecretName
 				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
-					Name: artifact.Name + "-template-values",
+					Name: valuesSecretName,
 				}
 
 				err = r.renderDockerfile(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), artifact.Name+"-rendered-dockerfile", metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
+			})
+		})
+
+		When("inline template values are provided", func() {
+			BeforeEach(func() {
+				artifact.Spec.DockerfileTemplateValues = map[string]string{
+					"BaseImage":  "alpine:3.18",
+					"InstallCmd": "apk add curl",
+				}
+			})
+
+			It("renders the Dockerfile with inline values", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
+			})
+		})
+
+		When("both inline and Secret values are provided", func() {
+			BeforeEach(func() {
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      valuesSecretName,
+							Namespace: namespace,
+						},
+						StringData: map[string]string{
+							"BaseImage":  "opensuse/leap:15.6",
+							"InstallCmd": "zypper install -y curl",
+						},
+						Type: "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.DockerfileTemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+					Name: valuesSecretName,
+				}
+				// Inline values override Secret values
+				artifact.Spec.DockerfileTemplateValues = map[string]string{
+					"BaseImage": "alpine:3.18",
+				}
+			})
+
+			It("inline values take precedence over Secret values", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				// BaseImage from inline, InstallCmd from Secret
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
 			})
 		})
@@ -312,7 +376,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), artifact.Name+"-rendered-dockerfile", metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data["Dockerfile"])

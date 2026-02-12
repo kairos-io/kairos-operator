@@ -2,8 +2,9 @@
 # Secret containing a Dockerfile with Go template syntax.
 # The operator renders the template before passing it to Kaniko.
 # Template variables use {{ .VarName }} syntax and are replaced with values
-# at build time. Values can come from inline spec or a ConfigMap (not yet
-# implemented in this example).
+# at build time. Values can come from a Secret (dockerfileTemplateValuesFrom)
+# and/or inline in the spec (dockerfileTemplateValues). Inline values take
+# precedence over Secret values on key conflicts.
 #
 # In this example, the base image and kairos-init version are templated so
 # they can be easily overridden without modifying the Dockerfile itself.
@@ -48,9 +49,12 @@ spec:
   baseImageDockerfile:
     name: my-templated-dockerfile
     key: Dockerfile
-  # Reference the ConfigMap containing template values
+  # Reference a Secret containing template values
   dockerfileTemplateValuesFrom:
     name: my-template-values
+  # Inline values (these override Secret values on conflict)
+  dockerfileTemplateValues:
+    KairosVersion: "v3.6.1"  # overrides the v3.6.0 from the Secret
   imageName: "my-registry.example.com/my-templated-kairos:latest"
   iso: true
   exporters:

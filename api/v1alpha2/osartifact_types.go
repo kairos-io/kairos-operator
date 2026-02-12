@@ -47,6 +47,13 @@ type OSArtifactSpec struct {
 	// +optional
 	DockerfileTemplateValuesFrom *SecretKeySelector `json:"dockerfileTemplateValuesFrom,omitempty"`
 
+	// Inline template values for rendering the Dockerfile template.
+	// Each key becomes a template variable (e.g. key "BaseImage" is accessed
+	// as {{ .BaseImage }}). When both this and DockerfileTemplateValuesFrom are
+	// set, inline values take precedence on key conflicts.
+	// +optional
+	DockerfileTemplateValues map[string]string `json:"dockerfileTemplateValues,omitempty"`
+
 	ISO bool `json:"iso,omitempty"`
 
 	// Disk-only stuff
