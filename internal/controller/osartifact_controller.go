@@ -158,8 +158,83 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
+// renderDockerfile fetches the Dockerfile from the referenced Secret, renders
+// it through the Go template engine, and creates a new Secret with the rendered
+// content. The in-memory artifact is updated to point to the rendered Secret so
+// that downstream pod creation uses the rendered version.
+// If BaseImageDockerfile is not set, this is a no-op.
+func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.BaseImageDockerfile == nil {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	// Fetch the original Secret containing the Dockerfile
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Name:      artifact.Spec.BaseImageDockerfile.Name,
+		Namespace: artifact.Namespace,
+	}, secret); err != nil {
+		return fmt.Errorf("failed to fetch Dockerfile secret %q: %w", artifact.Spec.BaseImageDockerfile.Name, err)
+	}
+
+	// Determine which key holds the Dockerfile content
+	key := artifact.Spec.BaseImageDockerfile.Key
+	if key == "" {
+		key = "Dockerfile"
+	}
+
+	dockerfileContent, ok := secret.Data[key]
+	if !ok {
+		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
+	}
+
+	// Render the template (no values for now — will be extended in later steps)
+	rendered, err := renderDockerfileTemplate(string(dockerfileContent), nil)
+	if err != nil {
+		return fmt.Errorf("failed to render Dockerfile template: %w", err)
+	}
+
+	logger.Info("Rendered Dockerfile template", "artifact", artifact.Name)
+
+	// Create or update the Secret with the rendered Dockerfile.
+	// Using CreateOrUpdate ensures that if the user changes their Dockerfile
+	// or template values, the rendered Secret is refreshed on re-reconciliation.
+	renderedSecretName := artifact.Name + "-rendered-dockerfile"
+	renderedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      renderedSecretName,
+			Namespace: artifact.Namespace,
+		},
+	}
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
+		renderedSecret.Labels = map[string]string{artifactLabel: artifact.Name}
+		renderedSecret.StringData = map[string]string{
+			"Dockerfile": rendered,
+		}
+		return controllerutil.SetOwnerReference(artifact, renderedSecret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("failed to create or update rendered Dockerfile secret: %w", err)
+	}
+
+	// Update the in-memory reference so the pod mounts the rendered Secret.
+	// This does NOT persist to the API server — it only affects the current
+	// reconciliation pass.
+	artifact.Spec.BaseImageDockerfile.Name = renderedSecretName
+	artifact.Spec.BaseImageDockerfile.Key = "Dockerfile"
+
+	return nil
+}
+
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+	// Render Dockerfile template if applicable
+	if err := r.renderDockerfile(ctx, artifact); err != nil {
+		return ctrl.Result{Requeue: true}, err
+	}
+
 	err := r.CreateConfigMap(ctx, artifact)
 	if err != nil {
 		return ctrl.Result{Requeue: true}, err
