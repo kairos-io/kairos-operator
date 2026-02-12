@@ -391,8 +391,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("a Secret with the rendered name already exists", func() {
 			When("the Secret is owned by a different OSArtifact", func() {
-				BeforeEach(func() {
-					// Create another OSArtifact in the same namespace
+				JustBeforeEach(func() {
+					// Create another OSArtifact in K8s so the garbage collector
+					// doesn't orphan-collect the Secret before the test runs.
 					otherArtifact := &buildv1alpha2.OSArtifact{
 						TypeMeta: metav1.TypeMeta{
 							Kind:       "OSArtifact",
@@ -401,13 +402,25 @@ var _ = Describe("OSArtifactReconciler", func() {
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: namespace,
 							Name:      "other-artifact",
-							UID:       "other-uid-12345",
 						},
 					}
 
+					k8s := dynamic.NewForConfigOrDie(restConfig)
+					artifacts := k8s.Resource(
+						schema.GroupVersionResource{
+							Group:    buildv1alpha2.GroupVersion.Group,
+							Version:  buildv1alpha2.GroupVersion.Version,
+							Resource: "osartifacts"}).Namespace(namespace)
+					uOther := unstructured.Unstructured{}
+					uOther.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(otherArtifact)
+					resp, err := artifacts.Create(context.TODO(), &uOther, metav1.CreateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					err = runtime.DefaultUnstructuredConverter.FromUnstructured(resp.Object, otherArtifact)
+					Expect(err).ToNot(HaveOccurred())
+
 					// Create an existing Secret owned by the other OSArtifact
 					// Note: Use the same name pattern that would be generated
-					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					_, err = clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 						&corev1.Secret{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      renderedSecretName,
