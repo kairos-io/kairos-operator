@@ -230,8 +230,27 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		},
 	}
 
+	// Check if Secret already exists and verify ownership to prevent name collision attacks
+	existingSecret := &corev1.Secret{}
+	secretExists := true
+	if err := r.Get(ctx, client.ObjectKey{Name: renderedSecretName, Namespace: artifact.Namespace}, existingSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check for existing rendered Secret: %w", err)
+		}
+		secretExists = false
+	}
+
+	// If Secret exists but is not owned by this OSArtifact, refuse to update it
+	if secretExists && !metav1.IsControlledBy(existingSecret, artifact) {
+		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", renderedSecretName, artifact.UID)
+	}
+
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
-		renderedSecret.Labels = map[string]string{artifactLabel: artifact.Name}
+		// Merge labels instead of overwriting to preserve labels set by other tooling
+		if renderedSecret.Labels == nil {
+			renderedSecret.Labels = make(map[string]string)
+		}
+		renderedSecret.Labels[artifactLabel] = artifact.Name
 		renderedSecret.StringData = map[string]string{
 			"Dockerfile": rendered,
 		}
