@@ -238,7 +238,6 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 	}
 
 	// If Secret exists but is not owned by this OSArtifact, refuse to update it
-	// IsControlledBy returns false for non-existent Secrets (when getErr was NotFound)
 	if getErr == nil && !metav1.IsControlledBy(existingSecret, artifact) {
 		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", renderedSecretName, artifact.UID)
 	}
