@@ -158,6 +158,25 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
+// checkSecretOwnership verifies that a Secret with the given name either does not exist
+// or is owned by the specified OSArtifact. This prevents name collision attacks where
+// a malicious user could create an OSArtifact to overwrite unrelated Secrets.
+// Returns an error if the Secret exists but is not owned by the artifact.
+func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretName, namespace string, owner *buildv1alpha2.OSArtifact) error {
+	existingSecret := &corev1.Secret{}
+	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, existingSecret)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing Secret: %w", err)
+	}
+
+	// If Secret exists but is not owned by this OSArtifact, refuse to proceed
+	if err == nil && !metav1.IsControlledBy(existingSecret, owner) {
+		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
+	}
+
+	return nil
+}
+
 // renderDockerfile fetches the Dockerfile from the referenced Secret, renders
 // it through the Go template engine, and creates a new Secret with the rendered
 // content. The in-memory artifact is updated to point to the rendered Secret so
@@ -230,16 +249,9 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		},
 	}
 
-	// Check if Secret already exists and verify ownership to prevent name collision attacks
-	existingSecret := &corev1.Secret{}
-	getErr := r.Get(ctx, client.ObjectKey{Name: renderedSecretName, Namespace: artifact.Namespace}, existingSecret)
-	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		return fmt.Errorf("failed to check for existing rendered Secret: %w", getErr)
-	}
-
-	// If Secret exists but is not owned by this OSArtifact, refuse to update it
-	if getErr == nil && !metav1.IsControlledBy(existingSecret, artifact) {
-		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", renderedSecretName, artifact.UID)
+	// Verify ownership to prevent name collision attacks
+	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+		return err
 	}
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
