@@ -10,7 +10,7 @@ import (
 // forbiddenDirectivesRE matches Go template directives that are not useful
 // in Dockerfile templates and would likely cause confusing errors: define,
 // template, and block.
-// There is not security issue here since the author of the Dockerfile is the same
+// There is no security issue here since the author of the Dockerfile is the same
 // as the author of the values and most likely the operator of the cluster on
 // which the image is built.
 var forbiddenDirectivesRE = regexp.MustCompile(`\{\{-?\s*(define|template|block)\s`)
