@@ -65,6 +65,10 @@ spec:
                 type: boolean
               diskSize:
                 type: string
+              dockerfileTemplateValues:
+                additionalProperties:
+                  type: string
+                type: object
               dockerfileTemplateValuesFrom:
                 properties:
                   key:
