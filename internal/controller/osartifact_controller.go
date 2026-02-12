@@ -59,8 +59,8 @@ type OSArtifactReconciler struct {
 // +kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -190,8 +190,24 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
 
-	// Render the template (no values for now — will be extended in later steps)
-	rendered, err := renderDockerfileTemplate(string(dockerfileContent), nil)
+	// Collect template values from the referenced ConfigMap (if any)
+	values := map[string]string{}
+
+	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
+		cm := &corev1.ConfigMap{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Name:      artifact.Spec.DockerfileTemplateValuesFrom.Name,
+			Namespace: artifact.Namespace,
+		}, cm); err != nil {
+			return fmt.Errorf("failed to fetch template values ConfigMap %q: %w",
+				artifact.Spec.DockerfileTemplateValuesFrom.Name, err)
+		}
+		for k, v := range cm.Data {
+			values[k] = v
+		}
+	}
+
+	rendered, err := renderDockerfileTemplate(string(dockerfileContent), values)
 	if err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
 	}

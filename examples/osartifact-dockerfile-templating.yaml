@@ -1,0 +1,79 @@
+---
+# Secret containing a Dockerfile with Go template syntax.
+# The operator renders the template before passing it to Kaniko.
+# Template variables use {{ .VarName }} syntax and are replaced with values
+# at build time. Values can come from inline spec or a ConfigMap (not yet
+# implemented in this example).
+#
+# In this example, the base image and kairos-init version are templated so
+# they can be easily overridden without modifying the Dockerfile itself.
+kind: Secret
+apiVersion: v1
+metadata:
+  name: my-templated-dockerfile
+  namespace: default
+type: Opaque
+stringData:
+  Dockerfile: |
+    FROM quay.io/kairos/kairos-init:{{ .KairosInitVersion }} AS kairos-init
+
+    FROM {{ .BaseImage }}
+    ARG MODEL=generic
+    ARG VERSION={{ .KairosVersion }}
+
+    COPY --from=kairos-init /kairos-init /kairos-init
+    RUN /kairos-init -l debug -s install -m "${MODEL}" --version "${VERSION}" && \
+        /kairos-init -l debug -s init -m "${MODEL}" --version "${VERSION}" && \
+        rm -f /kairos-init
+---
+# ConfigMap with template values. Each key becomes a template variable.
+# For example, the key "BaseImage" is accessed as {{ .BaseImage }} in the Dockerfile.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-template-values
+  namespace: default
+data:
+  KairosInitVersion: "v0.7.0"
+  BaseImage: "opensuse/leap:15.6"
+  KairosVersion: "v3.6.0"
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-templated-kairos
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-templated-dockerfile
+    key: Dockerfile
+  # Reference the ConfigMap containing template values
+  dockerfileTemplateValuesFrom:
+    name: my-template-values
+  imageName: "my-registry.example.com/my-templated-kairos:latest"
+  iso: true
+  exporters:
+  - template:
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: upload-to-nginx
+          image: curlimages/curl
+          command: ["sh", "-ec"]
+          args:
+          - |
+            NGINX_URL="${NGINX_URL:-http://kairos-operator-nginx}"
+            for f in /artifacts/*; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              echo "Uploading $base to $NGINX_URL/$base"
+              curl -fsSL -T "$f" "$NGINX_URL/$base" || exit 1
+            done
+            echo "Upload done"
+          env:
+          - name: NGINX_URL
+            value: "http://kairos-operator-nginx"
+          volumeMounts:
+          - name: artifacts
+            readOnly: true
+            mountPath: /artifacts

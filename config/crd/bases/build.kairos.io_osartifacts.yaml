@@ -65,6 +65,13 @@ spec:
                 type: boolean
               diskSize:
                 type: string
+              dockerfileTemplateValuesFrom:
+                properties:
+                  name:
+                    default: ""
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               exporters:
                 items:
                   properties:
