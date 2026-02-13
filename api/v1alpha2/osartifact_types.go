@@ -36,7 +36,24 @@ type OSArtifactSpec struct {
 
 	// Points to a Secret that contains a Dockerfile. osbuilder will build the image using that Dockerfile
 	// and will try to create a Kairos image from it.
+	// The Dockerfile may contain Go template syntax (e.g. {{ .MyVar }}) which will be rendered
+	// before building. Template values can be provided via DockerfileTemplateValuesFrom (Secret)
+	// and/or DockerfileTemplateValues (inline).
 	BaseImageDockerfile *SecretKeySelector `json:"baseImageDockerfile,omitempty"`
+
+	// References a Secret whose data entries are used as template values
+	// when rendering the Dockerfile template. Each key in the Secret becomes
+	// a template variable (e.g. key "BaseImage" is accessed as {{ .BaseImage }}).
+	// All entries in the Secret are loaded as template values.
+	// +optional
+	DockerfileTemplateValuesFrom *corev1.LocalObjectReference `json:"dockerfileTemplateValuesFrom,omitempty"`
+
+	// Inline template values for rendering the Dockerfile template.
+	// Each key becomes a template variable (e.g. key "BaseImage" is accessed
+	// as {{ .BaseImage }}). When both this and DockerfileTemplateValuesFrom are
+	// set, inline values take precedence on key conflicts.
+	// +optional
+	DockerfileTemplateValues map[string]string `json:"dockerfileTemplateValues,omitempty"`
 
 	ISO bool `json:"iso,omitempty"`
 

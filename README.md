@@ -9,6 +9,7 @@
 - [Running an operation on the Nodes](#running-an-operation-on-the-nodes)
 - [Upgrading Kairos](#upgrading-kairos)
 - [Building OS Artifacts](#building-os-artifacts)
+- [Dockerfile Templating](#dockerfile-templating)
 - [Serving Artifacts with Nginx](#serving-artifacts-with-nginx)
 - [Using Private Registries](#using-private-registries)
 - [Getting Started](#getting-started)
@@ -291,6 +292,111 @@ spec:
     key: Dockerfile  # Optional: defaults to "Dockerfile"
   iso: true
 ```
+
+### Dockerfile Templating
+
+When building from a Dockerfile (via `baseImageDockerfile`), you can use Go template syntax in the Dockerfile. This lets you parameterize your builds — for example, changing the base image or injecting version strings — without maintaining multiple Dockerfiles.
+
+Template variables use the standard Go template syntax `{{ .VariableName }}`. Values can be provided in two ways, and both can be used together:
+
+1. **Inline values** (`dockerfileTemplateValues`) — a map of key-value pairs defined directly in the OSArtifact spec.
+2. **Secret reference** (`dockerfileTemplateValuesFrom`) — a reference to a Kubernetes Secret whose data entries are used as template values.
+
+When both are set, inline values take precedence on key conflicts.
+
+#### Example Dockerfile with template variables
+
+Create a Secret containing a Dockerfile that uses template variables:
+
+```bash
+kubectl create secret generic my-dockerfile --from-file=Dockerfile
+```
+
+Where `Dockerfile` contains:
+
+```dockerfile
+FROM {{ .BaseImage }}
+
+RUN zypper install -y {{ .ExtraPackages }}
+RUN echo "Version: {{ .Version }}" > /etc/build-info
+```
+
+#### Example: Inline template values
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: custom-build
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-dockerfile
+    key: Dockerfile
+  dockerfileTemplateValues:
+    BaseImage: "opensuse/leap:15.6"
+    ExtraPackages: "vim curl"
+    Version: "1.0.0"
+  iso: true
+```
+
+#### Example: Template values from a Secret
+
+First, create a Secret with the template values:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dockerfile-values
+  namespace: default
+stringData:
+  BaseImage: "opensuse/leap:15.6"
+  ExtraPackages: "vim curl"
+  Version: "1.0.0"
+```
+
+Then reference it in the OSArtifact:
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: custom-build
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-dockerfile
+    key: Dockerfile
+  dockerfileTemplateValuesFrom:
+    name: dockerfile-values
+  iso: true
+```
+
+#### Combining both sources
+
+You can use a Secret for base values and override specific ones inline:
+
+```yaml
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: custom-build
+  namespace: default
+spec:
+  baseImageDockerfile:
+    name: my-dockerfile
+    key: Dockerfile
+  dockerfileTemplateValuesFrom:
+    name: dockerfile-values
+  dockerfileTemplateValues:
+    Version: "2.0.0"  # overrides the value from the Secret
+  iso: true
+```
+
+#### Template restrictions
+
+Only simple value substitution and basic control flow (`if`/`else`/`range`/`with`) are supported. The `define`, `template`, and `block` directives are explicitly forbidden and will cause the build to fail. Any template variable that is not provided will render as an empty string.
 
 ### Image Sources
 

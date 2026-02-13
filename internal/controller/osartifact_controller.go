@@ -59,8 +59,8 @@ type OSArtifactReconciler struct {
 // +kubebuilder:rbac:groups=build.kairos.io,resources=osartifacts/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -158,8 +158,136 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
+// checkSecretOwnership verifies that a Secret with the given name either does not exist
+// or is owned by the specified OSArtifact. This prevents name collision attacks where
+// a malicious user could create an OSArtifact to overwrite unrelated Secrets.
+// Returns an error if the Secret exists but is not owned by the artifact.
+func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretName, namespace string, owner *buildv1alpha2.OSArtifact) error {
+	existingSecret := &corev1.Secret{}
+	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, existingSecret)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check for existing Secret: %w", err)
+	}
+
+	// If Secret exists but is not owned by this OSArtifact, refuse to proceed
+	if err == nil && !metav1.IsControlledBy(existingSecret, owner) {
+		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
+	}
+
+	return nil
+}
+
+// renderDockerfile fetches the Dockerfile from the referenced Secret, renders
+// it through the Go template engine, and creates a new Secret with the rendered
+// content. The in-memory artifact is updated to point to the rendered Secret so
+// that downstream pod creation uses the rendered version.
+// If BaseImageDockerfile is not set, this is a no-op.
+func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.BaseImageDockerfile == nil {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	// Fetch the original Secret containing the Dockerfile
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Name:      artifact.Spec.BaseImageDockerfile.Name,
+		Namespace: artifact.Namespace,
+	}, secret); err != nil {
+		return fmt.Errorf("failed to fetch Dockerfile secret %q: %w", artifact.Spec.BaseImageDockerfile.Name, err)
+	}
+
+	// Determine which key holds the Dockerfile content
+	key := artifact.Spec.BaseImageDockerfile.Key
+	if key == "" {
+		key = "Dockerfile"
+	}
+
+	dockerfileContent, ok := secret.Data[key]
+	if !ok {
+		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
+	}
+
+	// Collect template values. Secret values are loaded first, then inline
+	// values are merged on top so that inline takes precedence on conflicts.
+	values := map[string]string{}
+
+	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
+		valuesSecret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Name:      artifact.Spec.DockerfileTemplateValuesFrom.Name,
+			Namespace: artifact.Namespace,
+		}, valuesSecret); err != nil {
+			return fmt.Errorf("failed to fetch template values Secret %q: %w",
+				artifact.Spec.DockerfileTemplateValuesFrom.Name, err)
+		}
+		for k, v := range valuesSecret.Data {
+			values[k] = string(v)
+		}
+	}
+
+	for k, v := range artifact.Spec.DockerfileTemplateValues {
+		values[k] = v
+	}
+
+	rendered, err := renderDockerfileTemplate(string(dockerfileContent), values)
+	if err != nil {
+		return fmt.Errorf("failed to render Dockerfile template: %w", err)
+	}
+
+	logger.Info("Rendered Dockerfile template", "artifact", artifact.Name)
+
+	// Create or update the Secret with the rendered Dockerfile.
+	// Using CreateOrUpdate ensures that if the user changes their Dockerfile
+	// or template values, the rendered Secret is refreshed on re-reconciliation.
+	renderedSecretName := artifact.Name + "-rendered-dockerfile"
+	renderedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      renderedSecretName,
+			Namespace: artifact.Namespace,
+		},
+	}
+
+	// Verify ownership to prevent name collision attacks
+	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+		return err
+	}
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
+		// Merge labels instead of overwriting to preserve labels set by other tooling
+		if renderedSecret.Labels == nil {
+			renderedSecret.Labels = make(map[string]string)
+		}
+		renderedSecret.Labels[artifactLabel] = artifact.Name
+		// The rendered Dockerfile is always stored under the "Dockerfile" key
+		// because kaniko expects the file to be named "Dockerfile" in the
+		// mounted volume (--dockerfile dockerfile/Dockerfile).
+		renderedSecret.StringData = map[string]string{
+			"Dockerfile": rendered,
+		}
+		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("failed to create or update rendered Dockerfile secret: %w", err)
+	}
+
+	// Update the in-memory reference so the pod mounts the rendered Secret.
+	// This does NOT persist to the API server — it only affects the current
+	// reconciliation pass. Key is set to "Dockerfile" because that's what
+	// kaniko expects in the mounted volume.
+	artifact.Spec.BaseImageDockerfile.Name = renderedSecretName
+	artifact.Spec.BaseImageDockerfile.Key = "Dockerfile"
+
+	return nil
+}
+
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+	// Render Dockerfile template if applicable
+	if err := r.renderDockerfile(ctx, artifact); err != nil {
+		return ctrl.Result{Requeue: true}, err
+	}
+
 	err := r.CreateConfigMap(ctx, artifact)
 	if err != nil {
 		return ctrl.Result{Requeue: true}, err

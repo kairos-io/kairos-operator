@@ -31,6 +31,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 	var clientset *kubernetes.Clientset
 	var err error
 
+	// boolPtr returns a pointer to the given bool value
+	boolPtr := func(v bool) *bool {
+		return &v
+	}
+
 	// findContainerByName finds a container by name in a pod
 	findContainerByName := func(pod *corev1.Pod, name string) *corev1.Container {
 		for i := range pod.Spec.Containers {
@@ -208,6 +213,330 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 					return allReady
 				}, 2*time.Minute, 5*time.Second).Should(BeTrue())
+			})
+		})
+	})
+
+	Describe("Dockerfile Templating", func() {
+		var dockerfileSecretName string
+		var renderedSecretName string
+		var valuesSecretName string
+
+		BeforeEach(func() {
+			dockerfileSecretName = artifact.Name + "-dockerfile"
+			renderedSecretName = artifact.Name + "-rendered-dockerfile"
+			valuesSecretName = artifact.Name + "-template-values"
+
+			_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      dockerfileSecretName,
+						Namespace: namespace,
+					},
+					StringData: map[string]string{
+						"Dockerfile": "FROM {{ .BaseImage }}\nRUN {{ .InstallCmd }}\n",
+					},
+					Type: "Opaque",
+				}, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			artifact.Spec.BaseImageDockerfile = &buildv1alpha2.SecretKeySelector{
+				Name: dockerfileSecretName,
+				Key:  "Dockerfile",
+			}
+			artifact.Spec.ImageName = "my-registry.example.com/" + artifact.Name + ":latest"
+		})
+
+		When("a Secret with template values is referenced", func() {
+			BeforeEach(func() {
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      valuesSecretName,
+							Namespace: namespace,
+						},
+						StringData: map[string]string{
+							"BaseImage":  "opensuse/leap:15.6",
+							"InstallCmd": "zypper install -y curl",
+						},
+						Type: "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
+					Name: valuesSecretName,
+				}
+			})
+
+			It("renders the Dockerfile with Secret values", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				// The rendered Secret should exist
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM opensuse/leap:15.6\nRUN zypper install -y curl\n"))
+			})
+
+			It("updates the rendered Secret when the values Secret changes", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Update the values Secret
+				valuesSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), valuesSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				valuesSecret.StringData = map[string]string{
+					"BaseImage":  "alpine:3.18",
+					"InstallCmd": "zypper install -y curl",
+				}
+				_, err = clientset.CoreV1().Secrets(namespace).Update(
+					context.TODO(), valuesSecret, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Reset in-memory mutation to simulate a new reconciliation
+				artifact.Spec.BaseImageDockerfile.Name = dockerfileSecretName
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
+					Name: valuesSecretName,
+				}
+
+				err = r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
+			})
+		})
+
+		When("inline template values are provided", func() {
+			BeforeEach(func() {
+				artifact.Spec.DockerfileTemplateValues = map[string]string{
+					"BaseImage":  "alpine:3.18",
+					"InstallCmd": "apk add curl",
+				}
+			})
+
+			It("renders the Dockerfile with inline values", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
+			})
+		})
+
+		When("both inline and Secret values are provided", func() {
+			BeforeEach(func() {
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      valuesSecretName,
+							Namespace: namespace,
+						},
+						StringData: map[string]string{
+							"BaseImage":  "opensuse/leap:15.6",
+							"InstallCmd": "zypper install -y curl",
+						},
+						Type: "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
+					Name: valuesSecretName,
+				}
+				// Inline values override Secret values
+				artifact.Spec.DockerfileTemplateValues = map[string]string{
+					"BaseImage": "alpine:3.18",
+				}
+			})
+
+			It("inline values take precedence over Secret values", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				// BaseImage from inline, InstallCmd from Secret
+				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
+			})
+		})
+
+		When("no template values are provided", func() {
+			It("renders template variables as empty strings", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM \nRUN \n"))
+			})
+		})
+
+		When("a Secret with the rendered name already exists", func() {
+			When("the Secret is owned by a different OSArtifact", func() {
+				JustBeforeEach(func() {
+					// Create another OSArtifact in K8s so the garbage collector
+					// doesn't orphan-collect the Secret before the test runs.
+					otherArtifact := &buildv1alpha2.OSArtifact{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "OSArtifact",
+							APIVersion: buildv1alpha2.GroupVersion.String(),
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: namespace,
+							Name:      "other-artifact",
+						},
+					}
+
+					k8s := dynamic.NewForConfigOrDie(restConfig)
+					artifacts := k8s.Resource(
+						schema.GroupVersionResource{
+							Group:    buildv1alpha2.GroupVersion.Group,
+							Version:  buildv1alpha2.GroupVersion.Version,
+							Resource: "osartifacts"}).Namespace(namespace)
+					uOther := unstructured.Unstructured{}
+					uOther.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(otherArtifact)
+					resp, err := artifacts.Create(context.TODO(), &uOther, metav1.CreateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					err = runtime.DefaultUnstructuredConverter.FromUnstructured(resp.Object, otherArtifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					// Create an existing Secret owned by the other OSArtifact
+					// Note: Use the same name pattern that would be generated
+					_, err = clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+						&corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      renderedSecretName,
+								Namespace: namespace,
+								OwnerReferences: []metav1.OwnerReference{
+									{
+										APIVersion: otherArtifact.APIVersion,
+										Kind:       otherArtifact.Kind,
+										Name:       otherArtifact.Name,
+										UID:        otherArtifact.UID,
+										Controller: boolPtr(true),
+									},
+								},
+							},
+							StringData: map[string]string{
+								"Dockerfile": "FROM other-image",
+							},
+							Type: "Opaque",
+						}, metav1.CreateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("refuses to update the Secret and returns an error", func() {
+					err := r.renderDockerfile(context.TODO(), artifact)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
+					Expect(err.Error()).To(ContainSubstring(string(artifact.UID)))
+				})
+			})
+
+			When("the Secret is not owned by any OSArtifact", func() {
+				BeforeEach(func() {
+					// Create an existing Secret without an owner
+					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+						&corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      renderedSecretName,
+								Namespace: namespace,
+							},
+							StringData: map[string]string{
+								"Dockerfile": "FROM unrelated-image",
+							},
+							Type: "Opaque",
+						}, metav1.CreateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("refuses to update the Secret and returns an error", func() {
+					err := r.renderDockerfile(context.TODO(), artifact)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
+				})
+			})
+
+			When("the Secret is owned by this OSArtifact", func() {
+				JustBeforeEach(func() {
+					// Create a Secret owned by this artifact (must run after JustBeforeEach
+					// that creates the artifact in K8s, so artifact.UID is populated)
+					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+						&corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      renderedSecretName,
+								Namespace: namespace,
+								OwnerReferences: []metav1.OwnerReference{
+									{
+										APIVersion: artifact.APIVersion,
+										Kind:       artifact.Kind,
+										Name:       artifact.Name,
+										UID:        artifact.UID,
+										Controller: boolPtr(true),
+									},
+								},
+							},
+							StringData: map[string]string{
+								"Dockerfile": "FROM old-image",
+							},
+							Type: "Opaque",
+						}, metav1.CreateOptions{})
+					Expect(err).ToNot(HaveOccurred())
+
+					// Setup inline values for this test
+					artifact.Spec.DockerfileTemplateValues = map[string]string{
+						"BaseImage":  "alpine:3.18",
+						"InstallCmd": "apk add curl",
+					}
+				})
+
+				It("updates the Secret successfully", func() {
+					err := r.renderDockerfile(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+						context.TODO(), renderedSecretName, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+
+					rendered := string(renderedSecret.Data["Dockerfile"])
+					Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
+				})
+			})
+		})
+
+		When("the BaseImageDockerfile key is omitted", func() {
+			BeforeEach(func() {
+				artifact.Spec.BaseImageDockerfile.Key = ""
+			})
+
+			It("defaults to reading the 'Dockerfile' key from the Secret", func() {
+				err := r.renderDockerfile(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data["Dockerfile"])
+				Expect(rendered).To(Equal("FROM \nRUN \n"))
 			})
 		})
 	})
