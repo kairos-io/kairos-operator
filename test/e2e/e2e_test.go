@@ -70,6 +70,16 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
+			By("waiting for the controllers to start")
+			verifyControllersStarted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("Starting workers"),
+					"Controllers not yet started")
+			}
+			Eventually(verifyControllersStarted).Should(Succeed())
+
 			By("creating the curl-metrics pod to access the metrics endpoint")
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
