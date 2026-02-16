@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -548,6 +549,82 @@ var _ = Describe("OSArtifactReconciler", func() {
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-iso"))
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-rootfs"))
 				})
+			})
+		})
+	})
+
+	Describe("Spec Validation in startBuild", func() {
+		BeforeEach(func() {
+			artifact.Spec.ImageName = testImageName
+			artifact.Spec.ISO = true
+		})
+
+		When("volumeBindings references a volume not in spec.volumes", func() {
+			BeforeEach(func() {
+				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+					BuildContext: "nonexistent-volume",
+				}
+			})
+
+			It("returns an error and does not create a PVC", func() {
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nonexistent-volume"))
+				Expect(result.RequeueAfter).To(BeZero())
+
+				var pvcs corev1.PersistentVolumeClaimList
+				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{
+						artifactLabel: artifact.Name,
+					}),
+				})).To(Succeed())
+				Expect(pvcs.Items).To(BeEmpty())
+			})
+		})
+
+		When("a volume uses a reserved name", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "artifacts",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+			})
+
+			It("returns an error and does not create a PVC", func() {
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("reserved"))
+				Expect(result.RequeueAfter).To(BeZero())
+
+				var pvcs corev1.PersistentVolumeClaimList
+				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{
+						artifactLabel: artifact.Name,
+					}),
+				})).To(Succeed())
+				Expect(pvcs.Items).To(BeEmpty())
+			})
+		})
+
+		When("spec is valid", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "my-vol",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+					OverlayISO: "my-vol",
+				}
+			})
+
+			It("does not return a validation error", func() {
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.RequeueAfter).To(BeZero())
 			})
 		})
 	})

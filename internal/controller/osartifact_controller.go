@@ -283,6 +283,10 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
+	if err := artifact.Spec.Validate(); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Render Dockerfile template if applicable
 	if err := r.renderDockerfile(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err
