@@ -395,9 +395,11 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		})
 	}
 
+	podSpec.Volumes = append(podSpec.Volumes, artifact.Spec.Volumes...)
+
 	podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, artifact.Spec.ImagePullSecrets...)
 
-	podSpec.InitContainers = []corev1.Container{}
+	podSpec.InitContainers = append([]corev1.Container{}, artifact.Spec.Importers...)
 	// Base image can be:
 	// - built from a dockerfile and converted to a kairos one
 	// - built by converting an existing image to a kairos one

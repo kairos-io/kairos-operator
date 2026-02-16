@@ -217,6 +217,107 @@ var _ = Describe("OSArtifactReconciler", func() {
 		})
 	})
 
+	Describe("Importers and User Volumes", func() {
+		BeforeEach(func() {
+			artifact.Spec.ImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+		})
+
+		When("spec.importers is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "my-overlay",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+				artifact.Spec.Importers = []corev1.Container{
+					{
+						Name:    "fetch-files",
+						Image:   "curlimages/curl:latest",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{"curl -L https://example.com/files.tar.gz | tar xz -C /my-overlay"},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "my-overlay", MountPath: "/my-overlay"},
+						},
+					},
+					{
+						Name:    "process-files",
+						Image:   "busybox",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{"echo done"},
+					},
+				}
+			})
+
+			It("prepends importers before build init containers", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(len(pod.Spec.InitContainers)).To(BeNumerically(">=", 3))
+				Expect(pod.Spec.InitContainers[0].Name).To(Equal("fetch-files"))
+				Expect(pod.Spec.InitContainers[1].Name).To(Equal("process-files"))
+				// The build init container (image unpack) comes after importers
+				Expect(pod.Spec.InitContainers[2].Name).To(HavePrefix("pull-image-"))
+			})
+
+			It("adds user volumes to the pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				volumeNames := make([]string, 0, len(pod.Spec.Volumes))
+				for _, v := range pod.Spec.Volumes {
+					volumeNames = append(volumeNames, v.Name)
+				}
+				Expect(volumeNames).To(ContainElement("my-overlay"))
+				Expect(volumeNames).To(ContainElement("artifacts"))
+				Expect(volumeNames).To(ContainElement("rootfs"))
+			})
+		})
+
+		When("spec.importers is empty", func() {
+			It("init containers are unchanged", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(pod.Spec.InitContainers[0].Name).To(HavePrefix("pull-image-"))
+			})
+		})
+
+		When("spec.volumes is set without importers", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "extra-data",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+			})
+
+			It("still adds user volumes to the pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				volumeNames := make([]string, 0, len(pod.Spec.Volumes))
+				for _, v := range pod.Spec.Volumes {
+					volumeNames = append(volumeNames, v.Name)
+				}
+				Expect(volumeNames).To(ContainElement("extra-data"))
+			})
+		})
+	})
+
 	Describe("Dockerfile Templating", func() {
 		var dockerfileSecretName string
 		var renderedSecretName string
