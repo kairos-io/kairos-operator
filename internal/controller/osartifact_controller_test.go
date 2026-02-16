@@ -622,9 +622,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("does not return a validation error", func() {
-				result, err := r.startBuild(context.TODO(), artifact)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(result.RequeueAfter).To(BeZero())
+				Expect(artifact.Spec.Validate()).ToNot(HaveOccurred())
 			})
 		})
 	})
