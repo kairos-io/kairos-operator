@@ -181,6 +181,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	if arch != "" {
 		cmd.WriteString(fmt.Sprintf(" --arch %s", arch))
 	}
+	appendOverlayFlags(&cmd, artifact.Spec.VolumeBindings)
 	cmd.WriteString(" dir:/rootfs")
 
 	volumeMounts := []corev1.VolumeMount{
@@ -201,6 +202,8 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 			SubPath:   "grub.cfg",
 		})
 	}
+
+	volumeMounts = appendOverlayVolumeMounts(volumeMounts, artifact.Spec.VolumeBindings)
 
 	var cloudImgCmd strings.Builder
 	cloudImgCmd.WriteString("auroraboot --debug")
@@ -405,7 +408,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	// - built by converting an existing image to a kairos one
 	// - a prebuilt kairos image
 	if artifact.Spec.BaseImageDockerfile != nil {
-		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers()...)
+		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(artifact.Spec.VolumeBindings)...)
 	} else if artifact.Spec.BaseImageName != "" { // Existing base image - non kairos
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName, arch))
@@ -483,7 +486,56 @@ func ptr[T any](val T) *T {
 	return &val
 }
 
-func baseImageBuildContainers() []corev1.Container {
+func appendOverlayFlags(cmd *strings.Builder, bindings *buildv1alpha2.VolumeBindings) {
+	if bindings == nil {
+		return
+	}
+	if bindings.OverlayISO != "" {
+		cmd.WriteString(" --overlay-iso /overlay-iso")
+	}
+	if bindings.OverlayRootfs != "" {
+		cmd.WriteString(" --overlay-rootfs /overlay-rootfs")
+	}
+}
+
+func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, bindings *buildv1alpha2.VolumeBindings) []corev1.VolumeMount {
+	if bindings == nil {
+		return mounts
+	}
+	if bindings.OverlayISO != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      bindings.OverlayISO,
+			MountPath: "/overlay-iso",
+		})
+	}
+	if bindings.OverlayRootfs != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      bindings.OverlayRootfs,
+			MountPath: "/overlay-rootfs",
+		})
+	}
+	return mounts
+}
+
+func baseImageBuildContainers(bindings *buildv1alpha2.VolumeBindings) []corev1.Container {
+	kanikoVolumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "rootfs",
+			MountPath: "/rootfs",
+		},
+		{
+			Name:      "dockerfile",
+			MountPath: "/workspace/dockerfile",
+		},
+	}
+
+	if bindings != nil && bindings.BuildContext != "" {
+		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
+			Name:      bindings.BuildContext,
+			MountPath: "/workspace",
+		})
+	}
+
 	return []corev1.Container{
 		{
 			ImagePullPolicy: corev1.PullAlways,
@@ -497,16 +549,7 @@ func baseImageBuildContainers() []corev1.Container {
 				"--no-push",
 				"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      "rootfs",
-					MountPath: "/rootfs",
-				},
-				{
-					Name:      "dockerfile",
-					MountPath: "/workspace/dockerfile",
-				},
-			},
+			VolumeMounts: kanikoVolumeMounts,
 		},
 		{
 			ImagePullPolicy: corev1.PullAlways,
