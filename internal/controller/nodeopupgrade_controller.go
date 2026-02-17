@@ -176,7 +176,7 @@ if [ -f "/etc/kairos-release" ]; then
       CURRENT_VERSION=$(get_version "` + hostMountPath + `/etc/os-release" )
     fi
 
-    if [ "$CURRENT_VERSION" == "$UPDATE_VERSION" ]; then
+    if [ "$CURRENT_VERSION" = "$UPDATE_VERSION" ]; then
       echo Up to date
       echo "Current version: ${CURRENT_VERSION}"
       echo "Update version: ${UPDATE_VERSION}"
