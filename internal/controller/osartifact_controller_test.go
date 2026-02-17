@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -22,6 +23,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const testImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
 
 var _ = Describe("OSArtifactReconciler", func() {
 	var r *OSArtifactReconciler
@@ -36,11 +39,21 @@ var _ = Describe("OSArtifactReconciler", func() {
 		return &v
 	}
 
-	// findContainerByName finds a container by name in a pod
+	// findContainerByName finds a container by name in a pod's containers
 	findContainerByName := func(pod *corev1.Pod, name string) *corev1.Container {
 		for i := range pod.Spec.Containers {
 			if pod.Spec.Containers[i].Name == name {
 				return &pod.Spec.Containers[i]
+			}
+		}
+		return nil
+	}
+
+	// findInitContainerByName finds an init container by name in a pod
+	findInitContainerByName := func(pod *corev1.Pod, name string) *corev1.Container {
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == name {
+				return &pod.Spec.InitContainers[i]
 			}
 		}
 		return nil
@@ -213,6 +226,403 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 					return allReady
 				}, 2*time.Minute, 5*time.Second).Should(BeTrue())
+			})
+		})
+	})
+
+	Describe("Importers and User Volumes", func() {
+		BeforeEach(func() {
+			artifact.Spec.ImageName = testImageName
+		})
+
+		When("spec.importers is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "my-overlay",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+				artifact.Spec.Importers = []corev1.Container{
+					{
+						Name:    "fetch-files",
+						Image:   "curlimages/curl:latest",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{"curl -L https://example.com/files.tar.gz | tar xz -C /my-overlay"},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "my-overlay", MountPath: "/my-overlay"},
+						},
+					},
+					{
+						Name:    "process-files",
+						Image:   "busybox",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{"echo done"},
+					},
+				}
+			})
+
+			It("prepends importers before build init containers", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(len(pod.Spec.InitContainers)).To(BeNumerically(">=", 3))
+				Expect(pod.Spec.InitContainers[0].Name).To(Equal("fetch-files"))
+				Expect(pod.Spec.InitContainers[1].Name).To(Equal("process-files"))
+				// The build init container (image unpack) comes after importers
+				Expect(pod.Spec.InitContainers[2].Name).To(HavePrefix("pull-image-"))
+			})
+
+			It("adds user volumes to the pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				volumeNames := make([]string, 0, len(pod.Spec.Volumes))
+				for _, v := range pod.Spec.Volumes {
+					volumeNames = append(volumeNames, v.Name)
+				}
+				Expect(volumeNames).To(ContainElement("my-overlay"))
+				Expect(volumeNames).To(ContainElement("artifacts"))
+				Expect(volumeNames).To(ContainElement("rootfs"))
+			})
+		})
+
+		When("spec.importers is empty", func() {
+			It("init containers are unchanged", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(pod.Spec.InitContainers[0].Name).To(HavePrefix("pull-image-"))
+			})
+		})
+
+		When("spec.volumes is set without importers", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "extra-data",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+			})
+
+			It("still adds user volumes to the pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				volumeNames := make([]string, 0, len(pod.Spec.Volumes))
+				for _, v := range pod.Spec.Volumes {
+					volumeNames = append(volumeNames, v.Name)
+				}
+				Expect(volumeNames).To(ContainElement("extra-data"))
+			})
+		})
+	})
+
+	Describe("Volume Bindings", func() {
+		BeforeEach(func() {
+			artifact.Spec.ImageName = testImageName
+		})
+
+		Describe("buildContext binding", func() {
+			BeforeEach(func() {
+				secretName := artifact.Name + "-dockerfile"
+
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      secretName,
+							Namespace: namespace,
+						},
+						StringData: map[string]string{
+							"Dockerfile": "FROM ubuntu",
+						},
+						Type: "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.BaseImageDockerfile = &buildv1alpha2.SecretKeySelector{
+					Name: secretName,
+					Key:  "Dockerfile",
+				}
+			})
+
+			When("volumeBindings.buildContext is set", func() {
+				BeforeEach(func() {
+					artifact.Spec.Volumes = []corev1.Volume{
+						{
+							Name:         "my-context",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					}
+					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+						BuildContext: "my-context",
+					}
+				})
+
+				It("mounts the build context volume at /workspace on kaniko", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					kaniko := findInitContainerByName(pod, "kaniko-build")
+					Expect(kaniko).ToNot(BeNil())
+
+					var hasContextMount bool
+					for _, vm := range kaniko.VolumeMounts {
+						if vm.Name == "my-context" && vm.MountPath == "/workspace" {
+							hasContextMount = true
+						}
+					}
+					Expect(hasContextMount).To(BeTrue(), "kaniko should have my-context mounted at /workspace")
+				})
+
+				It("preserves the dockerfile mount at /workspace/dockerfile", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					kaniko := findInitContainerByName(pod, "kaniko-build")
+					Expect(kaniko).ToNot(BeNil())
+
+					var hasDockerfileMount bool
+					for _, vm := range kaniko.VolumeMounts {
+						if vm.Name == "dockerfile" && vm.MountPath == "/workspace/dockerfile" {
+							hasDockerfileMount = true
+						}
+					}
+					Expect(hasDockerfileMount).To(BeTrue(), "kaniko should still have dockerfile mounted at /workspace/dockerfile")
+				})
+			})
+
+			When("volumeBindings.buildContext is not set", func() {
+				It("kaniko does not have an extra workspace mount", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					kaniko := findInitContainerByName(pod, "kaniko-build")
+					Expect(kaniko).ToNot(BeNil())
+
+					mountNames := make([]string, 0, len(kaniko.VolumeMounts))
+					for _, vm := range kaniko.VolumeMounts {
+						mountNames = append(mountNames, vm.Name)
+					}
+					Expect(mountNames).To(ConsistOf("rootfs", "dockerfile"))
+				})
+			})
+		})
+
+		Describe("overlay bindings on build-iso", func() {
+			BeforeEach(func() {
+				artifact.Spec.ISO = true
+			})
+
+			When("overlayISO is set", func() {
+				BeforeEach(func() {
+					artifact.Spec.Volumes = []corev1.Volume{
+						{
+							Name:         "my-iso-overlay",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					}
+					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+						OverlayISO: "my-iso-overlay",
+					}
+				})
+
+				It("adds --overlay-iso flag and volume mount to build-iso", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					buildIso := findInitContainerByName(pod, "build-iso")
+					Expect(buildIso).ToNot(BeNil())
+					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
+
+					var hasMount bool
+					for _, vm := range buildIso.VolumeMounts {
+						if vm.Name == "my-iso-overlay" && vm.MountPath == "/overlay-iso" {
+							hasMount = true
+						}
+					}
+					Expect(hasMount).To(BeTrue(), "build-iso should have my-iso-overlay mounted at /overlay-iso")
+				})
+			})
+
+			When("overlayRootfs is set", func() {
+				BeforeEach(func() {
+					artifact.Spec.Volumes = []corev1.Volume{
+						{
+							Name:         "my-rootfs-overlay",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					}
+					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+						OverlayRootfs: "my-rootfs-overlay",
+					}
+				})
+
+				It("adds --overlay-rootfs flag and volume mount to build-iso", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					buildIso := findInitContainerByName(pod, "build-iso")
+					Expect(buildIso).ToNot(BeNil())
+					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
+
+					var hasMount bool
+					for _, vm := range buildIso.VolumeMounts {
+						if vm.Name == "my-rootfs-overlay" && vm.MountPath == "/overlay-rootfs" {
+							hasMount = true
+						}
+					}
+					Expect(hasMount).To(BeTrue(), "build-iso should have my-rootfs-overlay mounted at /overlay-rootfs")
+				})
+			})
+
+			When("both overlayISO and overlayRootfs are set", func() {
+				BeforeEach(func() {
+					artifact.Spec.Volumes = []corev1.Volume{
+						{
+							Name:         "iso-ov",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+						{
+							Name:         "rootfs-ov",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					}
+					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+						OverlayISO:    "iso-ov",
+						OverlayRootfs: "rootfs-ov",
+					}
+				})
+
+				It("includes both flags in build-iso command", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					buildIso := findInitContainerByName(pod, "build-iso")
+					Expect(buildIso).ToNot(BeNil())
+					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
+					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
+				})
+			})
+
+			When("no overlay bindings are set", func() {
+				It("build-iso command has no overlay flags", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					buildIso := findInitContainerByName(pod, "build-iso")
+					Expect(buildIso).ToNot(BeNil())
+					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-iso"))
+					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-rootfs"))
+				})
+			})
+		})
+	})
+
+	Describe("Spec Validation in startBuild", func() {
+		BeforeEach(func() {
+			artifact.Spec.ImageName = testImageName
+			artifact.Spec.ISO = true
+		})
+
+		When("volumeBindings references a volume not in spec.volumes", func() {
+			BeforeEach(func() {
+				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+					BuildContext: "nonexistent-volume",
+				}
+			})
+
+			It("returns an error and does not create a PVC", func() {
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nonexistent-volume"))
+				Expect(result.RequeueAfter).To(BeZero())
+
+				var pvcs corev1.PersistentVolumeClaimList
+				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{
+						artifactLabel: artifact.Name,
+					}),
+				})).To(Succeed())
+				Expect(pvcs.Items).To(BeEmpty())
+			})
+		})
+
+		When("a volume uses a reserved name", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "artifacts",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+			})
+
+			It("returns an error and does not create a PVC", func() {
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("reserved"))
+				Expect(result.RequeueAfter).To(BeZero())
+
+				var pvcs corev1.PersistentVolumeClaimList
+				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{
+						artifactLabel: artifact.Name,
+					}),
+				})).To(Succeed())
+				Expect(pvcs.Items).To(BeEmpty())
+			})
+		})
+
+		When("spec is valid", func() {
+			BeforeEach(func() {
+				artifact.Spec.Volumes = []corev1.Volume{
+					{
+						Name:         "my-vol",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					},
+				}
+				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
+					OverlayISO: "my-vol",
+				}
+			})
+
+			It("does not return a validation error", func() {
+				Expect(artifact.Spec.Validate()).ToNot(HaveOccurred())
 			})
 		})
 	})
@@ -543,7 +953,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 	Describe("Auroraboot Commands", func() {
 		BeforeEach(func() {
-			artifact.Spec.ImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+			artifact.Spec.ImageName = testImageName
 		})
 
 		When("CloudImage is enabled", func() {

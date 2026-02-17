@@ -152,7 +152,9 @@ func (tc *TestClients) CreateArtifact(artifact *buildv1alpha2.OSArtifact) (strin
 	return artifactName, artifactLabelSelector
 }
 
-// WaitForBuildCompletion waits for the build pod to complete and artifact to be ready
+// WaitForBuildCompletion waits for the build pod to complete and the artifact to
+// reach a terminal phase (Ready or Error). If the artifact enters Error, the test
+// fails immediately with builder pod and export job logs for diagnostics.
 func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabelSelector labels.Selector) {
 	By("waiting for build pod to complete")
 	Eventually(func(g Gomega) {
@@ -166,7 +168,8 @@ func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabel
 		}
 	}).WithTimeout(time.Hour).Should(Succeed())
 
-	By("waiting for artifact to be ready")
+	By("waiting for artifact to reach a terminal phase")
+	var terminalPhase buildv1alpha2.ArtifactPhase
 	Eventually(func(g Gomega) {
 		w, err := tc.Artifacts.Watch(context.TODO(), metav1.ListOptions{})
 		g.Expect(err).ToNot(HaveOccurred())
@@ -180,10 +183,19 @@ func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabel
 			if event.Type == watch.Modified && event.Object.(*unstructured.Unstructured).GetName() == artifactName {
 				err := tc.Scheme.Convert(event.Object, &artifact, nil)
 				g.Expect(err).ToNot(HaveOccurred())
-				stopped = artifact.Status.Phase == buildv1alpha2.Ready
+				if artifact.Status.Phase == buildv1alpha2.Ready || artifact.Status.Phase == buildv1alpha2.Error {
+					terminalPhase = artifact.Status.Phase
+					stopped = true
+				}
 			}
 		}
+		g.Expect(string(terminalPhase)).ToNot(BeEmpty(), "watch closed without artifact reaching a terminal phase")
 	}).WithTimeout(time.Hour).Should(Succeed())
+
+	if terminalPhase == buildv1alpha2.Error {
+		Fail(fmt.Sprintf("artifact %q entered Error phase.\n\n%s",
+			artifactName, tc.collectDebugLogs(artifactLabelSelector)))
+	}
 }
 
 // WaitForExportCompletion waits for the export job to complete
@@ -199,6 +211,48 @@ func (tc *TestClients) WaitForExportCompletion(artifactLabelSelector labels.Sele
 			stopped = event.Type != watch.Deleted && event.Type != watch.Error || !ok
 		}
 	}).WithTimeout(time.Hour).Should(Succeed())
+}
+
+// collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
+// Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
+func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) string {
+	var buf strings.Builder
+
+	buf.WriteString("=== Builder Pod Describe (events, status, init container details) ===\n")
+	cmd := exec.Command("kubectl", "describe", "pods",
+		"-l", artifactLabelSelector.String(),
+		"-n", "default")
+	out, _ := cmd.CombinedOutput()
+	buf.Write(out)
+	buf.WriteString("\n")
+
+	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
+	cmd = exec.Command("kubectl", "logs",
+		"-l", artifactLabelSelector.String(),
+		"--all-containers=true", "--prefix=true", "--tail=80",
+		"-n", "default")
+	out, _ = cmd.CombinedOutput()
+	buf.Write(out)
+	buf.WriteString("\n")
+
+	jobs, err := tc.Jobs.List(context.TODO(), metav1.ListOptions{
+		LabelSelector: artifactLabelSelector.String(),
+	})
+	if err == nil {
+		for _, job := range jobs.Items {
+			jobName := job.GetName()
+			buf.WriteString(fmt.Sprintf("=== Export Job %s Logs (last 80 lines) ===\n", jobName))
+			cmd := exec.Command("kubectl", "logs",
+				fmt.Sprintf("job/%s", jobName),
+				"--all-containers=true", "--prefix=true", "--tail=80",
+				"-n", "default")
+			out, _ := cmd.CombinedOutput()
+			buf.Write(out)
+			buf.WriteString("\n")
+		}
+	}
+
+	return buf.String()
 }
 
 // Cleanup deletes the artifact and waits for all related resources to be cleaned up

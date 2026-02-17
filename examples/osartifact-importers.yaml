@@ -1,0 +1,96 @@
+# Sample OSArtifact demonstrating importers and volume bindings.
+#
+# Importers are init containers that run before the build phase. They populate
+# user-defined volumes which are then bound to overlay roles via volumeBindings.
+# Here we create two overlays:
+#   - overlayISO:    files placed at the root of the ISO filesystem
+#                    (accessible at /run/initramfs/live/ during live boot)
+#   - overlayRootfs: files merged into the OS rootfs (squashfs),
+#                    becoming part of the installed system
+#
+# Prereqs: deploy nginx so the exporter can upload the ISO:
+#   kubectl apply -k config/nginx -n default
+#
+# Then apply this manifest:
+#   kubectl apply -f examples/osartifact-importers.yaml
+#
+# Once the artifact reaches Ready, port-forward and download:
+#   kubectl port-forward svc/kairos-operator-nginx 8080:80 -n default
+#   curl -O http://localhost:8080/importers-demo.iso
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: importers-demo
+  namespace: default
+spec:
+  imageName: "quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2"
+  iso: true
+
+  # User-defined volumes shared between importers and the build pod.
+  # Names must not collide with reserved names (artifacts, rootfs, config,
+  # dockerfile, cloudconfig).
+  volumes:
+    - name: iso-overlay
+      emptyDir: {}
+    - name: rootfs-overlay
+      emptyDir: {}
+
+  # Importers run as init containers, in order, before the build.
+  # Each one populates its overlay volume with files.
+  importers:
+    - name: populate-iso-overlay
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "This file lives on the ISO filesystem root." > /overlay/README-ISO.txt
+          echo "Accessible at /run/initramfs/live/README-ISO.txt during live boot."
+          echo "ISO overlay populated."
+      volumeMounts:
+        - name: iso-overlay
+          mountPath: /overlay
+
+    - name: populate-rootfs-overlay
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          mkdir -p /overlay/etc
+          echo "This file is baked into the OS rootfs (squashfs)." > /overlay/etc/README-ROOTFS.txt
+          echo "It will exist at /etc/README-ROOTFS.txt on the installed system."
+          echo "Rootfs overlay populated."
+      volumeMounts:
+        - name: rootfs-overlay
+          mountPath: /overlay
+
+  # Map the populated volumes to their build roles.
+  volumeBindings:
+    overlayISO: iso-overlay
+    overlayRootfs: rootfs-overlay
+
+  exporters:
+    - template:
+        spec:
+          restartPolicy: Never
+          containers:
+            # Requires nginx to be deployed (`kubectl apply -k config/nginx`)
+            - name: upload-to-nginx
+              image: curlimages/curl
+              command: ["sh", "-ec"]
+              args:
+                - |
+                  NGINX_URL="${NGINX_URL:-http://kairos-operator-nginx}"
+                  for f in /artifacts/*; do
+                    [ -f "$f" ] || continue
+                    base=$(basename "$f")
+                    echo "Uploading $base to $NGINX_URL/$base"
+                    curl -fsSL -T "$f" "$NGINX_URL/$base" || exit 1
+                  done
+                  echo "Upload done"
+              env:
+                - name: NGINX_URL
+                  value: "http://kairos-operator-nginx"
+              volumeMounts:
+                - name: artifacts
+                  readOnly: true
+                  mountPath: /artifacts

@@ -18,11 +18,20 @@ package v1alpha2
 
 import (
 	"errors"
+	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+var reservedVolumeNames = map[string]bool{
+	"artifacts":   true,
+	"rootfs":      true,
+	"config":      true,
+	"dockerfile":  true,
+	"cloudconfig": true,
+}
 
 // OSArtifactSpec defines the desired state of OSArtifact
 type OSArtifactSpec struct {
@@ -82,6 +91,50 @@ type OSArtifactSpec struct {
 	ImagePullSecrets []corev1.LocalObjectReference     `json:"imagePullSecrets,omitempty"`
 	Exporters        []batchv1.JobSpec                 `json:"exporters,omitempty"`
 	Volume           *corev1.PersistentVolumeClaimSpec `json:"volume,omitempty"`
+
+	// Volumes defines additional volumes available to importers and the build pod.
+	// These follow the standard corev1.Volume schema (PVC, ConfigMap, Secret, EmptyDir, etc.).
+	// The user is responsible for creating any referenced PVCs beforehand.
+	// Volume names must not collide with internal names: "artifacts", "rootfs", "config",
+	// "dockerfile", "cloudconfig".
+	// +optional
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// Importers are init containers that run before the build phase on the builder Pod.
+	// They run sequentially in the order defined, before any build init containers
+	// (kaniko, image unpack, etc.). Users can mount volumes from spec.volumes via
+	// standard volumeMounts to prepare build contexts, overlay directories, etc.
+	// The controller automatically adds spec.volumes to the Pod so importer containers
+	// can reference them in their volumeMounts.
+	// +optional
+	Importers []corev1.Container `json:"importers,omitempty"`
+
+	// VolumeBindings maps user-defined volume names to specific roles in the build phase.
+	// Referenced names must exist in spec.volumes.
+	// +optional
+	VolumeBindings *VolumeBindings `json:"volumeBindings,omitempty"`
+}
+
+// VolumeBindings maps user-defined volume names to specific roles in the build phase.
+type VolumeBindings struct {
+	// BuildContext names a volume (from spec.volumes) to mount as the Docker build
+	// context at /workspace in the kaniko init container. When set, the user is expected
+	// to populate it via an importer. The existing Dockerfile Secret mount at
+	// /workspace/dockerfile is preserved.
+	// +optional
+	BuildContext string `json:"buildContext,omitempty"`
+
+	// OverlayISO names a volume whose contents are added to the ISO filesystem root.
+	// Passed to auroraboot as --overlay-iso (build-iso only).
+	// Files accessible at /run/initramfs/live during live boot.
+	// +optional
+	OverlayISO string `json:"overlayISO,omitempty"`
+
+	// OverlayRootfs names a volume whose contents are merged into the OS rootfs (squashfs).
+	// Passed to auroraboot as --overlay-rootfs (build-iso only).
+	// These files become part of the installed system.
+	// +optional
+	OverlayRootfs string `json:"overlayRootfs,omitempty"`
 }
 
 type SecretKeySelector struct {
@@ -138,4 +191,41 @@ func (s *OSArtifactSpec) ArchSanitized() (string, error) {
 		return "", errors.New("arch must be either 'amd64', 'arm64', or empty")
 	}
 	return arch, nil
+}
+
+// Validate checks that the OSArtifactSpec is internally consistent:
+// - Volume names in spec.volumes must not use reserved names
+// - Volume names referenced in volumeBindings must exist in spec.volumes
+func (s *OSArtifactSpec) Validate() error {
+	volumeNames := make(map[string]bool, len(s.Volumes))
+	for i, v := range s.Volumes {
+		if v.Name == "" {
+			return fmt.Errorf("spec.volumes[%d].name must not be empty", i)
+		}
+		if reservedVolumeNames[v.Name] {
+			return fmt.Errorf("volume name %q is reserved for internal use", v.Name)
+		}
+		if volumeNames[v.Name] {
+			return fmt.Errorf("duplicate volume name %q in spec.volumes", v.Name)
+		}
+		volumeNames[v.Name] = true
+	}
+
+	if s.VolumeBindings == nil {
+		return nil
+	}
+
+	bindings := map[string]string{
+		"buildContext":  s.VolumeBindings.BuildContext,
+		"overlayISO":    s.VolumeBindings.OverlayISO,
+		"overlayRootfs": s.VolumeBindings.OverlayRootfs,
+	}
+
+	for field, name := range bindings {
+		if name != "" && !volumeNames[name] {
+			return fmt.Errorf("volumeBindings.%s references volume %q which is not defined in spec.volumes", field, name)
+		}
+	}
+
+	return nil
 }
