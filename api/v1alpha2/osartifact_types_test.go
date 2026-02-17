@@ -1,34 +1,34 @@
 package v1alpha2
 
 import (
-	"github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 )
 
-var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
+var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
 	var spec *OSArtifactSpec
 
-	ginkgo.BeforeEach(func() {
+	BeforeEach(func() {
 		spec = &OSArtifactSpec{}
 	})
 
-	ginkgo.Describe("Valid architectures", func() {
-		ginkgo.It("should accept 'amd64'", func() {
+	Describe("Valid architectures", func() {
+		It("should accept 'amd64'", func() {
 			spec.Arch = "amd64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(arch).To(Equal("amd64"))
 		})
 
-		ginkgo.It("should accept 'arm64'", func() {
+		It("should accept 'arm64'", func() {
 			spec.Arch = "arm64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(arch).To(Equal("arm64"))
 		})
 
-		ginkgo.It("should accept empty string", func() {
+		It("should accept empty string", func() {
 			spec.Arch = ""
 			arch, err := spec.ArchSanitized()
 			Expect(err).ToNot(HaveOccurred())
@@ -36,8 +36,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 		})
 	})
 
-	ginkgo.Describe("Invalid architectures", func() {
-		ginkgo.It("should reject 'x86_64'", func() {
+	Describe("Invalid architectures", func() {
+		It("should reject 'x86_64'", func() {
 			spec.Arch = "x86_64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -45,7 +45,7 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 			Expect(arch).To(Equal(""))
 		})
 
-		ginkgo.It("should reject 'aarch64'", func() {
+		It("should reject 'aarch64'", func() {
 			spec.Arch = "aarch64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -53,7 +53,7 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 			Expect(arch).To(Equal(""))
 		})
 
-		ginkgo.It("should reject 'ppc64le'", func() {
+		It("should reject 'ppc64le'", func() {
 			spec.Arch = "ppc64le"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -61,7 +61,7 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 			Expect(arch).To(Equal(""))
 		})
 
-		ginkgo.It("should reject 's390x'", func() {
+		It("should reject 's390x'", func() {
 			spec.Arch = "s390x"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -69,7 +69,7 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 			Expect(arch).To(Equal(""))
 		})
 
-		ginkgo.It("should reject arbitrary strings", func() {
+		It("should reject arbitrary strings", func() {
 			spec.Arch = "invalid-arch"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -78,8 +78,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 		})
 	})
 
-	ginkgo.Describe("Case sensitivity", func() {
-		ginkgo.It("should reject 'AMD64' (uppercase)", func() {
+	Describe("Case sensitivity", func() {
+		It("should reject 'AMD64' (uppercase)", func() {
 			spec.Arch = "AMD64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -87,7 +87,7 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 			Expect(arch).To(Equal(""))
 		})
 
-		ginkgo.It("should reject 'ARM64' (uppercase)", func() {
+		It("should reject 'ARM64' (uppercase)", func() {
 			spec.Arch = "ARM64"
 			arch, err := spec.ArchSanitized()
 			Expect(err).To(HaveOccurred())
@@ -97,21 +97,21 @@ var _ = ginkgo.Describe("OSArtifactSpec.ArchSanitized", func() {
 	})
 })
 
-var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
+var _ = Describe("OSArtifactSpec.Validate", func() {
 	var spec *OSArtifactSpec
 
-	ginkgo.BeforeEach(func() {
+	BeforeEach(func() {
 		spec = &OSArtifactSpec{}
 	})
 
-	ginkgo.Describe("when no volumes, importers, or volumeBindings are set", func() {
-		ginkgo.It("returns nil", func() {
+	Describe("when no volumes, importers, or volumeBindings are set", func() {
+		It("returns nil", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 	})
 
-	ginkgo.Describe("when volumeBindings reference volumes that exist in spec.volumes", func() {
-		ginkgo.It("returns nil", func() {
+	Describe("when volumeBindings reference volumes that exist in spec.volumes", func() {
+		It("returns nil", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "my-context"},
 				{Name: "my-overlay"},
@@ -126,8 +126,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 
-	ginkgo.Describe("when volumeBindings.buildContext references a name not in spec.volumes", func() {
-		ginkgo.It("returns error", func() {
+	Describe("when volumeBindings.buildContext references a name not in spec.volumes", func() {
+		It("returns error", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
@@ -141,8 +141,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 
-	ginkgo.Describe("when volumeBindings.overlayISO references a name not in spec.volumes", func() {
-		ginkgo.It("returns error", func() {
+	Describe("when volumeBindings.overlayISO references a name not in spec.volumes", func() {
+		It("returns error", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
@@ -156,8 +156,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 
-	ginkgo.Describe("when volumeBindings.overlayRootfs references a name not in spec.volumes", func() {
-		ginkgo.It("returns error", func() {
+	Describe("when volumeBindings.overlayRootfs references a name not in spec.volumes", func() {
+		It("returns error", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
@@ -171,11 +171,11 @@ var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 
-	ginkgo.Describe("when spec.volumes contains a reserved name", func() {
+	Describe("when spec.volumes contains a reserved name", func() {
 		reservedNames := []string{"artifacts", "rootfs", "config", "dockerfile", "cloudconfig"}
 
 		for _, name := range reservedNames {
-			ginkgo.It("returns error for reserved name '"+name+"'", func() {
+			It("returns error for reserved name '"+name+"'", func() {
 				spec.Volumes = []corev1.Volume{
 					{Name: name},
 				}
@@ -187,8 +187,8 @@ var _ = ginkgo.Describe("OSArtifactSpec.Validate", func() {
 		}
 	})
 
-	ginkgo.Describe("when volumeBindings is set but spec.volumes is empty", func() {
-		ginkgo.It("returns error", func() {
+	Describe("when volumeBindings is set but spec.volumes is empty", func() {
+		It("returns error", func() {
 			spec.VolumeBindings = &VolumeBindings{
 				BuildContext: "my-context",
 			}
