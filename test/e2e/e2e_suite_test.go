@@ -213,17 +213,25 @@ func (tc *TestClients) WaitForExportCompletion(artifactLabelSelector labels.Sele
 	}).WithTimeout(time.Hour).Should(Succeed())
 }
 
-// collectDebugLogs gathers logs from all pods and jobs matching the artifact label.
+// collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
 // Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
 func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) string {
 	var buf strings.Builder
 
+	buf.WriteString("=== Builder Pod Describe (events, status, init container details) ===\n")
+	cmd := exec.Command("kubectl", "describe", "pods",
+		"-l", artifactLabelSelector.String(),
+		"-n", "default")
+	out, _ := cmd.CombinedOutput()
+	buf.Write(out)
+	buf.WriteString("\n")
+
 	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
-	cmd := exec.Command("kubectl", "logs",
+	cmd = exec.Command("kubectl", "logs",
 		"-l", artifactLabelSelector.String(),
 		"--all-containers=true", "--prefix=true", "--tail=80",
 		"-n", "default")
-	out, _ := cmd.CombinedOutput()
+	out, _ = cmd.CombinedOutput()
 	buf.Write(out)
 	buf.WriteString("\n")
 

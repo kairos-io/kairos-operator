@@ -1,17 +1,22 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// verifyOverlaysInISO returns a shell script that extracts the ISO, then:
+// verifyImportersInISO returns a shell script that extracts the ISO, then:
 //   - checks the ISO filesystem root for the overlay-iso marker (isoMarker)
-//   - extracts the squashfs and checks the rootfs for the overlay-rootfs marker (rootfsMarker)
-func verifyOverlaysInISO(isoMarker, rootfsMarker string) string {
+//   - extracts the squashfs and checks for the overlay-rootfs marker (rootfsMarker)
+//   - checks the squashfs for a build-context marker that was COPY'd via the
+//     Dockerfile during the kaniko build (buildCtxMarker)
+func verifyImportersInISO(isoMarker, rootfsMarker, buildCtxMarker string) string {
 	return fmt.Sprintf(`
 set -e
 
@@ -39,7 +44,7 @@ if ! grep -q %q /tmp/iso/marker.txt; then
 fi
 echo "PASS: overlay-iso marker found in ISO root"
 
-# --- Verify overlay-rootfs marker inside the squashfs ---
+# --- Verify overlay-rootfs and build-context markers inside the squashfs ---
 squashfs_file=$(find /tmp/iso -name "*.squashfs" -print -quit)
 if [ -z "$squashfs_file" ]; then
     echo "ERROR: no .squashfs found inside ISO"
@@ -48,7 +53,7 @@ if [ -z "$squashfs_file" ]; then
 fi
 echo "Found squashfs: $squashfs_file"
 
-unsquashfs -d /tmp/rootfs "$squashfs_file" etc/marker.txt > /dev/null 2>&1 || true
+unsquashfs -d /tmp/rootfs "$squashfs_file" etc/marker.txt etc/build-context-marker.txt > /dev/null 2>&1 || true
 
 if ! [ -f /tmp/rootfs/etc/marker.txt ]; then
     echo "ERROR: overlay-rootfs marker not found in squashfs at etc/marker.txt"
@@ -63,12 +68,25 @@ if ! grep -q %q /tmp/rootfs/etc/marker.txt; then
 fi
 echo "PASS: overlay-rootfs marker found in squashfs"
 
-echo "All overlay verifications passed"
-`, isoMarker, rootfsMarker)
+if ! [ -f /tmp/rootfs/etc/build-context-marker.txt ]; then
+    echo "ERROR: build-context marker not found in squashfs at etc/build-context-marker.txt"
+    unsquashfs -l "$squashfs_file" | head -60 || true
+    exit 1
+fi
+
+if ! grep -q %q /tmp/rootfs/etc/build-context-marker.txt; then
+    echo "ERROR: build-context marker has wrong content"
+    cat /tmp/rootfs/etc/build-context-marker.txt
+    exit 1
+fi
+echo "PASS: build-context marker found in squashfs"
+
+echo "All importer verifications passed"
+`, isoMarker, rootfsMarker, buildCtxMarker)
 }
 
-// overlayVolumes returns two emptyDir volumes for ISO and rootfs overlays.
-func overlayVolumes() []corev1.Volume {
+// importerVolumes returns emptyDir volumes for ISO overlay, rootfs overlay, and build context.
+func importerVolumes() []corev1.Volume {
 	return []corev1.Volume{
 		{
 			Name:         "iso-overlay",
@@ -78,12 +96,17 @@ func overlayVolumes() []corev1.Volume {
 			Name:         "rootfs-overlay",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
+		{
+			Name:         "build-context",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
 	}
 }
 
-// overlayImporters returns init containers that populate the overlay volumes with marker files.
-// Each importer writes a known file, proving it ran and had the volume mounted correctly.
-func overlayImporters() []corev1.Container {
+// importerContainers returns init containers that populate the overlay and build-context
+// volumes with marker files. Each importer writes a known file, proving it ran and had
+// the volume mounted correctly.
+func importerContainers() []corev1.Container {
 	return []corev1.Container{
 		{
 			Name:    "populate-iso-overlay",
@@ -103,14 +126,24 @@ func overlayImporters() []corev1.Container {
 				{Name: "rootfs-overlay", MountPath: "/overlay"},
 			},
 		},
+		{
+			Name:    "populate-build-context",
+			Image:   "busybox:latest",
+			Command: []string{"/bin/sh", "-c"},
+			Args:    []string{"echo 'build-context-content' > /ctx/build-context-marker.txt && echo 'Build context populated'"},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "build-context", MountPath: "/ctx"},
+			},
+		},
 	}
 }
 
-// overlayBindings maps the user-defined volumes to their overlay roles in the build.
-func overlayBindings() *buildv1alpha2.VolumeBindings {
+// importerBindings maps the user-defined volumes to their roles in the build.
+func importerBindings() *buildv1alpha2.VolumeBindings {
 	return &buildv1alpha2.VolumeBindings{
 		OverlayISO:    "iso-overlay",
 		OverlayRootfs: "rootfs-overlay",
+		BuildContext:  "build-context",
 	}
 }
 
@@ -122,22 +155,38 @@ var _ = Describe("OSArtifact Importers", func() {
 	})
 
 	// This test verifies the full importer → volume → build pipeline:
-	//  1. Two emptyDir volumes are created on the builder pod
-	//  2. Importer init containers run first: one writes a marker into the ISO overlay,
-	//     another writes a marker into the rootfs overlay
-	//  3. VolumeBindings map those volumes to overlayISO / overlayRootfs
-	//  4. build-iso receives --overlay-iso and --overlay-rootfs flags with the mounts
-	//  5. The exporter extracts the ISO and squashfs to verify both markers are present
-	It("populates overlay volumes via importers and bakes them into the ISO", func() {
+	//  1. A Secret holds a Dockerfile that COPYs a file from the build context
+	//  2. Three emptyDir volumes are created: ISO overlay, rootfs overlay, build context
+	//  3. Importer init containers populate each volume with a marker file
+	//  4. VolumeBindings wire the volumes to overlayISO, overlayRootfs, and buildContext
+	//  5. Kaniko builds the Dockerfile, COPYing the build-context marker into the image
+	//  6. build-iso receives --overlay-iso and --overlay-rootfs flags with the overlay mounts
+	//  7. The exporter extracts the ISO and squashfs to verify all three markers are present
+	It("populates overlay and build-context volumes via importers and bakes them into the ISO", func() {
+		secret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "importers-dockerfile-",
+				Namespace:    "default",
+			},
+			StringData: map[string]string{
+				"Dockerfile": "FROM quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2\nCOPY build-context-marker.txt /etc/build-context-marker.txt\n",
+			},
+			Type: corev1.SecretTypeOpaque,
+		}, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
 		spec := buildv1alpha2.OSArtifactSpec{
-			ImageName:      "quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2",
+			BaseImageDockerfile: &buildv1alpha2.SecretKeySelector{
+				Name: secret.Name,
+				Key:  "Dockerfile",
+			},
 			ISO:            true,
-			Volumes:        overlayVolumes(),
-			Importers:      overlayImporters(),
-			VolumeBindings: overlayBindings(),
+			Volumes:        importerVolumes(),
+			Importers:      importerContainers(),
+			VolumeBindings: importerBindings(),
 		}
 
-		verifyScript := verifyOverlaysInISO("iso-overlay-content", "rootfs-overlay-content")
+		verifyScript := verifyImportersInISO("iso-overlay-content", "rootfs-overlay-content", "build-context-content")
 
 		artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "importers-", spec, verifyScript)
 		runArtifactTest(tc, artifactName, artifactLabelSelector)

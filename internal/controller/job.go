@@ -543,7 +543,7 @@ func baseImageBuildContainers(bindings *buildv1alpha2.VolumeBindings) []corev1.C
 			Image:           "gcr.io/kaniko-project/executor:latest",
 			Args: []string{
 				"--dockerfile", "dockerfile/Dockerfile",
-				"--context", "dir://workspace",
+				"--context", "dir:///workspace",
 				"--destination", "whatever", // We don't push, but it needs this
 				"--tar-path", "/rootfs/image.tar",
 				"--no-push",
