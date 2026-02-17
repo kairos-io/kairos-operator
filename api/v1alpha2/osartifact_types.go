@@ -198,9 +198,15 @@ func (s *OSArtifactSpec) ArchSanitized() (string, error) {
 // - Volume names referenced in volumeBindings must exist in spec.volumes
 func (s *OSArtifactSpec) Validate() error {
 	volumeNames := make(map[string]bool, len(s.Volumes))
-	for _, v := range s.Volumes {
+	for i, v := range s.Volumes {
+		if v.Name == "" {
+			return fmt.Errorf("spec.volumes[%d].name must not be empty", i)
+		}
 		if reservedVolumeNames[v.Name] {
 			return fmt.Errorf("volume name %q is reserved for internal use", v.Name)
+		}
+		if volumeNames[v.Name] {
+			return fmt.Errorf("duplicate volume name %q in spec.volumes", v.Name)
 		}
 		volumeNames[v.Name] = true
 	}

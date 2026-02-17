@@ -284,7 +284,7 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	if err := artifact.Spec.Validate(); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
 	}
 
 	// Render Dockerfile template if applicable
