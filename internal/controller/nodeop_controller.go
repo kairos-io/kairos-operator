@@ -336,6 +336,12 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						Name:    "nodeop",
 						Image:   nodeOp.Spec.Image,
 						Command: nodeOp.Spec.Command,
+						Env: []corev1.EnvVar{
+							{
+								Name:  "KAIROS_OCI_IMAGE",
+								Value: nodeOp.Spec.Image,
+							},
+						},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
@@ -419,6 +425,12 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 							{
 								Name:      "host-root",
 								MountPath: "/host",
+							},
+						},
+						Env: []corev1.EnvVar{
+							{
+								Name:  "KAIROS_OCI_IMAGE",
+								Value: nodeOp.Spec.Image,
 							},
 						},
 					},
