@@ -1,16 +1,18 @@
-package v1alpha2
+package v1alpha2_test
 
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/kairos-io/kairos-operator/api/v1alpha2"
 )
 
 var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
-	var spec *OSArtifactSpec
+	var spec *v1alpha2.OSArtifactSpec
 
 	BeforeEach(func() {
-		spec = &OSArtifactSpec{}
+		spec = &v1alpha2.OSArtifactSpec{}
 	})
 
 	Describe("Valid architectures", func() {
@@ -98,10 +100,10 @@ var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
 })
 
 var _ = Describe("OSArtifactSpec.Validate", func() {
-	var spec *OSArtifactSpec
+	var spec *v1alpha2.OSArtifactSpec
 
 	BeforeEach(func() {
-		spec = &OSArtifactSpec{}
+		spec = &v1alpha2.OSArtifactSpec{}
 	})
 
 	Describe("when no volumes, importers, or volumeBindings are set", func() {
@@ -117,7 +119,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 				{Name: "my-overlay"},
 				{Name: "my-rootfs"},
 			}
-			spec.VolumeBindings = &VolumeBindings{
+			spec.VolumeBindings = &v1alpha2.VolumeBindings{
 				BuildContext:  "my-context",
 				OverlayISO:    "my-overlay",
 				OverlayRootfs: "my-rootfs",
@@ -131,7 +133,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
-			spec.VolumeBindings = &VolumeBindings{
+			spec.VolumeBindings = &v1alpha2.VolumeBindings{
 				BuildContext: "nonexistent",
 			}
 			err := spec.Validate()
@@ -146,7 +148,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
-			spec.VolumeBindings = &VolumeBindings{
+			spec.VolumeBindings = &v1alpha2.VolumeBindings{
 				OverlayISO: "nonexistent",
 			}
 			err := spec.Validate()
@@ -161,7 +163,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec.Volumes = []corev1.Volume{
 				{Name: "something-else"},
 			}
-			spec.VolumeBindings = &VolumeBindings{
+			spec.VolumeBindings = &v1alpha2.VolumeBindings{
 				OverlayRootfs: "nonexistent",
 			}
 			err := spec.Validate()
@@ -189,7 +191,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 
 	Describe("when volumeBindings is set but spec.volumes is empty", func() {
 		It("returns error", func() {
-			spec.VolumeBindings = &VolumeBindings{
+			spec.VolumeBindings = &v1alpha2.VolumeBindings{
 				BuildContext: "my-context",
 			}
 			err := spec.Validate()
