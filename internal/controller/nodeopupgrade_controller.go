@@ -145,8 +145,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
 func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) []string {
-	script := `#!/bin/bash
-set -x -e
+	script := `set -x -e
 
 `
 
