@@ -1,0 +1,31 @@
+# -----------------------------------------------------------------------------
+# Stage 1 option B: Build with options (default Dockerfile) + push
+# Stage 2: Generate ISO and cloud image
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: standard-kairos-build
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      version: v3.6.0
+      baseImage: ubuntu:24.04
+      model: generic
+      kubernetesDistro: k3s
+      kubernetesVersion: "v1.28.0"
+    push:
+      imageName: my-registry.example.com/my-ns/standard-kairos:v3.6.0
+      credentialsSecretRef:
+        name: registry-credentials
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudImage: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []
