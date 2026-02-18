@@ -1,0 +1,57 @@
+# -----------------------------------------------------------------------------
+# Stage 1: Custom Dockerfile + build-context volume (scoped binding)
+#
+# When building with your Dockerfile, the build-context volume binding lives
+# under spec.image.dockerfile.buildContextVolume (stage 1), not top-level.
+# Importers populate the volume; kaniko uses it as /workspace.
+# -----------------------------------------------------------------------------
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: my-dockerfile-with-context
+  namespace: default
+type: Opaque
+stringData:
+  Dockerfile: |
+    FROM quay.io/kairos/kairos-init:v0.7.0 AS kairos-init
+    FROM opensuse/leap:15.6
+    ARG MODEL=generic
+    ARG VERSION=v3.6.0
+    COPY --from=kairos-init /kairos-init /kairos-init
+    COPY build-info.txt /etc/kairos-build-info.txt
+    RUN /kairos-init -l debug -s install -m "${MODEL}" --version "${VERSION}" && \
+        /kairos-init -l debug -s init -m "${MODEL}" --version "${VERSION}" && \
+        rm -f /kairos-init
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: dockerfile-build-context-volume
+  namespace: default
+spec:
+  image:
+    dockerfile:
+      ref:
+        name: my-dockerfile-with-context
+        key: Dockerfile
+      # Volume (from spec.volumes) mounted as Docker build context at /workspace
+      buildContextVolume: build-context
+
+  volumes:
+    - name: build-context
+      emptyDir: {}
+
+  importers:
+    - name: populate-build-context
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - 'echo "Built with importers at $(date)" > /ctx/build-info.txt'
+      volumeMounts:
+        - name: build-context
+          mountPath: /ctx
+
+  artifacts:
+    arch: amd64
+    iso: true

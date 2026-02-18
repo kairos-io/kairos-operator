@@ -1,0 +1,59 @@
+# -----------------------------------------------------------------------------
+# Importers + volume bindings scoped by stage (target API)
+#
+# Importers run as init containers and populate user-defined volumes. Where
+# each volume is used is now specified next to the stage that uses it:
+#   - Overlay volumes → under spec.artifacts (stage 2: ISO/rootfs generation)
+#   - Build-context volume → under spec.image.dockerfile.buildContextVolume
+#     (stage 1) when building with a custom Dockerfile (not shown here).
+#
+# This example uses a pre-built image and overlays only.
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: importers-scoped-bindings
+  namespace: default
+spec:
+  # Stage 1: use a pre-built image (no build, so no buildContextVolume)
+  image:
+    ref: quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2
+
+  # User-defined volumes; importers populate them.
+  volumes:
+    - name: iso-overlay
+      emptyDir: {}
+    - name: rootfs-overlay
+      emptyDir: {}
+
+  importers:
+    - name: populate-iso-overlay
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "On ISO root (live: /run/initramfs/live/)." > /overlay/README-ISO.txt
+      volumeMounts:
+        - name: iso-overlay
+          mountPath: /overlay
+
+    - name: populate-rootfs-overlay
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          mkdir -p /overlay/etc
+          echo "Baked into OS rootfs." > /overlay/etc/README-ROOTFS.txt
+      volumeMounts:
+        - name: rootfs-overlay
+          mountPath: /overlay
+
+  # Stage 2: artifacts; overlay bindings live here (used by auroraboot).
+  artifacts:
+    arch: amd64
+    iso: true
+    # Which volumes to use as --overlay-iso and --overlay-rootfs (names from spec.volumes)
+    overlayISOVolume: iso-overlay
+    overlayRootfsVolume: rootfs-overlay
+  # Build-context binding lives under image when building: see
+  # 08-dockerfile-build-context-volume.yaml for image.dockerfile.buildContextVolume.

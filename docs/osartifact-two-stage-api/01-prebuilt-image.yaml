@@ -1,0 +1,22 @@
+# -----------------------------------------------------------------------------
+# Stage 1 option A: Use a pre-built Kairos image (image.ref)
+# Stage 2: Generate ISO and cloud image
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: from-prebuilt-image
+  namespace: default
+spec:
+  image:
+    ref: quay.io/kairos-io/kairos:v3.6.0
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudImage: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []

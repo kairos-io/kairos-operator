@@ -1,0 +1,33 @@
+# -----------------------------------------------------------------------------
+# Stage 1 option B: Build with options + preKairosInitSteps (extra RUN before kairos-init) + push
+# Stage 2: Generate ISO
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: standard-build-with-extra-packages
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      version: v3.6.0
+      baseImage: ubuntu:24.04
+      model: generic
+      kubernetesDistro: k3s
+      kubernetesVersion: "v1.28.0"
+      preKairosInitSteps: |
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+          curl jq && rm -rf /var/lib/apt/lists/*
+    push:
+      imageName: my-registry.example.com/my-ns/standard-kairos-extra:v3.6.0
+      credentialsSecretRef:
+        name: registry-credentials
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []
