@@ -213,11 +213,11 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
 	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
-		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+		fmt.Fprintf(&cloudImgCmd, " --set 'arch=%s'", arch)
 	}
 
 	if artifact.Spec.DiskSize != "" {
-		cloudImgCmd.WriteString(fmt.Sprintf(" --set 'disk.size=%s'", artifact.Spec.DiskSize))
+		fmt.Fprintf(&cloudImgCmd, " --set 'disk.size=%s'", artifact.Spec.DiskSize)
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {
@@ -229,9 +229,9 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		cloudImgCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	cloudImgCmd.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&cloudImgCmd,
 		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
-		artifact.Name))
+		artifact.Name)
 
 	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
@@ -264,9 +264,9 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 
 	var netbootCmd strings.Builder
 	netbootCmd.WriteString("auroraboot --debug netboot")
-	netbootCmd.WriteString(fmt.Sprintf(" /artifacts/%s.iso", artifact.Name))
+	fmt.Fprintf(&netbootCmd, " /artifacts/%s.iso", artifact.Name)
 	netbootCmd.WriteString(" /artifacts")
-	netbootCmd.WriteString(fmt.Sprintf(" %s", artifact.Name))
+	fmt.Fprintf(&netbootCmd, " %s", artifact.Name)
 
 	extractNetboot := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -292,16 +292,16 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
 	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
-		azureCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+		fmt.Fprintf(&azureCmd, " --set 'arch=%s'", arch)
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	azureCmd.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&azureCmd,
 		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
-		artifact.Name))
+		artifact.Name)
 	buildAzureCloudImageContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
@@ -322,17 +322,17 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
 	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
-		gceCmd.WriteString(fmt.Sprintf(" --set 'arch=%s'", arch))
+		fmt.Fprintf(&gceCmd, " --set 'arch=%s'", arch)
 	}
 
 	if artifact.Spec.CloudConfigRef != nil {
 		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
-	gceCmd.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&gceCmd,
 		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
 			"mv \"$file\" /artifacts/%s.gce.tar.gz",
-		artifact.Name))
+		artifact.Name)
 	buildGCECloudImageContainer := corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
