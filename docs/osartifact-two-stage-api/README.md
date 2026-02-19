@@ -29,9 +29,9 @@ Final build definition is constructed as:
 | Mode | Spec | Behavior |
 |------|------|----------|
 | Pre-built | `image.ref` | Use existing Kairos image (no build). |
-| OCISpec only | `image.ociSpec` | User’s OCI spec is the full definition (must include kairos-init if needed; “advanced” mode). |
-| BuildOptions only | `image.buildOptions` | Operator constructs the definition from BuildOptions (version required). |
-| OCISpec + BuildOptions | both | User’s OCI spec is “kairosified”—operator appends kairos-init; BuildOptions fields supply args to kairos-init. |
+| OCISpec only | `image.ociSpec` | User’s OCI spec is the full definition (must include base image FROM and kairos-init; “advanced” mode). |
+| BuildOptions only | `image.buildOptions` | Operator injects `FROM buildOptions.baseImage` at the top (when set), then default kairos-init flow (version required). |
+| OCISpec + BuildOptions | both | Operator injects `FROM buildOptions.baseImage` at the top (when set), then user’s spec (dashboard + user parts, no FROM), then kairos-init at the bottom; BuildOptions supply args to kairos-init. |
 
 When building, optional **`image.push`** (imageName, credentialsSecretRef). Ignored when `image.ref` is set.
 
@@ -53,19 +53,19 @@ From the Stage 1 image: ISO, cloud image, netboot, VHD, GCE, etc. (auroraboot). 
 | Path | Spec | Build definition | Build args |
 |------|------|------------------|------------|
 | No build | `image.ref` | — | — |
-| BuildOptions only | `image.buildOptions` | Operator default | buildOptions → kaniko --build-arg |
-| OCISpec only | `image.ociSpec` | User Secret (ref), full definition | User-defined |
-| Kairosify | `image.ociSpec` + `image.buildOptions` | User spec + operator-appended kairos-init | BuildOptions → kairos-init args |
+| BuildOptions only | `image.buildOptions` | Operator: FROM baseImage (if set) + default kairos-init | buildOptions → kaniko --build-arg |
+| OCISpec only | `image.ociSpec` | User Secret (ref), full definition (FROM + kairos-init) | User-defined |
+| OCISpec + BuildOptions | `image.ociSpec` + `image.buildOptions` | Operator: FROM baseImage (if set) + user spec + kairos-init at bottom | BuildOptions → kairos-init args |
 
-- **Rules:** When `image.ref` is empty, at least one of buildOptions or ociSpec. Both buildOptions and ociSpec allowed (kairosify). When ref is set, buildOptions/ociSpec are ignored.
+- **Rules:** When `image.ref` is empty, at least one of buildOptions or ociSpec. Both allowed (operator then injects FROM + kairos-init). When ref is set, buildOptions/ociSpec are ignored.
 - **Push:** When building, optional `image.push`. Ignored when `image.ref` is set.
 
 ### Decision tree
 
 1. **Already have a Kairos image?** → `image.ref`.
-2. **Factory-like build (options only)?** → `image.buildOptions` (version required). Optionally baseImage.
-3. **Full control (your Dockerfile, you include kairos-init)?** → `image.ociSpec` only.
-4. **Your Dockerfile but operator adds kairos-init?** → `image.ociSpec` + `image.buildOptions` (ociSpec.kairosify: true); BuildOptions supply kairos-init args.
+2. **Factory-like build (options only)?** → `image.buildOptions` (version required). Set baseImage to choose the base image; operator injects FROM and kairos-init.
+3. **Full control (your Dockerfile, you include FROM and kairos-init)?** → `image.ociSpec` only.
+4. **Your fragment but operator adds base image and kairos-init?** → `image.ociSpec` + `image.buildOptions`. Set buildOptions.baseImage for the injected FROM; operator injects it at the top and kairos-init at the bottom. Your template must not add its own FROM.
 5. **Push built image?** → When building, set `image.push`.
 
 ---
@@ -84,6 +84,7 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 | Build with options and push only (no artifacts) | [06-oci-only.yaml](06-oci-only.yaml) | `image.buildOptions` + push | — |
 | Pre-built image + importers + overlay volumes (scoped under artifacts) | [07-importers-and-scoped-bindings.yaml](07-importers-and-scoped-bindings.yaml) | `image.ref` | ISO + overlayISOVolume, overlayRootfsVolume + importers |
 | Custom OCI spec + build-context volume (scoped under image.ociSpec) | [08-ocispec-build-context-volume.yaml](08-ocispec-build-context-volume.yaml) | `image.ociSpec` + buildContextVolume + importers | ISO |
+| Templated Dockerfile (dashboard + user parts) + BuildOptions (baseImage) | [09-ocispec-buildoptions-kairosify.yaml](09-ocispec-buildoptions-kairosify.yaml) | `image.ociSpec` (template, no FROM) + `image.buildOptions` (baseImage + version, etc.) + push | ISO |
 
 ---
 

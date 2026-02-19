@@ -1,0 +1,87 @@
+# -----------------------------------------------------------------------------
+# OCISpec + BuildOptions: templated Dockerfile = injected FROM + dashboard part + user part + kairos-init
+#
+# When both are set, the operator injects:
+#   - At the top: "FROM buildOptions.baseImage" (base image from BuildOptions).
+#   - At the bottom: the kairos-init block; BuildOptions fields supply its args.
+#
+# The template (dashboard + user parts) must not add their own FROM. An importer populates the build context.
+# -----------------------------------------------------------------------------
+---
+# Secret that holds the template. It has two placeholders: DashboardPart and UserPart.
+kind: Secret
+apiVersion: v1
+metadata:
+  name: dockerfile-template-concat
+  namespace: default
+type: Opaque
+stringData:
+  Dockerfile: |
+    {{ .DashboardPart }}
+    {{ .UserPart }}
+---
+# Secret that supplies the two parts. The dashboard (web UI) sets DashboardPart; the user sets UserPart.
+kind: Secret
+apiVersion: v1
+metadata:
+  name: dockerfile-fragments
+  namespace: default
+type: Opaque
+stringData:
+  # Part 1: from the web UI — install packages, COPY from build context. No FROM (operator injects FROM baseImage from BuildOptions).
+  DashboardPart: |
+    RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+    COPY dashboard-bundle.txt /etc/dashboard-bundle.txt
+
+  # Part 2: the user's Dockerfile fragment
+  UserPart: |
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl jq && rm -rf /var/lib/apt/lists/*
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: dashboard-user-kairosify
+  namespace: default
+spec:
+  image:
+    ociSpec:
+      ref:
+        name: dockerfile-template-concat
+        key: Dockerfile
+      templateValuesFrom:
+        name: dockerfile-fragments
+      buildContextVolume: build-context
+    buildOptions:
+      baseImage: ubuntu:24.04
+      version: v3.6.0
+      model: generic
+      kubernetesDistro: k3s
+      kubernetesVersion: "v1.28.0"
+    push:
+      imageName: my-registry.example.com/my-ns/dashboard-user-kairos:v3.6.0
+      credentialsSecretRef:
+        name: registry-credentials
+
+  volumes:
+    - name: build-context
+      emptyDir: {}
+
+  importers:
+    - name: populate-build-context
+      image: busybox:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - 'echo "Dashboard-added packages and files" > /ctx/dashboard-bundle.txt'
+      volumeMounts:
+        - name: build-context
+          mountPath: /ctx
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []

@@ -1,15 +1,15 @@
 # -----------------------------------------------------------------------------
-# Stage 1: Custom Dockerfile + build-context volume (scoped binding)
+# Stage 1: Custom OCI build definition + build-context volume (scoped binding)
 #
-# When building with your Dockerfile, the build-context volume binding lives
-# under spec.image.dockerfile.buildContextVolume (stage 1), not top-level.
+# When building with your OCI spec, the build-context volume binding lives
+# under spec.image.ociSpec.buildContextVolume (stage 1), not top-level.
 # Importers populate the volume; kaniko uses it as /workspace.
 # -----------------------------------------------------------------------------
 ---
 kind: Secret
 apiVersion: v1
 metadata:
-  name: my-dockerfile-with-context
+  name: my-ocispec-with-context
   namespace: default
 type: Opaque
 stringData:
@@ -27,15 +27,15 @@ stringData:
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
 metadata:
-  name: dockerfile-build-context-volume
+  name: ocispec-build-context-volume
   namespace: default
 spec:
   image:
-    dockerfile:
+    ociSpec:
       ref:
-        name: my-dockerfile-with-context
+        name: my-ocispec-with-context
         key: Dockerfile
-      # Volume (from spec.volumes) mounted as Docker build context at /workspace
+      # Volume (from spec.volumes) mounted as OCI build context at /workspace
       buildContextVolume: build-context
 
   volumes:
