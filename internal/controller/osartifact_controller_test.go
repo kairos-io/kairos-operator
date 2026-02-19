@@ -408,19 +408,10 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 			When("buildContextVolume is not set", func() {
 				BeforeEach(func() {
-					secretName := artifact.Name + "-ocispec"
-					_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
-						&corev1.Secret{
-							ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
-							StringData: map[string]string{"Dockerfile": "FROM ubuntu"},
-							Type:       "Opaque",
-						}, metav1.CreateOptions{})
-					Expect(err).ToNot(HaveOccurred())
-					artifact.Spec.Image = buildv1alpha2.ImageSpec{
-						OCISpec: &buildv1alpha2.OCISpec{
-							Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
-						},
-					}
+					// Parent BeforeEach already created the secret and set OCISpec with BuildContextVolume.
+					// Only override to clear BuildContextVolume and Volumes so kaniko has no extra workspace mount.
+					artifact.Spec.Image.OCISpec.BuildContextVolume = ""
+					artifact.Spec.Volumes = nil
 				})
 				It("kaniko does not have an extra workspace mount", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
