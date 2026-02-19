@@ -3839,8 +3839,6 @@ spec:
                     properties:
                       baseImage:
                         type: string
-                      buildContextVolume:
-                        type: string
                       fips:
                         type: boolean
                       kubernetesDistro:
@@ -3848,8 +3846,6 @@ spec:
                       kubernetesVersion:
                         type: string
                       model:
-                        type: string
-                      preKairosInitSteps:
                         type: string
                       trustedBoot:
                         type: boolean
