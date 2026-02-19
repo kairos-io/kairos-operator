@@ -549,7 +549,7 @@ func baseImageBuildContainers(buildContextVolume string) []corev1.Container {
 			Args: []string{
 				"--dockerfile", "ocispec/Dockerfile",
 				"--context", "dir:///workspace",
-				"--destination", "whatever", // We don't push, but it needs this
+				"--destination", "whatever", // TODO: when spec.image.push is true, use builtImageName and push (mount PushCredentialsSecretRef for kaniko auth)
 				"--tar-path", "/rootfs/image.tar",
 				"--no-push",
 				"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages

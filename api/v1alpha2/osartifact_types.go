@@ -60,7 +60,8 @@ type ImageSpec struct {
 	// +optional
 	BuiltImageName string `json:"builtImageName,omitempty"`
 
-	// Push, when true, pushes the built image to a registry (not yet implemented). Only used when building; ignored when Ref is set.
+	// Push, when true, pushes the built image to a registry. Only used when building; ignored when Ref is set.
+	// TODO: implement push in controller (kaniko --destination + auth from PushCredentialsSecretRef; today we always use --no-push).
 	// +optional
 	Push bool `json:"push,omitempty"`
 
