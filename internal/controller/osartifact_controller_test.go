@@ -355,7 +355,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					OCISpec: &buildv1alpha2.OCISpec{
-						Ref:                 &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
 						BuildContextVolume: "my-context",
 					},
 				}
@@ -587,7 +587,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
 				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
 					ISO:                 true,
-					OverlayISOVolume:   "iso-overlay",
+					OverlayISOVolume:    "iso-overlay",
 					OverlayRootfsVolume: "rootfs-overlay",
 				}
 				artifact.Spec.Volumes = []corev1.Volume{
@@ -635,7 +635,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					OCISpec: &buildv1alpha2.OCISpec{
-						Ref:                 &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
 						BuildContextVolume: "build-ctx",
 					},
 				}

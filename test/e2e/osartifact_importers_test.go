@@ -169,13 +169,13 @@ var _ = Describe("OSArtifact Importers", func() {
 		spec := buildv1alpha2.OSArtifactSpec{
 			Image: buildv1alpha2.ImageSpec{
 				OCISpec: &buildv1alpha2.OCISpec{
-					Ref:                 &buildv1alpha2.SecretKeySelector{Name: secret.Name, Key: "Dockerfile"},
+					Ref:                &buildv1alpha2.SecretKeySelector{Name: secret.Name, Key: "Dockerfile"},
 					BuildContextVolume: "build-context",
 				},
 			},
 			Artifacts: &buildv1alpha2.ArtifactSpec{
-				ISO:               true,
-				OverlayISOVolume:  "iso-overlay",
+				ISO:                 true,
+				OverlayISOVolume:    "iso-overlay",
 				OverlayRootfsVolume: "rootfs-overlay",
 			},
 			Volumes:   importerVolumes(),
