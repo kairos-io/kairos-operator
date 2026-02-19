@@ -51,9 +51,11 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 }
 
 func pushImageName(artifact *buildv1alpha2.OSArtifact) string {
-	pushName := artifact.Spec.ImageName
-	if pushName != "" {
-		return pushName
+	if artifact.Spec.Image.Push != nil && artifact.Spec.Image.Push.ImageName != "" {
+		return artifact.Spec.Image.Push.ImageName
+	}
+	if artifact.Spec.Image.Ref != "" {
+		return artifact.Spec.Image.Ref
 	}
 	return artifact.Name
 }
@@ -181,7 +183,12 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	if arch != "" {
 		fmt.Fprintf(&cmd, " --arch %s", arch)
 	}
-	appendOverlayFlags(&cmd, artifact.Spec.VolumeBindings)
+	artifacts := artifact.Spec.Artifacts
+	overlayISO, overlayRootfs := "", ""
+	if artifacts != nil {
+		overlayISO, overlayRootfs = artifacts.OverlayISOVolume, artifacts.OverlayRootfsVolume
+	}
+	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
 	cmd.WriteString(" dir:/rootfs")
 
 	volumeMounts := []corev1.VolumeMount{
@@ -195,7 +202,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		},
 	}
 
-	if artifact.Spec.GRUBConfig != "" {
+	if artifacts != nil && artifacts.GRUBConfig != "" {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "config",
 			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
@@ -203,7 +210,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		})
 	}
 
-	volumeMounts = appendOverlayVolumeMounts(volumeMounts, artifact.Spec.VolumeBindings)
+	volumeMounts = appendOverlayVolumeMounts(volumeMounts, overlayISO, overlayRootfs)
 
 	var cloudImgCmd strings.Builder
 	cloudImgCmd.WriteString("auroraboot --debug")
@@ -216,15 +223,15 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		fmt.Fprintf(&cloudImgCmd, " --set 'arch=%s'", arch)
 	}
 
-	if artifact.Spec.DiskSize != "" {
-		fmt.Fprintf(&cloudImgCmd, " --set 'disk.size=%s'", artifact.Spec.DiskSize)
+	if artifacts != nil && artifacts.DiskSize != "" {
+		fmt.Fprintf(&cloudImgCmd, " --set 'disk.size=%s'", artifacts.DiskSize)
 	}
 
-	if artifact.Spec.CloudConfigRef != nil {
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "cloudconfig",
 			MountPath: "/cloud-config.yaml",
-			SubPath:   artifact.Spec.CloudConfigRef.Key,
+			SubPath:   artifacts.CloudConfigRef.Key,
 		})
 		cloudImgCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
@@ -233,7 +240,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
 		artifact.Name)
 
-	if artifact.Spec.CloudConfigRef != nil || artifact.Spec.GRUBConfig != "" {
+	if artifacts != nil && (artifacts.CloudConfigRef != nil || artifacts.GRUBConfig != "") {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
@@ -275,8 +282,13 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		Image:           r.ToolImage,
 		Command:         []string{"/bin/bash", "-cxe"},
 		Env: []corev1.EnvVar{{
-			Name:  "URL",
-			Value: artifact.Spec.NetbootURL,
+			Name: "URL",
+			Value: func() string {
+				if artifacts != nil {
+					return artifacts.NetbootURL
+				}
+				return ""
+			}(),
 		}},
 		Args: []string{
 			netbootCmd.String(),
@@ -295,7 +307,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		fmt.Fprintf(&azureCmd, " --set 'arch=%s'", arch)
 	}
 
-	if artifact.Spec.CloudConfigRef != nil {
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
 		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
@@ -325,7 +337,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		fmt.Fprintf(&gceCmd, " --set 'arch=%s'", arch)
 	}
 
-	if artifact.Spec.CloudConfigRef != nil {
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
 		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
 
@@ -375,23 +387,23 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		},
 	}
 
-	if artifact.Spec.BaseImageDockerfile != nil {
+	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
-			Name: "dockerfile",
+			Name: "ocispec",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: artifact.Spec.BaseImageDockerfile.Name,
+					SecretName: artifact.Spec.Image.OCISpec.Ref.Name,
 				},
 			},
 		})
 	}
 
-	if artifact.Spec.CloudConfigRef != nil {
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
 		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 			Name: "cloudconfig",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: artifact.Spec.CloudConfigRef.Name,
+					SecretName: artifacts.CloudConfigRef.Name,
 					Optional:   ptr(true),
 				},
 			},
@@ -403,24 +415,34 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, artifact.Spec.ImagePullSecrets...)
 
 	podSpec.InitContainers = append([]corev1.Container{}, artifact.Spec.Importers...)
-	// Base image can be:
-	// - built from a dockerfile and converted to a kairos one
-	// - built by converting an existing image to a kairos one
-	// - a prebuilt kairos image
-	if artifact.Spec.BaseImageDockerfile != nil {
-		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(artifact.Spec.VolumeBindings)...)
-	} else if artifact.Spec.BaseImageName != "" { // Existing base image - non kairos
+	// Build context volume is only used when building from OCISpec (user may COPY from context); not used for BuildOptions-only.
+	buildCtxVol := ""
+	if artifact.Spec.Image.OCISpec != nil {
+		buildCtxVol = artifact.Spec.Image.OCISpec.BuildContextVolume
+	}
+	hasOCISpecRef := artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil
+	hasBuildOptions := artifact.Spec.Image.BuildOptions != nil
+	if artifact.Spec.Image.Ref != "" {
+		// Pre-built image
 		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage-non-kairos", r.ToolImage, artifact.Spec.BaseImageName, arch))
-	} else { // Existing Kairos base image
-		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage", r.ToolImage, artifact.Spec.ImageName, arch))
+			unpackContainer("baseimage", r.ToolImage, artifact.Spec.Image.Ref, arch))
+	} else if hasOCISpecRef {
+		// Build from user's OCI spec (OCISpec only, or OCISpec + BuildOptions: inject FROM baseImage at top, user spec, then kairos-init at bottom)
+		// TODO: when BuildOptions set, inject FROM baseImage at top and append kairos-init block; pass BuildOptions as --build-arg
+		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(buildCtxVol)...)
+	} else if hasBuildOptions {
+		// BuildOptions only: operator constructs default OCI build definition
+		// TODO: Phase 1 - default OCI build + build-args (see docs/osartifact-two-stage-api/README.md)
+		return &corev1.Pod{}
+	} else {
+		// Validation ensures we don't reach here (at least one of buildOptions or ociSpec when ref empty)
+		return &corev1.Pod{}
 	}
 
 	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
 	// convert it to a Kairos one, in a best effort manner.
 	// TODO: Implement this conversion with kairos-init?
-	// if artifact.Spec.BaseImageDockerfile != nil || artifact.Spec.BaseImageName != "" {
+	// if artifact.Spec.Image.OCISpec != nil || (artifact.Spec.Image.BuildOptions != nil && artifact.Spec.Image.BuildOptions.BaseImage != "") {
 	// 	podSpec.InitContainers = append(podSpec.InitContainers,
 	// 		corev1.Container{
 	// 			ImagePullPolicy: corev1.PullAlways,
@@ -437,37 +459,36 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	// 		})
 	// }
 
-	for i, bundle := range artifact.Spec.Bundles {
-		podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
+	if artifacts != nil {
+		for i, bundle := range artifacts.Bundles {
+			podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
+		}
+		if artifacts.OSRelease != "" {
+			podSpec.InitContainers = append(podSpec.InitContainers, osReleaseContainer(r.ToolImage))
+		}
+		if artifacts.KairosRelease != "" {
+			podSpec.InitContainers = append(podSpec.InitContainers, kairosReleaseContainer(r.ToolImage))
+		}
 	}
 
-	if artifact.Spec.OSRelease != "" {
-		podSpec.InitContainers = append(podSpec.InitContainers, osReleaseContainer(r.ToolImage))
-	}
-	if artifact.Spec.KairosRelease != "" {
-		podSpec.InitContainers = append(podSpec.InitContainers, kairosReleaseContainer(r.ToolImage))
-	}
-
-	// build-iso runs as an init container to ensure it completes before build-netboot
-	// (which extracts artifacts from the ISO). Init containers run sequentially and must
-	// succeed before regular containers start.
-	if artifact.Spec.ISO || artifact.Spec.Netboot {
+	// build-iso runs as an init container when ISO or Netboot requested
+	if artifacts != nil && (artifacts.ISO || artifacts.Netboot) {
 		podSpec.InitContainers = append(podSpec.InitContainers, buildIsoContainer)
 	}
 
-	if artifact.Spec.Netboot {
+	if artifacts != nil && artifacts.Netboot {
 		podSpec.Containers = append(podSpec.Containers, extractNetboot)
 	}
 
-	if artifact.Spec.CloudImage {
+	if artifacts != nil && artifacts.CloudImage {
 		podSpec.Containers = append(podSpec.Containers, buildCloudImageContainer)
 	}
 
-	if artifact.Spec.AzureImage {
+	if artifacts != nil && artifacts.AzureImage {
 		podSpec.Containers = append(podSpec.Containers, buildAzureCloudImageContainer)
 	}
 
-	if artifact.Spec.GCEImage {
+	if artifacts != nil && artifacts.GCEImage {
 		podSpec.Containers = append(podSpec.Containers, buildGCECloudImageContainer)
 	}
 
@@ -486,52 +507,46 @@ func ptr[T any](val T) *T {
 	return &val
 }
 
-func appendOverlayFlags(cmd *strings.Builder, bindings *buildv1alpha2.VolumeBindings) {
-	if bindings == nil {
-		return
-	}
-	if bindings.OverlayISO != "" {
+func appendOverlayFlags(cmd *strings.Builder, overlayISO, overlayRootfs string) {
+	if overlayISO != "" {
 		cmd.WriteString(" --overlay-iso /overlay-iso")
 	}
-	if bindings.OverlayRootfs != "" {
+	if overlayRootfs != "" {
 		cmd.WriteString(" --overlay-rootfs /overlay-rootfs")
 	}
 }
 
-func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, bindings *buildv1alpha2.VolumeBindings) []corev1.VolumeMount {
-	if bindings == nil {
-		return mounts
-	}
-	if bindings.OverlayISO != "" {
+func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, overlayISO, overlayRootfs string) []corev1.VolumeMount {
+	if overlayISO != "" {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      bindings.OverlayISO,
+			Name:      overlayISO,
 			MountPath: "/overlay-iso",
 		})
 	}
-	if bindings.OverlayRootfs != "" {
+	if overlayRootfs != "" {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      bindings.OverlayRootfs,
+			Name:      overlayRootfs,
 			MountPath: "/overlay-rootfs",
 		})
 	}
 	return mounts
 }
 
-func baseImageBuildContainers(bindings *buildv1alpha2.VolumeBindings) []corev1.Container {
+func baseImageBuildContainers(buildContextVolume string) []corev1.Container {
 	kanikoVolumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "rootfs",
 			MountPath: "/rootfs",
 		},
 		{
-			Name:      "dockerfile",
-			MountPath: "/workspace/dockerfile",
+			Name:      "ocispec",
+			MountPath: "/workspace/ocispec",
 		},
 	}
 
-	if bindings != nil && bindings.BuildContext != "" {
+	if buildContextVolume != "" {
 		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name:      bindings.BuildContext,
+			Name:      buildContextVolume,
 			MountPath: "/workspace",
 		})
 	}
@@ -542,7 +557,7 @@ func baseImageBuildContainers(bindings *buildv1alpha2.VolumeBindings) []corev1.C
 			Name:            "kaniko-build",
 			Image:           "gcr.io/kaniko-project/executor:latest",
 			Args: []string{
-				"--dockerfile", "dockerfile/Dockerfile",
+				"--dockerfile", "ocispec/Dockerfile",
 				"--context", "dir:///workspace",
 				"--destination", "whatever", // We don't push, but it needs this
 				"--tar-path", "/rootfs/image.tar",

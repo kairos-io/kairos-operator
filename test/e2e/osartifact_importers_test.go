@@ -15,7 +15,7 @@ import (
 //   - checks the ISO filesystem root for the overlay-iso marker (isoMarker)
 //   - extracts the squashfs and checks for the overlay-rootfs marker (rootfsMarker)
 //   - checks the squashfs for a build-context marker that was COPY'd via the
-//     Dockerfile during the kaniko build (buildCtxMarker)
+//     OCI build definition during the kaniko build (buildCtxMarker)
 func verifyImportersInISO(isoMarker, rootfsMarker, buildCtxMarker string) string {
 	return fmt.Sprintf(`
 set -e
@@ -138,15 +138,6 @@ func importerContainers() []corev1.Container {
 	}
 }
 
-// importerBindings maps the user-defined volumes to their roles in the build.
-func importerBindings() *buildv1alpha2.VolumeBindings {
-	return &buildv1alpha2.VolumeBindings{
-		OverlayISO:    "iso-overlay",
-		OverlayRootfs: "rootfs-overlay",
-		BuildContext:  "build-context",
-	}
-}
-
 var _ = Describe("OSArtifact Importers", func() {
 	var tc *TestClients
 
@@ -155,17 +146,17 @@ var _ = Describe("OSArtifact Importers", func() {
 	})
 
 	// This test verifies the full importer → volume → build pipeline:
-	//  1. A Secret holds a Dockerfile that COPYs a file from the build context
+	//  1. A Secret holds an OCI build definition that COPYs a file from the build context
 	//  2. Three emptyDir volumes are created: ISO overlay, rootfs overlay, build context
 	//  3. Importer init containers populate each volume with a marker file
-	//  4. VolumeBindings wire the volumes to overlayISO, overlayRootfs, and buildContext
-	//  5. Kaniko builds the Dockerfile, COPYing the build-context marker into the image
+	//  4. spec.image.ociSpec.buildContextVolume and spec.artifacts overlay fields wire the volumes
+	//  5. Kaniko builds the OCI spec, COPYing the build-context marker into the image
 	//  6. build-iso receives --overlay-iso and --overlay-rootfs flags with the overlay mounts
 	//  7. The exporter extracts the ISO and squashfs to verify all three markers are present
 	It("populates overlay and build-context volumes via importers and bakes them into the ISO", func() {
 		secret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "importers-dockerfile-",
+				GenerateName: "importers-ocispec-",
 				Namespace:    "default",
 			},
 			StringData: map[string]string{
@@ -176,14 +167,19 @@ var _ = Describe("OSArtifact Importers", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		spec := buildv1alpha2.OSArtifactSpec{
-			BaseImageDockerfile: &buildv1alpha2.SecretKeySelector{
-				Name: secret.Name,
-				Key:  "Dockerfile",
+			Image: buildv1alpha2.ImageSpec{
+				OCISpec: &buildv1alpha2.OCISpec{
+					Ref:                 &buildv1alpha2.SecretKeySelector{Name: secret.Name, Key: "Dockerfile"},
+					BuildContextVolume: "build-context",
+				},
 			},
-			ISO:            true,
-			Volumes:        importerVolumes(),
-			Importers:      importerContainers(),
-			VolumeBindings: importerBindings(),
+			Artifacts: &buildv1alpha2.ArtifactSpec{
+				ISO:               true,
+				OverlayISOVolume:  "iso-overlay",
+				OverlayRootfsVolume: "rootfs-overlay",
+			},
+			Volumes:   importerVolumes(),
+			Importers: importerContainers(),
 		}
 
 		verifyScript := verifyImportersInISO("iso-overlay-content", "rootfs-overlay-content", "build-context-content")

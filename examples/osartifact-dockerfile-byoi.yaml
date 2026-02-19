@@ -1,16 +1,16 @@
 ---
-# Secret containing the Dockerfile.
+# Secret containing the OCI build definition (Dockerfile-format).
 # The operator builds this with Kaniko, unpacks it to /rootfs, and passes it
 # directly to auroraboot. There is NO automatic "kairosify" step, so the
-# Dockerfile must produce a fully Kairos-compatible image.
+# build definition must produce a fully Kairos-compatible image.
 #
-# This example mirrors the pattern from kairos/images/Dockerfile but avoids
+# This example mirrors the pattern from kairos/images Dockerfile but avoids
 # the multi-stage --mount=type=bind syntax (not reliably supported by Kaniko)
 # by downloading kairos-init directly.
 kind: Secret
 apiVersion: v1
 metadata:
-  name: my-kairos-dockerfile
+  name: my-kairos-ocispec
   namespace: default
 type: Opaque
 stringData:
@@ -51,15 +51,18 @@ metadata:
   name: my-custom-kairos
   namespace: default
 spec:
-  baseImageDockerfile:
-    name: my-kairos-dockerfile
-    key: Dockerfile
-  # imageName is used by the "create-image" container for the OCI tarball name
-  imageName: "my-registry.example.com/my-custom-kairos:latest"
-  iso: true
-  cloudConfigRef:
-    name: cloud-config
-    key: userdata
+  image:
+    ociSpec:
+      ref:
+        name: my-kairos-ocispec
+        key: Dockerfile
+    push:
+      imageName: "my-registry.example.com/my-custom-kairos:latest"
+  artifacts:
+    iso: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
   exporters:
   - template:
       spec:
