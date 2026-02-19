@@ -17,10 +17,10 @@ spec:
       model: generic
       kubernetesDistro: k3s
       kubernetesVersion: "v1.28.0"
-    push:
-      imageName: my-registry.example.com/my-ns/kairos-oci:v3.6.0
-      credentialsSecretRef:
-        name: registry-credentials
+    builtImageName: my-registry.example.com/my-ns/kairos-oci:v3.6.0
+    push: true
+    pushCredentialsSecretRef:
+      name: registry-credentials
 
   # No artifacts: we only build and push the OCI image.
   # artifacts: {}

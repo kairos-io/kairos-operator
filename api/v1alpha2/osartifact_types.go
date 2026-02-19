@@ -56,9 +56,17 @@ type ImageSpec struct {
 	// +optional
 	OCISpec *OCISpec `json:"ociSpec,omitempty"`
 
-	// Push configures pushing the built image to a registry. Only used when building; ignored when Ref is set.
+	// BuiltImageName is the name of the built image (e.g. the reference embedded in the packed tarball). Only used when building (Ref empty); ignored when Ref is set. When empty, defaults to the OSArtifact resource name. Mutually exclusive with Ref: when set, Ref must be empty.
 	// +optional
-	Push *ImagePush `json:"push,omitempty"`
+	BuiltImageName string `json:"builtImageName,omitempty"`
+
+	// Push, when true, pushes the built image to a registry (not yet implemented). Only used when building; ignored when Ref is set.
+	// +optional
+	Push bool `json:"push,omitempty"`
+
+	// PushCredentialsSecretRef references a Secret with registry auth for push (e.g. .dockerconfigjson). Only used when Push is true. When key is empty, the whole Secret is used.
+	// +optional
+	PushCredentialsSecretRef *SecretKeySelector `json:"pushCredentialsSecretRef,omitempty"`
 }
 
 // BuildOptions holds options for building with the default OCI build definition (Stage 1).
@@ -84,17 +92,6 @@ type BuildOptions struct {
 
 	// FIPS enables FIPS mode.
 	FIPS bool `json:"fips,omitempty"`
-}
-
-// ImagePush configures pushing the built image to a registry.
-type ImagePush struct {
-	// ImageName is the full image reference to push to (e.g. my-registry.example.com/my-ns/image:tag).
-	ImageName string `json:"imageName"`
-
-	// CredentialsSecretRef references a Secret with registry auth (e.g. .dockerconfigjson).
-	// Only Secrets are supported. When key is empty, the whole Secret is used (e.g. for .dockerconfigjson).
-	// +optional
-	CredentialsSecretRef *SecretKeySelector `json:"credentialsSecretRef,omitempty"`
 }
 
 // OCISpec describes building with a custom OCI build definition (Stage 1).
@@ -264,6 +261,11 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 	hasRef := img.Ref != ""
 	hasBuildOptions := img.BuildOptions != nil
 	hasOCISpec := img.OCISpec != nil && img.OCISpec.Ref != nil
+
+	// BuiltImageName is only used when building; mutually exclusive with Ref.
+	if img.BuiltImageName != "" && hasRef {
+		return fmt.Errorf("spec.image.builtImageName is only used when building; ref must be empty when builtImageName is set")
+	}
 
 	if hasRef {
 		// Pre-built image; no build. BuildOptions and OCISpec are ignored.

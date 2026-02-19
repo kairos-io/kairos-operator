@@ -50,18 +50,16 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 	}
 }
 
-func pushImageName(artifact *buildv1alpha2.OSArtifact) string {
-	if artifact.Spec.Image.Push != nil && artifact.Spec.Image.Push.ImageName != "" {
-		return artifact.Spec.Image.Push.ImageName
-	}
-	if artifact.Spec.Image.Ref != "" {
-		return artifact.Spec.Image.Ref
+// builtImageName returns the name of the built image (for the packed tarball). Only used when building; defaults to the OSArtifact name.
+func builtImageName(artifact *buildv1alpha2.OSArtifact) string {
+	if artifact.Spec.Image.BuiltImageName != "" {
+		return artifact.Spec.Image.BuiltImageName
 	}
 	return artifact.Name
 }
 
 func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
-	imageName := pushImageName(artifact)
+	imageName := builtImageName(artifact)
 	arch, _ := artifact.Spec.ArchSanitized()
 
 	packCmd := "luet util pack"
