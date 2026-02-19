@@ -168,296 +168,52 @@ func (r *OSArtifactReconciler) newArtifactPVC(artifact *buildv1alpha2.OSArtifact
 }
 
 func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
-	var cmd strings.Builder
-
 	logger := log.FromContext(ctx)
 	arch, err := artifact.Spec.ArchSanitized()
 	if err != nil {
 		logger.Error(err, "reading arch from spec")
 	}
 
-	cmd.WriteString("auroraboot --debug build-iso")
-	fmt.Fprintf(&cmd, " --override-name %s", artifact.Name)
-	cmd.WriteString(" --date=false")
-	cmd.WriteString(" --output /artifacts")
-	if arch != "" {
-		fmt.Fprintf(&cmd, " --arch %s", arch)
-	}
+	volumeMounts, overlayISO, overlayRootfs := builderVolumeMounts(artifact)
 	artifacts := artifact.Spec.Artifacts
-	overlayISO, overlayRootfs := "", ""
-	if artifacts != nil {
-		overlayISO, overlayRootfs = artifacts.OverlayISOVolume, artifacts.OverlayRootfsVolume
-	}
-	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
-	cmd.WriteString(" dir:/rootfs")
 
-	volumeMounts := []corev1.VolumeMount{
-		{
-			Name:      "artifacts",
-			MountPath: "/artifacts",
-		},
-		{
-			Name:      "rootfs",
-			MountPath: "/rootfs",
-		},
-	}
+	buildIsoContainer := makeBuildISOContainer(r.ToolImage, artifact, arch, overlayISO, overlayRootfs, volumeMounts)
+	buildCloudImageContainer := makeCloudImageContainer(r.ToolImage, artifact, arch, volumeMounts, artifacts)
+	extractNetboot := makeNetbootContainer(r.ToolImage, artifact, volumeMounts, artifacts)
+	buildAzureCloudImageContainer := makeAzureCloudImageContainer(r.ToolImage, artifact, arch, volumeMounts, artifacts)
+	buildGCECloudImageContainer := makeGCECloudImageContainer(r.ToolImage, artifact, arch, volumeMounts, artifacts)
 
-	if artifacts != nil && artifacts.GRUBConfig != "" {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "config",
-			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
-			SubPath:   "grub.cfg",
-		})
-	}
-
-	volumeMounts = appendOverlayVolumeMounts(volumeMounts, overlayISO, overlayRootfs)
-
-	var cloudImgCmd strings.Builder
-	cloudImgCmd.WriteString("auroraboot --debug")
-	cloudImgCmd.WriteString(" --set 'disk.raw=true'")
-	cloudImgCmd.WriteString(" --set 'disable_netboot=true'")
-	cloudImgCmd.WriteString(" --set 'disable_http_server=true'")
-	cloudImgCmd.WriteString(" --set 'state_dir=/artifacts'")
-	cloudImgCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if arch != "" {
-		fmt.Fprintf(&cloudImgCmd, " --set 'arch=%s'", arch)
-	}
-
-	if artifacts != nil && artifacts.DiskSize != "" {
-		fmt.Fprintf(&cloudImgCmd, " --set 'disk.size=%s'", artifacts.DiskSize)
-	}
-
-	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "cloudconfig",
-			MountPath: "/cloud-config.yaml",
-			SubPath:   artifacts.CloudConfigRef.Key,
-		})
-		cloudImgCmd.WriteString(" --cloud-config /cloud-config.yaml")
-	}
-
-	fmt.Fprintf(&cloudImgCmd,
-		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
-		artifact.Name)
-
-	if artifacts != nil && (artifacts.CloudConfigRef != nil || artifacts.GRUBConfig != "") {
-		cmd.WriteString(" --cloud-config /cloud-config.yaml")
-	}
-
-	buildIsoContainer := corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
-		Name:            "build-iso",
-		Image:           r.ToolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			cmd.String(),
-		},
-		VolumeMounts: volumeMounts,
-	}
-
-	buildCloudImageContainer := corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
-		Name:            "build-cloud-image",
-		Image:           r.ToolImage,
-
-		Command: []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			cloudImgCmd.String(),
-		},
-		VolumeMounts: volumeMounts,
-	}
-
-	var netbootCmd strings.Builder
-	netbootCmd.WriteString("auroraboot --debug netboot")
-	fmt.Fprintf(&netbootCmd, " /artifacts/%s.iso", artifact.Name)
-	netbootCmd.WriteString(" /artifacts")
-	fmt.Fprintf(&netbootCmd, " %s", artifact.Name)
-
-	extractNetboot := corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
-		Name:            "build-netboot",
-		Image:           r.ToolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
-		Env: []corev1.EnvVar{{
-			Name: "URL",
-			Value: func() string {
-				if artifacts != nil {
-					return artifacts.NetbootURL
-				}
-				return ""
-			}(),
-		}},
-		Args: []string{
-			netbootCmd.String(),
-		},
-		VolumeMounts: volumeMounts,
-	}
-
-	var azureCmd strings.Builder
-	azureCmd.WriteString("auroraboot --debug")
-	azureCmd.WriteString(" --set 'disk.vhd=true'")
-	azureCmd.WriteString(" --set 'disable_netboot=true'")
-	azureCmd.WriteString(" --set 'disable_http_server=true'")
-	azureCmd.WriteString(" --set 'state_dir=/artifacts'")
-	azureCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if arch != "" {
-		fmt.Fprintf(&azureCmd, " --set 'arch=%s'", arch)
-	}
-
-	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		azureCmd.WriteString(" --cloud-config /cloud-config.yaml")
-	}
-
-	fmt.Fprintf(&azureCmd,
-		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
-		artifact.Name)
-	buildAzureCloudImageContainer := corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
-		Name:            "build-azure-cloud-image",
-		Image:           r.ToolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			azureCmd.String(),
-		},
-		VolumeMounts: volumeMounts,
-	}
-
-	var gceCmd strings.Builder
-	gceCmd.WriteString("auroraboot --debug")
-	gceCmd.WriteString(" --set 'disk.gce=true'")
-	gceCmd.WriteString(" --set 'disable_netboot=true'")
-	gceCmd.WriteString(" --set 'disable_http_server=true'")
-	gceCmd.WriteString(" --set 'state_dir=/artifacts'")
-	gceCmd.WriteString(" --set 'container_image=dir:/rootfs'")
-	if arch != "" {
-		fmt.Fprintf(&gceCmd, " --set 'arch=%s'", arch)
-	}
-
-	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		gceCmd.WriteString(" --cloud-config /cloud-config.yaml")
-	}
-
-	fmt.Fprintf(&gceCmd,
-		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
-			"mv \"$file\" /artifacts/%s.gce.tar.gz",
-		artifact.Name)
-	buildGCECloudImageContainer := corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
-		Name:            "build-gce-cloud-image",
-		Image:           r.ToolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			gceCmd.String(),
-		},
-		VolumeMounts: volumeMounts,
-	}
+	volumes := builderPodBaseVolumes(pvcName, artifact)
+	volumes = appendOCISpecVolume(volumes, artifact)
+	volumes = appendCloudConfigVolume(volumes, artifacts)
+	volumes = append(volumes, artifact.Spec.Volumes...)
 
 	podSpec := corev1.PodSpec{
 		AutomountServiceAccountToken: ptr(false),
 		RestartPolicy:                corev1.RestartPolicyNever,
-		Volumes: []corev1.Volume{
-			{
-				Name: "artifacts",
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: pvcName,
-						ReadOnly:  false,
-					},
-				},
-			},
-			{
-				Name:         "rootfs",
-				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-			},
-			{
-				Name: "config",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: artifact.Name,
-						},
-					},
-				},
-			},
-		},
+		Volumes:                      volumes,
+		ImagePullSecrets:             artifact.Spec.ImagePullSecrets,
+		InitContainers:               append([]corev1.Container{}, artifact.Spec.Importers...),
 	}
 
-	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
-		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
-			Name: "ocispec",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: artifact.Spec.Image.OCISpec.Ref.Name,
-				},
-			},
-		})
-	}
-
-	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
-			Name: "cloudconfig",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: artifacts.CloudConfigRef.Name,
-					Optional:   ptr(true),
-				},
-			},
-		})
-	}
-
-	podSpec.Volumes = append(podSpec.Volumes, artifact.Spec.Volumes...)
-
-	podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, artifact.Spec.ImagePullSecrets...)
-
-	podSpec.InitContainers = append([]corev1.Container{}, artifact.Spec.Importers...)
-	// Build context volume is only used when building from OCISpec (user may COPY from context); not used for BuildOptions-only.
 	buildCtxVol := ""
 	if artifact.Spec.Image.OCISpec != nil {
 		buildCtxVol = artifact.Spec.Image.OCISpec.BuildContextVolume
 	}
 	hasOCISpecRef := artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil
 	hasBuildOptions := artifact.Spec.Image.BuildOptions != nil
-	if artifact.Spec.Image.Ref != "" {
-		// Pre-built image
+
+	switch {
+	case artifact.Spec.Image.Ref != "":
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			unpackContainer("baseimage", r.ToolImage, artifact.Spec.Image.Ref, arch))
-	} else if hasOCISpecRef {
-		// Build from user's OCI spec (OCISpec only, or OCISpec + BuildOptions: inject FROM baseImage at top, user spec, then kairos-init at bottom)
-		// TODO: when BuildOptions set, inject FROM baseImage at top and append kairos-init block; pass BuildOptions as --build-arg
+	case hasOCISpecRef:
 		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(buildCtxVol)...)
-	} else if hasBuildOptions {
-		// BuildOptions only: operator constructs default OCI build definition
-		// TODO: Phase 1 - default OCI build + build-args (see docs/osartifact-two-stage-api/README.md)
+	case hasBuildOptions:
 		return &corev1.Pod{}
-	} else {
-		// Validation ensures we don't reach here (at least one of buildOptions or ociSpec when ref empty)
+	default:
 		return &corev1.Pod{}
 	}
-
-	// If base image was a non kairos one, either one we built with kaniko or prebuilt,
-	// convert it to a Kairos one, in a best effort manner.
-	// TODO: Implement this conversion with kairos-init?
-	// if artifact.Spec.Image.OCISpec != nil || (artifact.Spec.Image.BuildOptions != nil && artifact.Spec.Image.BuildOptions.BaseImage != "") {
-	// 	podSpec.InitContainers = append(podSpec.InitContainers,
-	// 		corev1.Container{
-	// 			ImagePullPolicy: corev1.PullAlways,
-	// 			Name:            "convert-to-kairos",
-	// 			Image:           "busybox",
-	// 			Command:         []string{"/bin/echo"},
-	// 			Args:            []string{"TODO"},
-	// 			VolumeMounts: []corev1.VolumeMount{
-	// 				{
-	// 					Name:      "rootfs",
-	// 					MountPath: "/rootfs",
-	// 				},
-	// 			},
-	// 		})
-	// }
 
 	if artifacts != nil {
 		for i, bundle := range artifacts.Bundles {
@@ -471,27 +227,21 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		}
 	}
 
-	// build-iso runs as an init container when ISO or Netboot requested
 	if artifacts != nil && (artifacts.ISO || artifacts.Netboot) {
 		podSpec.InitContainers = append(podSpec.InitContainers, buildIsoContainer)
 	}
-
 	if artifacts != nil && artifacts.Netboot {
 		podSpec.Containers = append(podSpec.Containers, extractNetboot)
 	}
-
 	if artifacts != nil && artifacts.CloudImage {
 		podSpec.Containers = append(podSpec.Containers, buildCloudImageContainer)
 	}
-
 	if artifacts != nil && artifacts.AzureImage {
 		podSpec.Containers = append(podSpec.Containers, buildAzureCloudImageContainer)
 	}
-
 	if artifacts != nil && artifacts.GCEImage {
 		podSpec.Containers = append(podSpec.Containers, buildGCECloudImageContainer)
 	}
-
 	podSpec.Containers = append(podSpec.Containers, createImageContainer(r.ToolImage, artifact))
 
 	return &corev1.Pod{
@@ -530,6 +280,248 @@ func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, overlayISO, overlayR
 		})
 	}
 	return mounts
+}
+
+// builderVolumeMounts returns volume mounts for the builder pod and overlay volume names from artifacts.
+func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMount, string, string) {
+	mounts := []corev1.VolumeMount{
+		{Name: "artifacts", MountPath: "/artifacts"},
+		{Name: "rootfs", MountPath: "/rootfs"},
+	}
+	overlayISO, overlayRootfs := "", ""
+	if artifact.Spec.Artifacts != nil {
+		overlayISO = artifact.Spec.Artifacts.OverlayISOVolume
+		overlayRootfs = artifact.Spec.Artifacts.OverlayRootfsVolume
+	}
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.GRUBConfig != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "config",
+			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
+			SubPath:   "grub.cfg",
+		})
+	}
+	mounts = appendOverlayVolumeMounts(mounts, overlayISO, overlayRootfs)
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.CloudConfigRef != nil {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "cloudconfig",
+			MountPath: "/cloud-config.yaml",
+			SubPath:   artifact.Spec.Artifacts.CloudConfigRef.Key,
+		})
+	}
+	return mounts, overlayISO, overlayRootfs
+}
+
+func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overlayRootfs string) string {
+	var cmd strings.Builder
+	cmd.WriteString("auroraboot --debug build-iso")
+	fmt.Fprintf(&cmd, " --override-name %s", artifact.Name)
+	cmd.WriteString(" --date=false")
+	cmd.WriteString(" --output /artifacts")
+	if arch != "" {
+		fmt.Fprintf(&cmd, " --arch %s", arch)
+	}
+	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
+	cmd.WriteString(" dir:/rootfs")
+	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
+		cmd.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+	return cmd.String()
+}
+
+func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overlayRootfs string, mounts []corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-iso",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{buildISOCommand(artifact, arch, overlayISO, overlayRootfs)},
+		VolumeMounts:    mounts,
+	}
+}
+
+func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
+	var c strings.Builder
+	c.WriteString("auroraboot --debug")
+	c.WriteString(" --set 'disk.raw=true'")
+	c.WriteString(" --set 'disable_netboot=true'")
+	c.WriteString(" --set 'disable_http_server=true'")
+	c.WriteString(" --set 'state_dir=/artifacts'")
+	c.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
+	}
+	if artifacts != nil && artifacts.DiskSize != "" {
+		fmt.Fprintf(&c, " --set 'disk.size=%s'", artifacts.DiskSize)
+	}
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
+		c.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+	fmt.Fprintf(&c,
+		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+		artifact.Name)
+	return c.String()
+}
+
+func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch string, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-cloud-image",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{buildCloudImageCmd(artifact, arch, artifacts)},
+		VolumeMounts:    mounts,
+	}
+}
+
+func buildNetbootCmd(artifact *buildv1alpha2.OSArtifact) string {
+	var c strings.Builder
+	c.WriteString("auroraboot --debug netboot")
+	fmt.Fprintf(&c, " /artifacts/%s.iso", artifact.Name)
+	c.WriteString(" /artifacts")
+	fmt.Fprintf(&c, " %s", artifact.Name)
+	return c.String()
+}
+
+func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
+	if artifacts != nil {
+		return artifacts.NetbootURL
+	}
+	return ""
+}
+
+func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-netboot",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
+		Args:            []string{buildNetbootCmd(artifact)},
+		VolumeMounts:    mounts,
+	}
+}
+
+func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
+	var c strings.Builder
+	c.WriteString("auroraboot --debug")
+	c.WriteString(" --set 'disk.vhd=true'")
+	c.WriteString(" --set 'disable_netboot=true'")
+	c.WriteString(" --set 'disable_http_server=true'")
+	c.WriteString(" --set 'state_dir=/artifacts'")
+	c.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
+	}
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
+		c.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+	fmt.Fprintf(&c,
+		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+		artifact.Name)
+	return c.String()
+}
+
+func makeAzureCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch string, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-azure-cloud-image",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{buildAzureCmd(artifact, arch, artifacts)},
+		VolumeMounts:    mounts,
+	}
+}
+
+func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
+	var c strings.Builder
+	c.WriteString("auroraboot --debug")
+	c.WriteString(" --set 'disk.gce=true'")
+	c.WriteString(" --set 'disable_netboot=true'")
+	c.WriteString(" --set 'disable_http_server=true'")
+	c.WriteString(" --set 'state_dir=/artifacts'")
+	c.WriteString(" --set 'container_image=dir:/rootfs'")
+	if arch != "" {
+		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
+	}
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
+		c.WriteString(" --cloud-config /cloud-config.yaml")
+	}
+	fmt.Fprintf(&c,
+		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+			"mv \"$file\" /artifacts/%s.gce.tar.gz",
+		artifact.Name)
+	return c.String()
+}
+
+func makeGCECloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch string, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            "build-gce-cloud-image",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{buildGCECmd(artifact, arch, artifacts)},
+		VolumeMounts:    mounts,
+	}
+}
+
+func builderPodBaseVolumes(pvcName string, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
+	return []corev1.Volume{
+		{
+			Name: "artifacts",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvcName,
+					ReadOnly:  false,
+				},
+			},
+		},
+		{
+			Name:         "rootfs",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: artifact.Name},
+				},
+			},
+		},
+	}
+}
+
+func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
+	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name: "ocispec",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: artifact.Spec.Image.OCISpec.Ref.Name,
+				},
+			},
+		})
+	}
+	return volumes
+}
+
+func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.ArtifactSpec) []corev1.Volume {
+	if artifacts != nil && artifacts.CloudConfigRef != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name: "cloudconfig",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: artifacts.CloudConfigRef.Name,
+					Optional:   ptr(true),
+				},
+			},
+		})
+	}
+	return volumes
 }
 
 func baseImageBuildContainers(buildContextVolume string) []corev1.Container {

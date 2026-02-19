@@ -29,7 +29,7 @@ var reservedVolumeNames = map[string]bool{
 	"artifacts":   true,
 	"rootfs":      true,
 	"config":      true,
-	"ocispec":    true,
+	"ocispec":     true,
 	"cloudconfig": true,
 }
 
