@@ -55,7 +55,7 @@ func exporterWithVerifyScript(verifyScript string) []batchv1.JobSpec {
 
 // createExampleArtifact creates an OSArtifact (from YAML or in-memory), sets GenerateName and Exporters, creates it, returns name and label selector.
 func createExampleArtifact(tc *TestClients, artifact *buildv1alpha2.OSArtifact, namePrefix string, verifyScript string) (string, labels.Selector) {
-	artifact.ObjectMeta.GenerateName = namePrefix
+	artifact.GenerateName = namePrefix
 	artifact.Spec.Exporters = exporterWithVerifyScript(verifyScript)
 	return tc.CreateArtifact(artifact)
 }
