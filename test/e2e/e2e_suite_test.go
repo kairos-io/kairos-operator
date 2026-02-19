@@ -241,7 +241,7 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	if err == nil {
 		for _, job := range jobs.Items {
 			jobName := job.GetName()
-			buf.WriteString(fmt.Sprintf("=== Export Job %s Logs (last 80 lines) ===\n", jobName))
+			fmt.Fprintf(&buf, "=== Export Job %s Logs (last 80 lines) ===\n", jobName)
 			cmd := exec.Command("kubectl", "logs",
 				fmt.Sprintf("job/%s", jobName),
 				"--all-containers=true", "--prefix=true", "--tail=80",

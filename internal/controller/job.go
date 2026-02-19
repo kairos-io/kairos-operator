@@ -175,11 +175,11 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	}
 
 	cmd.WriteString("auroraboot --debug build-iso")
-	cmd.WriteString(fmt.Sprintf(" --override-name %s", artifact.Name))
+	fmt.Fprintf(&cmd, " --override-name %s", artifact.Name)
 	cmd.WriteString(" --date=false")
 	cmd.WriteString(" --output /artifacts")
 	if arch != "" {
-		cmd.WriteString(fmt.Sprintf(" --arch %s", arch))
+		fmt.Fprintf(&cmd, " --arch %s", arch)
 	}
 	appendOverlayFlags(&cmd, artifact.Spec.VolumeBindings)
 	cmd.WriteString(" dir:/rootfs")
