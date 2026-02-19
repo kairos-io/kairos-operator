@@ -21,18 +21,19 @@ The flow has **two stages**. The API groups options by stage.
 
 ### Stage 1: OCI image (`spec.image`)
 
-Exactly one of:
+- **When `image.ref` is set:** the image is pre-built (no build). BuildOptions and OCISpec are ignored.
+- **When `image.ref` is empty:** we build. At least one of **image.buildOptions** or **image.ociSpec** must be set; **both may be set**.
 
-| Option | Spec | Behavior |
-|--------|------|----------|
+Final build definition is constructed as:
+
+| Mode | Spec | Behavior |
+|------|------|----------|
 | Pre-built | `image.ref` | Use existing Kairos image (no build). |
-| Build with options | `image.buildOptions` | Operator’s default Dockerfile + build-args (version, baseImage, model, k8s, etc.). |
-| Build with Dockerfile | `image.dockerfile` | User Dockerfile (ref, optional templateValuesFrom/templateValues). |
+| OCISpec only | `image.ociSpec` | User’s OCI spec is the full definition (must include kairos-init if needed; “advanced” mode). |
+| BuildOptions only | `image.buildOptions` | Operator constructs the definition from BuildOptions (version required). |
+| OCISpec + BuildOptions | both | User’s OCI spec is “kairosified”—operator appends kairos-init; BuildOptions fields supply args to kairos-init. |
 
-When building (options or dockerfile), optional **`image.push`** (imageName, credentialsSecretRef).
-
-- **image.ref** (string), **image.buildOptions** (object), **image.dockerfile** (object) are mutually exclusive.
-- **image.push** only when building; ignored when `image.ref` is set.
+When building, optional **`image.push`** (imageName, credentialsSecretRef). Ignored when `image.ref` is set.
 
 ### Stage 2: Artifacts (`spec.artifacts`), optional
 
@@ -43,27 +44,28 @@ From the Stage 1 image: ISO, cloud image, netboot, VHD, GCE, etc. (auroraboot). 
 
 ### Volume bindings (scoped)
 
-- **Stage 1:** **image.buildOptions.buildContextVolume**, **image.dockerfile.buildContextVolume** (optional): volume name for Docker build context at /workspace (kaniko).
+- **Stage 1:** **image.ociSpec.buildContextVolume** (optional): volume name for OCI build context at /workspace (kaniko). Only used when building from OCISpec (BuildOptions-only has no user COPY).
 - **Stage 2:** **artifacts.overlayISOVolume**, **artifacts.overlayRootfsVolume** (optional).
 - **spec.volumes** and **spec.importers** remain at spec level (feed both stages as needed).
 
 ### Summary
 
-| Path | Spec | Dockerfile | Build args |
-|------|------|------------|------------|
+| Path | Spec | Build definition | Build args |
+|------|------|------------------|------------|
 | No build | `image.ref` | — | — |
-| Build with options | `image.buildOptions` | Embedded default (+ optional preKairosInitSteps) | buildOptions → kaniko --build-arg |
-| Build with custom Dockerfile | `image.dockerfile` | User Secret (ref) | User-defined |
+| BuildOptions only | `image.buildOptions` | Operator default | buildOptions → kaniko --build-arg |
+| OCISpec only | `image.ociSpec` | User Secret (ref), full definition | User-defined |
+| Kairosify | `image.ociSpec` + `image.buildOptions` | User spec + operator-appended kairos-init | BuildOptions → kairos-init args |
 
-- **Conflict rule:** Exactly one of `image.ref`, `image.buildOptions`, `image.dockerfile`. When buildOptions is set, custom Dockerfile group (ref, templateValuesFrom, templateValues) must be unset. baseImage + buildOptions allowed (“kairosify this image”).
-- **Push:** When building, optional `image.push`. Not used when only `image.ref` is set.
+- **Rules:** When `image.ref` is empty, at least one of buildOptions or ociSpec. Both buildOptions and ociSpec allowed (kairosify). When ref is set, buildOptions/ociSpec are ignored.
+- **Push:** When building, optional `image.push`. Ignored when `image.ref` is set.
 
 ### Decision tree
 
-1. **Already have a Kairos image?** → `image.ref`. Don’t set buildOptions or dockerfile.
-2. **Factory-like build (options only)?** → `image.buildOptions` (at least version). Optionally baseImage to kairosify that image.
-3. **Default + extra steps before kairos-init?** → `image.buildOptions` + preKairosInitSteps (or full Dockerfile if steps between install and init).
-4. **Full control (custom Dockerfile)?** → `image.dockerfile`. Don’t set buildOptions.
+1. **Already have a Kairos image?** → `image.ref`.
+2. **Factory-like build (options only)?** → `image.buildOptions` (version required). Optionally baseImage.
+3. **Full control (your Dockerfile, you include kairos-init)?** → `image.ociSpec` only.
+4. **Your Dockerfile but operator adds kairos-init?** → `image.ociSpec` + `image.buildOptions` (ociSpec.kairosify: true); BuildOptions supply kairos-init args.
 5. **Push built image?** → When building, set `image.push`.
 
 ---
@@ -78,10 +80,10 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 | Build with default Dockerfile + options, push, then ISO/cloud | [02-build-options-only.yaml](02-build-options-only.yaml) | `image.buildOptions` + push | ISO, cloud image |
 | Same, but kairosify a custom base image | [03-build-options-custom-base.yaml](03-build-options-custom-base.yaml) | `image.buildOptions` (baseImage) + push | ISO |
 | Same, plus extra RUN steps before kairos-init | [04-build-options-extra-steps.yaml](04-build-options-extra-steps.yaml) | `image.buildOptions` + preKairosInitSteps + push | ISO |
-| Build with your own Dockerfile, push, then ISO | [05-build-dockerfile.yaml](05-build-dockerfile.yaml) | `image.dockerfile` + push | ISO |
+| Build with your own OCI build definition, push, then ISO | [05-build-dockerfile.yaml](05-build-dockerfile.yaml) | `image.ociSpec` + push | ISO |
 | Build with options and push only (no artifacts) | [06-oci-only.yaml](06-oci-only.yaml) | `image.buildOptions` + push | — |
 | Pre-built image + importers + overlay volumes (scoped under artifacts) | [07-importers-and-scoped-bindings.yaml](07-importers-and-scoped-bindings.yaml) | `image.ref` | ISO + overlayISOVolume, overlayRootfsVolume + importers |
-| Custom Dockerfile + build-context volume (scoped under image.dockerfile) | [08-dockerfile-build-context-volume.yaml](08-dockerfile-build-context-volume.yaml) | `image.dockerfile` + buildContextVolume + importers | ISO |
+| Custom OCI spec + build-context volume (scoped under image.ociSpec) | [08-ocispec-build-context-volume.yaml](08-ocispec-build-context-volume.yaml) | `image.ociSpec` + buildContextVolume + importers | ISO |
 
 ---
 
@@ -89,10 +91,10 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 
 ### Phase 1: Default Dockerfile + build options (build-iso)
 
-- **CRD:** Add `BuildOptions` (BaseImage, KairosInit, Model, TrustedBoot, KubernetesDistro, KubernetesVersion, Version, FIPS; PreKairosInitSteps optional). Add `ImagePush` (Push, ImageName, CredentialsSecretRef). Group image under `spec.image` (ref | buildOptions | dockerfile, push) and artifacts under `spec.artifacts`; move overlay bindings to artifacts.overlayISOVolume / overlayRootfsVolume; add buildContextVolume under image.buildOptions / image.dockerfile.
-- **Validation:** Exactly one of image.ref, image.buildOptions, image.dockerfile. When buildOptions set: version required; custom Dockerfile group unset. buildOptions + BaseImageName allowed; buildOptions + ImageName invalid. Push only when building.
-- **Default Dockerfile:** Embed in operator (match kairos/images/Dockerfile ARGs). Single insertion point for PreKairosInitSteps. No network fetch.
-- **Reconciler:** If buildOptions set (no custom Dockerfile): render default Dockerfile (with PreKairosInitSteps if set), create Secret, mount for kaniko; pass build-args and --customPlatform=linux/<arch> when spec.arch set. If custom Dockerfile: keep current behavior (no build-args from buildOptions).
+- **CRD:** Add `BuildOptions` (BaseImage, KairosInit, Model, TrustedBoot, KubernetesDistro, KubernetesVersion, Version, FIPS; PreKairosInitSteps optional). Add `ImagePush` (Push, ImageName, CredentialsSecretRef). Group image under `spec.image` (ref | buildOptions | ociSpec, push) and artifacts under `spec.artifacts`; move overlay bindings to artifacts.overlayISOVolume / overlayRootfsVolume; add buildContextVolume under image.buildOptions / image.ociSpec.
+- **Validation:** Exactly one of image.ref, image.buildOptions, image.ociSpec. When buildOptions set: version required; custom OCI spec group unset. buildOptions + BaseImageName allowed; buildOptions + ImageName invalid. Push only when building.
+- **Default OCI build definition:** Embed in operator (match kairos/images Dockerfile ARGs). Single insertion point for PreKairosInitSteps. No network fetch.
+- **Reconciler:** If buildOptions set (no custom OCI spec): render default build definition (with PreKairosInitSteps if set), create Secret, mount for kaniko; pass build-args and --customPlatform=linux/<arch> when spec.arch set. If custom OCI spec: keep current behavior (no build-args from buildOptions).
 - **Kaniko:** Pass --build-arg from BuildOptions; when spec.arch set pass --customPlatform=linux/<arch> (default and custom Dockerfile modes).
 - **Push:** When image.push set and we built: after build, push to registry (e.g. container that loads tarball and pushes with credentials from Secret).
 - **Tests:** Validation, reconciler mode selection, kaniko args, PreKairosInitSteps injection; E2E with BuildOptions, BaseImageName+BuildOptions, PreKairosInitSteps.
@@ -103,6 +105,6 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 
 ### Design decisions (short)
 
-- **Two modes only:** (1) No Dockerfile → build options + default Dockerfile. (2) User supplies full Dockerfile. No “partial Dockerfile” or operator-injected kairos-init block.
-- **User Dockerfile = final image:** Operator does not run kairos-init on top of the user’s build. User’s Dockerfile must produce a Kairos-ready image (e.g. run kairos-init inside it).
+- **Two modes only:** (1) No custom OCI spec → build options + default build definition. (2) User supplies full OCI build definition. No “partial” definition or operator-injected kairos-init block.
+- **User OCI build definition = final image:** Operator does not run kairos-init on top of the user’s build. User’s build definition must produce a Kairos-ready image (e.g. run kairos-init inside it).
 - **Volume bindings:** Scoped by stage (build context under image; overlays under artifacts) so each binding lives where it is used.
