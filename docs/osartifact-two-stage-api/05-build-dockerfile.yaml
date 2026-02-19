@@ -33,10 +33,10 @@ spec:
         key: Dockerfile
       # templateValuesFrom: { name: my-template-values }
       # templateValues: { SomeVar: "value" }
-    push:
-      imageName: my-registry.example.com/my-ns/full-control-kairos:latest
-      credentialsSecretRef:
-        name: registry-credentials
+    builtImageName: my-registry.example.com/my-ns/full-control-kairos:latest
+    push: true
+    pushCredentialsSecretRef:
+      name: registry-credentials
 
   artifacts:
     arch: amd64

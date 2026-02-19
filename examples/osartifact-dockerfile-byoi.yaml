@@ -56,8 +56,7 @@ spec:
       ref:
         name: my-kairos-ocispec
         key: Dockerfile
-    push:
-      imageName: "my-registry.example.com/my-custom-kairos:latest"
+    builtImageName: "my-registry.example.com/my-custom-kairos:latest"
   artifacts:
     iso: true
     cloudConfigRef:

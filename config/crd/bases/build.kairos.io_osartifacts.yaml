@@ -3854,6 +3854,8 @@ spec:
                     required:
                     - version
                     type: object
+                  builtImageName:
+                    type: string
                   ociSpec:
                     properties:
                       buildContextVolume:
@@ -3882,20 +3884,15 @@ spec:
                         type: object
                     type: object
                   push:
+                    type: boolean
+                  pushCredentialsSecretRef:
                     properties:
-                      credentialsSecretRef:
-                        properties:
-                          key:
-                            type: string
-                          name:
-                            type: string
-                        required:
-                        - name
-                        type: object
-                      imageName:
+                      key:
+                        type: string
+                      name:
                         type: string
                     required:
-                    - imageName
+                    - name
                     type: object
                   ref:
                     type: string
