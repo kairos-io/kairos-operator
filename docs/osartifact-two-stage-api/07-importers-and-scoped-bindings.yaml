@@ -4,8 +4,8 @@
 # Importers run as init containers and populate user-defined volumes. Where
 # each volume is used is now specified next to the stage that uses it:
 #   - Overlay volumes → under spec.artifacts (stage 2: ISO/rootfs generation)
-#   - Build-context volume → under spec.image.dockerfile.buildContextVolume
-#     (stage 1) when building with a custom Dockerfile (not shown here).
+#   - Build-context volume → under spec.image.ociSpec.buildContextVolume
+#     (stage 1) when building with a custom OCI build definition (not shown here).
 #
 # This example uses a pre-built image and overlays only.
 # -----------------------------------------------------------------------------
@@ -56,4 +56,4 @@ spec:
     overlayISOVolume: iso-overlay
     overlayRootfsVolume: rootfs-overlay
   # Build-context binding lives under image when building: see
-  # 08-dockerfile-build-context-volume.yaml for image.dockerfile.buildContextVolume.
+  # 08-ocispec-build-context-volume.yaml for image.ociSpec.buildContextVolume.

@@ -1,12 +1,12 @@
 # -----------------------------------------------------------------------------
-# Stage 1 option C: Build with your Dockerfile (full control) + push
+# Stage 1 option C: Build with your OCI build definition (full control) + push
 # Stage 2: Generate ISO
 # -----------------------------------------------------------------------------
 ---
 kind: Secret
 apiVersion: v1
 metadata:
-  name: my-dockerfile
+  name: my-ocispec
   namespace: default
 type: Opaque
 stringData:
@@ -23,13 +23,13 @@ stringData:
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
 metadata:
-  name: full-control-dockerfile
+  name: full-control-ocispec
   namespace: default
 spec:
   image:
-    dockerfile:
+    ociSpec:
       ref:
-        name: my-dockerfile
+        name: my-ocispec
         key: Dockerfile
       # templateValuesFrom: { name: my-template-values }
       # templateValues: { SomeVar: "value" }
