@@ -145,8 +145,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
 func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) []string {
-	script := `#!/bin/bash
-set -x -e
+	script := `set -x -e
 
 `
 
@@ -176,7 +175,7 @@ if [ -f "/etc/kairos-release" ]; then
       CURRENT_VERSION=$(get_version "` + hostMountPath + `/etc/os-release" )
     fi
 
-    if [ "$CURRENT_VERSION" == "$UPDATE_VERSION" ]; then
+    if [ "$CURRENT_VERSION" = "$UPDATE_VERSION" ]; then
       echo Up to date
       echo "Current version: ${CURRENT_VERSION}"
       echo "Update version: ${UPDATE_VERSION}"
