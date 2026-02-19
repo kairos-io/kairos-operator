@@ -28,7 +28,7 @@ spec:
 
   # User-defined volumes shared between importers and the build pod.
   # Names must not collide with reserved names (artifacts, rootfs, config,
-  # dockerfile, cloudconfig).
+  # ocispec, cloudconfig).
   volumes:
     - name: iso-overlay
       emptyDir: {}

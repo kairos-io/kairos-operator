@@ -1,9 +1,14 @@
+# Example using the two-stage API (see docs/osartifact-two-stage-api/README.md)
+# Stage 1: pre-built image (image.ref). Stage 2: ISO + cloud image (artifacts).
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
 metadata:
   name: osartifact-sample
 spec:
-  # TODO(user): Add fields here
-  # Example:
-  # imageName: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
-  # iso: true
+  image:
+    ref: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudImage: true
+  exporters: []
