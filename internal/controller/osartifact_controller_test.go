@@ -666,7 +666,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
 				result, err := r.startBuild(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
+				Expect(result.RequeueAfter).To(BeZero())
 
 				var pods corev1.PodList
 				Expect(r.List(context.TODO(), &pods, &client.ListOptions{
