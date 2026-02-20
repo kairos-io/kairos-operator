@@ -164,7 +164,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
 					OCISpec: &v1alpha2.OCISpec{
-						Ref: &v1alpha2.SecretKeySelector{Name: "my-ocispec", Key: "Dockerfile"},
+						Ref: &v1alpha2.SecretKeySelector{Name: "my-ocispec", Key: "ociSpec"},
 					},
 				},
 			}
@@ -176,7 +176,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 				Image: v1alpha2.ImageSpec{
 					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0"},
 					OCISpec: &v1alpha2.OCISpec{
-						Ref: &v1alpha2.SecretKeySelector{Name: "my-ocispec", Key: "Dockerfile"},
+						Ref: &v1alpha2.SecretKeySelector{Name: "my-ocispec", Key: "ociSpec"},
 					},
 				},
 			}
@@ -187,7 +187,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
 					OCISpec: &v1alpha2.OCISpec{
-						Ref:                &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"},
+						Ref:                &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
 						BuildContextVolume: "missing-vol",
 					},
 				},
@@ -202,7 +202,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
 					OCISpec: &v1alpha2.OCISpec{
-						Ref:                &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"},
+						Ref:                &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
 						BuildContextVolume: "ctx",
 					},
 				},
@@ -215,7 +215,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
 					BuildImage: &v1alpha2.BuildImage{Registry: "my-registry.io", Repository: "my-image", Tag: "tag"},
-					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"}},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
 				},
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
@@ -225,7 +225,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
 					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "img", Tag: ""},
-					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"}},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
 				},
 			}
 			err := spec.Validate()

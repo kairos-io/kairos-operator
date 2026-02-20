@@ -160,7 +160,7 @@ var _ = Describe("OSArtifact Importers", func() {
 				Namespace:    "default",
 			},
 			StringData: map[string]string{
-				"Dockerfile": "FROM quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2\nCOPY build-context-marker.txt /etc/build-context-marker.txt\n",
+				"ociSpec": "FROM quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2\nCOPY build-context-marker.txt /etc/build-context-marker.txt\n",
 			},
 			Type: corev1.SecretTypeOpaque,
 		}, metav1.CreateOptions{})
@@ -169,7 +169,7 @@ var _ = Describe("OSArtifact Importers", func() {
 		spec := buildv1alpha2.OSArtifactSpec{
 			Image: buildv1alpha2.ImageSpec{
 				OCISpec: &buildv1alpha2.OCISpec{
-					Ref:                &buildv1alpha2.SecretKeySelector{Name: secret.Name, Key: "Dockerfile"},
+					Ref:                &buildv1alpha2.SecretKeySelector{Name: secret.Name, Key: "ociSpec"},
 					BuildContextVolume: "build-context",
 				},
 			},
