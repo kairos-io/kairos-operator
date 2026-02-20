@@ -307,7 +307,7 @@ spec:
 		It("combines templated Dockerfile (dashboard + user parts), importer, and builtImageName", func() {
 			templateSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "template-", Namespace: "default"},
-				StringData: map[string]string{
+				StringData: map[string]string{ // TODO: remove "FROM" as soon as we implement buildOptions + ociSpec
 					"Dockerfile": "FROM {{ .BaseImage }}\n{{ .DashboardPart }}\n{{ .UserPart }}\n",
 				},
 				Type: corev1.SecretTypeOpaque,
