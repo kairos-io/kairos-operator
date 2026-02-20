@@ -1,17 +1,17 @@
 ---
-# Secret containing a Dockerfile with Go template syntax.
+# Secret containing an OCI build definition with Go template syntax.
 # The operator renders the template before passing it to Kaniko.
 # Template variables use {{ .VarName }} syntax and are replaced with values
-# at build time. Values can come from a Secret (dockerfileTemplateValuesFrom)
-# and/or inline in the spec (dockerfileTemplateValues). Inline values take
+# at build time. Values can come from a Secret (templateValuesFrom)
+# and/or inline in the spec (templateValues). Inline values take
 # precedence over Secret values on key conflicts.
 #
 # In this example, the base image and kairos-init version are templated so
-# they can be easily overridden without modifying the Dockerfile itself.
+# they can be easily overridden without modifying the build definition itself.
 kind: Secret
 apiVersion: v1
 metadata:
-  name: my-templated-dockerfile
+  name: my-templated-ocispec
   namespace: default
 type: Opaque
 stringData:
@@ -46,17 +46,21 @@ metadata:
   name: my-templated-kairos
   namespace: default
 spec:
-  baseImageDockerfile:
-    name: my-templated-dockerfile
-    key: Dockerfile
-  # Reference a Secret containing template values
-  dockerfileTemplateValuesFrom:
-    name: my-template-values
-  # Inline values (these override Secret values on conflict)
-  dockerfileTemplateValues:
-    KairosVersion: "v3.6.1"  # overrides the v3.6.0 from the Secret
-  imageName: "my-registry.example.com/my-templated-kairos:latest"
-  iso: true
+  image:
+    ociSpec:
+      ref:
+        name: my-templated-ocispec
+        key: Dockerfile
+      templateValuesFrom:
+        name: my-template-values
+      templateValues:
+        KairosVersion: "v3.6.1"  # overrides the v3.6.0 from the Secret
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-templated-kairos
+      tag: latest
+  artifacts:
+    iso: true
   exporters:
   - template:
       spec:

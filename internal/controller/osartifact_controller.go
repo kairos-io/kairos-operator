@@ -177,71 +177,70 @@ func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretN
 	return nil
 }
 
-// renderDockerfile fetches the Dockerfile from the referenced Secret, renders
+// renderOCISpec fetches the OCI build definition from the referenced Secret, renders
 // it through the Go template engine, and creates a new Secret with the rendered
 // content. The in-memory artifact is updated to point to the rendered Secret so
 // that downstream pod creation uses the rendered version.
-// If BaseImageDockerfile is not set, this is a no-op.
-func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
-	if artifact.Spec.BaseImageDockerfile == nil {
+// If image.ociSpec is not set, this is a no-op.
+func (r *OSArtifactReconciler) renderOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.Image.OCISpec == nil || artifact.Spec.Image.OCISpec.Ref == nil {
 		return nil
 	}
+	ociRef := artifact.Spec.Image.OCISpec.Ref
 
 	logger := log.FromContext(ctx)
 
-	// Fetch the original Secret containing the Dockerfile
+	// Fetch the original Secret containing the OCI build definition
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{
-		Name:      artifact.Spec.BaseImageDockerfile.Name,
+		Name:      ociRef.Name,
 		Namespace: artifact.Namespace,
 	}, secret); err != nil {
-		return fmt.Errorf("failed to fetch Dockerfile secret %q: %w", artifact.Spec.BaseImageDockerfile.Name, err)
+		return fmt.Errorf("failed to fetch OCI build definition secret %q: %w", ociRef.Name, err)
 	}
 
-	// Determine which key holds the Dockerfile content
-	key := artifact.Spec.BaseImageDockerfile.Key
+	// Determine which key holds the build definition content (default: "Dockerfile" for kaniko)
+	key := ociRef.Key
 	if key == "" {
 		key = "Dockerfile"
 	}
 
-	dockerfileContent, ok := secret.Data[key]
+	ociContent, ok := secret.Data[key]
 	if !ok {
 		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
 
-	// Collect template values. Secret values are loaded first, then inline
-	// values are merged on top so that inline takes precedence on conflicts.
+	// Collect template values from image.ociSpec
 	values := map[string]string{}
-
-	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
+	templateValuesFrom := artifact.Spec.Image.OCISpec.TemplateValuesFrom
+	templateValues := artifact.Spec.Image.OCISpec.TemplateValues
+	if templateValuesFrom != nil {
 		valuesSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
-			Name:      artifact.Spec.DockerfileTemplateValuesFrom.Name,
+			Name:      templateValuesFrom.Name,
 			Namespace: artifact.Namespace,
 		}, valuesSecret); err != nil {
-			return fmt.Errorf("failed to fetch template values Secret %q: %w",
-				artifact.Spec.DockerfileTemplateValuesFrom.Name, err)
+			return fmt.Errorf("failed to fetch template values Secret %q: %w", templateValuesFrom.Name, err)
 		}
 		for k, v := range valuesSecret.Data {
 			values[k] = string(v)
 		}
 	}
-
-	for k, v := range artifact.Spec.DockerfileTemplateValues {
+	for k, v := range templateValues {
 		values[k] = v
 	}
 
-	rendered, err := renderDockerfileTemplate(string(dockerfileContent), values)
+	rendered, err := renderOCIBuildTemplate(string(ociContent), values)
 	if err != nil {
-		return fmt.Errorf("failed to render Dockerfile template: %w", err)
+		return fmt.Errorf("failed to render OCI build template: %w", err)
 	}
 
-	logger.Info("Rendered Dockerfile template", "artifact", artifact.Name)
+	logger.Info("Rendered OCI build template", "artifact", artifact.Name)
 
-	// Create or update the Secret with the rendered Dockerfile.
-	// Using CreateOrUpdate ensures that if the user changes their Dockerfile
+	// Create or update the Secret with the rendered OCI build definition.
+	// Using CreateOrUpdate ensures that if the user changes their build definition
 	// or template values, the rendered Secret is refreshed on re-reconciliation.
-	renderedSecretName := artifact.Name + "-rendered-dockerfile"
+	renderedSecretName := artifact.Name + "-rendered-ocispec"
 	renderedSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      renderedSecretName,
@@ -260,23 +259,19 @@ func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *b
 			renderedSecret.Labels = make(map[string]string)
 		}
 		renderedSecret.Labels[artifactLabel] = artifact.Name
-		// The rendered Dockerfile is always stored under the "Dockerfile" key
-		// because kaniko expects the file to be named "Dockerfile" in the
-		// mounted volume (--dockerfile dockerfile/Dockerfile).
+		// Stored under "Dockerfile" key because kaniko expects that filename (--dockerfile ocispec/Dockerfile).
 		renderedSecret.StringData = map[string]string{
 			"Dockerfile": rendered,
 		}
 		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("failed to create or update rendered Dockerfile secret: %w", err)
+		return fmt.Errorf("failed to create or update rendered OCI build definition secret: %w", err)
 	}
 
 	// Update the in-memory reference so the pod mounts the rendered Secret.
-	// This does NOT persist to the API server — it only affects the current
-	// reconciliation pass. Key is set to "Dockerfile" because that's what
-	// kaniko expects in the mounted volume.
-	artifact.Spec.BaseImageDockerfile.Name = renderedSecretName
-	artifact.Spec.BaseImageDockerfile.Key = "Dockerfile"
+	// This does NOT persist to the API server — it only affects the current reconciliation pass.
+	artifact.Spec.Image.OCISpec.Ref.Name = renderedSecretName
+	artifact.Spec.Image.OCISpec.Ref.Key = "Dockerfile"
 
 	return nil
 }
@@ -286,9 +281,14 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	if err := artifact.Spec.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
 	}
+	// BuildOptions-only (no OCISpec) is not yet implemented; OCISpec+BuildOptions is allowed.
+	hasOCISpecRef := artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil
+	if artifact.Spec.Image.Ref == "" && artifact.Spec.Image.BuildOptions != nil && !hasOCISpecRef {
+		return ctrl.Result{}, fmt.Errorf("image.buildOptions (default OCI build mode) is not yet implemented")
+	}
 
-	// Render Dockerfile template if applicable
-	if err := r.renderDockerfile(ctx, artifact); err != nil {
+	// Render OCI build template if applicable
+	if err := r.renderOCISpec(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err
 	}
 
