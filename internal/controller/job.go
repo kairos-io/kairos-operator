@@ -570,7 +570,7 @@ func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVo
 	}
 
 	kanikoArgs := []string{
-		"--dockerfile", "ocispec/"+OCISpecSecretKey,
+		"--dockerfile", "ocispec/" + OCISpecSecretKey,
 		"--context", "dir:///workspace",
 		"--destination", "whatever", // TODO: when spec.image.push is true, use builtImageName and push (mount PushCredentialsSecretRef for kaniko auth)
 		"--tar-path", "/rootfs/image.tar",
