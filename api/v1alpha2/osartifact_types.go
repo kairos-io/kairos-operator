@@ -303,8 +303,13 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 		return fmt.Errorf("spec.image: when ref is empty, at least one of buildOptions or ociSpec must be set")
 	}
 
-	if hasBuildOptions && img.BuildOptions.Version == "" {
-		return fmt.Errorf("spec.image.buildOptions.version is required when using buildOptions")
+	if hasBuildOptions {
+		if img.BuildOptions.Version == "" {
+			return fmt.Errorf("spec.image.buildOptions.version is required when using buildOptions")
+		}
+		if img.BuildOptions.BaseImage == "" {
+			return fmt.Errorf("spec.image.buildOptions.baseImage is required when using buildOptions")
+		}
 	}
 	if hasOCISpec && img.OCISpec.BuildContextVolume != "" {
 		if !volumeNames[img.OCISpec.BuildContextVolume] {

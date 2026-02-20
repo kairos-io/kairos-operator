@@ -160,7 +160,7 @@ spec:
 			secret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "ocispec-", Namespace: "default"},
 				StringData: map[string]string{
-					"Dockerfile": fmt.Sprintf("FROM %s\nRUN echo 'oci-only-marker' > /etc/e2e-oci-only.txt\n", HadronPreKairosified),
+					"ociSpec": fmt.Sprintf("FROM %s\nRUN echo 'oci-only-marker' > /etc/e2e-oci-only.txt\n", HadronPreKairosified),
 				},
 				Type: corev1.SecretTypeOpaque,
 			}, metav1.CreateOptions{})
@@ -177,7 +177,7 @@ spec:
     ociSpec:
       ref:
         name: %s
-        key: Dockerfile
+        key: ociSpec
     buildImage:
       registry: my-registry.example.com
       repository: e2e/oci-only-built
@@ -264,7 +264,7 @@ echo "PASS: overlay bindings respected"
 			secret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "ocispec-ctx-", Namespace: "default"},
 				StringData: map[string]string{
-					"Dockerfile": fmt.Sprintf("FROM %s\nCOPY build-info.txt /etc/kairos-build-info.txt\n", HadronPreKairosified),
+					"ociSpec": fmt.Sprintf("FROM %s\nCOPY build-info.txt /etc/kairos-build-info.txt\n", HadronPreKairosified),
 				},
 				Type: corev1.SecretTypeOpaque,
 			}, metav1.CreateOptions{})
@@ -281,7 +281,7 @@ spec:
     ociSpec:
       ref:
         name: %s
-        key: Dockerfile
+        key: ociSpec
       buildContextVolume: build-context
   volumes:
     - name: build-context
@@ -310,8 +310,8 @@ spec:
 		It("combines templated Dockerfile (dashboard + user parts), importer, and buildImage", func() {
 			templateSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "template-", Namespace: "default"},
-				StringData: map[string]string{ // TODO: remove "FROM" as soon as we implement buildOptions + ociSpec
-					"Dockerfile": "FROM {{ .BaseImage }}\n{{ .DashboardPart }}\n{{ .UserPart }}\n",
+				StringData: map[string]string{
+					"ociSpec": "{{ .DashboardPart }}\n{{ .UserPart }}\n",
 				},
 				Type: corev1.SecretTypeOpaque,
 			}, metav1.CreateOptions{})
@@ -320,7 +320,6 @@ spec:
 			valuesSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "values-", Namespace: "default"},
 				StringData: map[string]string{
-					"BaseImage":     HadronPreKairosified,
 					"DashboardPart": "RUN echo 'dashboard-part' > /etc/dashboard-done.txt\nCOPY dashboard-bundle.txt /etc/dashboard-bundle.txt\n",
 					"UserPart":      "RUN echo 'user-part' > /etc/user-done.txt\n",
 				},
@@ -339,7 +338,7 @@ spec:
     ociSpec:
       ref:
         name: %s
-        key: Dockerfile
+        key: ociSpec
       templateValuesFrom:
         name: %s
       buildContextVolume: build-context

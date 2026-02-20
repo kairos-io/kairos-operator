@@ -43,6 +43,8 @@ const (
 	CompatibleAurorabootVersion     = "v0.19.3"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
+	// OCISpecSecretKey is the Secret data key for the OCI build definition.
+	OCISpecSecretKey = "ociSpec"
 )
 
 // OSArtifactReconciler reconciles a OSArtifact object
@@ -177,102 +179,93 @@ func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretN
 	return nil
 }
 
-// renderOCISpec fetches the OCI build definition from the referenced Secret, renders
-// it through the Go template engine, and creates a new Secret with the rendered
-// content. The in-memory artifact is updated to point to the rendered Secret so
-// that downstream pod creation uses the rendered version.
-// If image.ociSpec is not set, this is a no-op.
-func (r *OSArtifactReconciler) renderOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+// fetchAndRenderUserOCISpec fetches the user-defined OCI build definition from the
+// referenced Secret and renders it with the provided template values (TemplateValuesFrom
+// and TemplateValues). Returns empty string when artifact has no OCISpec.Ref.
+func (r *OSArtifactReconciler) fetchAndRenderUserOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (string, error) {
 	if artifact.Spec.Image.OCISpec == nil || artifact.Spec.Image.OCISpec.Ref == nil {
-		return nil
+		return "", nil
 	}
 	ociRef := artifact.Spec.Image.OCISpec.Ref
-
-	logger := log.FromContext(ctx)
-
-	// Fetch the original Secret containing the OCI build definition
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{
-		Name:      ociRef.Name,
-		Namespace: artifact.Namespace,
-	}, secret); err != nil {
-		return fmt.Errorf("failed to fetch OCI build definition secret %q: %w", ociRef.Name, err)
+	if err := r.Get(ctx, client.ObjectKey{Name: ociRef.Name, Namespace: artifact.Namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch OCI build definition secret %q: %w", ociRef.Name, err)
 	}
-
-	// Determine which key holds the build definition content (default: "Dockerfile" for kaniko)
 	key := ociRef.Key
 	if key == "" {
-		key = "Dockerfile"
+		key = OCISpecSecretKey
 	}
-
 	ociContent, ok := secret.Data[key]
 	if !ok {
-		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
+		return "", fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
-
-	// Collect template values from image.ociSpec
 	values := map[string]string{}
-	templateValuesFrom := artifact.Spec.Image.OCISpec.TemplateValuesFrom
-	templateValues := artifact.Spec.Image.OCISpec.TemplateValues
-	if templateValuesFrom != nil {
+	if artifact.Spec.Image.OCISpec.TemplateValuesFrom != nil {
 		valuesSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
-			Name:      templateValuesFrom.Name,
+			Name:      artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name,
 			Namespace: artifact.Namespace,
 		}, valuesSecret); err != nil {
-			return fmt.Errorf("failed to fetch template values Secret %q: %w", templateValuesFrom.Name, err)
+			return "", fmt.Errorf("failed to fetch template values Secret %q: %w", artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name, err)
 		}
 		for k, v := range valuesSecret.Data {
 			values[k] = string(v)
 		}
 	}
-	for k, v := range templateValues {
+	for k, v := range artifact.Spec.Image.OCISpec.TemplateValues {
 		values[k] = v
 	}
-
 	rendered, err := renderOCIBuildTemplate(string(ociContent), values)
 	if err != nil {
-		return fmt.Errorf("failed to render OCI build template: %w", err)
+		return "", fmt.Errorf("failed to render OCI build template: %w", err)
 	}
+	return rendered, nil
+}
 
-	logger.Info("Rendered OCI build template", "artifact", artifact.Name)
-
-	// Create or update the Secret with the rendered OCI build definition.
-	// Using CreateOrUpdate ensures that if the user changes their build definition
-	// or template values, the rendered Secret is refreshed on re-reconciliation.
-	renderedSecretName := artifact.Name + "-rendered-ocispec"
-	renderedSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      renderedSecretName,
-			Namespace: artifact.Namespace,
-		},
+// resolveFinalOCISpec builds the final OCI build definition and writes it to a Secret.
+// When buildOptions is set: final = baseImageSection + userOciSpecContent (if any) + kairosInitSection.
+// When only ociSpec: final = user's content (fetched and optionally template-rendered).
+// The in-memory artifact.Spec.Image.OCISpec.Ref is set to the rendered Secret so the build pod uses it.
+// No-op when image.ref is set (no build). Must be called when building (ref empty, buildOptions or ociSpec set).
+func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.Image.Ref != "" {
+		return nil
 	}
+	hasBuildOptions := artifact.Spec.Image.BuildOptions != nil
 
-	// Verify ownership to prevent name collision attacks
-	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+	middleContent, err := r.fetchAndRenderUserOCISpec(ctx, artifact)
+	if err != nil {
 		return err
 	}
 
+	final := AssembleFinalOCISpec(hasBuildOptions, middleContent)
+
+	// Ensure OCISpec and Ref exist in-memory so volume mount and kaniko use the rendered secret.
+	if artifact.Spec.Image.OCISpec == nil {
+		artifact.Spec.Image.OCISpec = &buildv1alpha2.OCISpec{}
+	}
+	renderedSecretName := artifact.Name + "-rendered-ocispec"
+	artifact.Spec.Image.OCISpec.Ref = &buildv1alpha2.SecretKeySelector{
+		Name: renderedSecretName,
+		Key:  OCISpecSecretKey,
+	}
+
+	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+		return err
+	}
+	renderedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: renderedSecretName, Namespace: artifact.Namespace},
+	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
-		// Merge labels instead of overwriting to preserve labels set by other tooling
 		if renderedSecret.Labels == nil {
 			renderedSecret.Labels = make(map[string]string)
 		}
 		renderedSecret.Labels[artifactLabel] = artifact.Name
-		// Stored under "Dockerfile" key because kaniko expects that filename (--dockerfile ocispec/Dockerfile).
-		renderedSecret.StringData = map[string]string{
-			"Dockerfile": rendered,
-		}
+		renderedSecret.StringData = map[string]string{OCISpecSecretKey: final}
 		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("failed to create or update rendered OCI build definition secret: %w", err)
 	}
-
-	// Update the in-memory reference so the pod mounts the rendered Secret.
-	// This does NOT persist to the API server — it only affects the current reconciliation pass.
-	artifact.Spec.Image.OCISpec.Ref.Name = renderedSecretName
-	artifact.Spec.Image.OCISpec.Ref.Key = "Dockerfile"
-
 	return nil
 }
 
@@ -281,14 +274,9 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	if err := artifact.Spec.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
 	}
-	// BuildOptions-only (no OCISpec) is not yet implemented; OCISpec+BuildOptions is allowed.
-	hasOCISpecRef := artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil
-	if artifact.Spec.Image.Ref == "" && artifact.Spec.Image.BuildOptions != nil && !hasOCISpecRef {
-		return ctrl.Result{}, fmt.Errorf("image.buildOptions (default OCI build mode) is not yet implemented")
-	}
 
-	// Render OCI build template if applicable
-	if err := r.renderOCISpec(ctx, artifact); err != nil {
+	// Resolve final OCI build definition (single path: assemble sections when buildOptions set, else user content only).
+	if err := r.resolveFinalOCISpec(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err
 	}
 
