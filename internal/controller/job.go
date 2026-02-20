@@ -490,7 +490,7 @@ func builderPodBaseVolumes(pvcName string, artifact *buildv1alpha2.OSArtifact) [
 	}
 }
 
-// kanikoBuildArgs returns kaniko --build-arg KEY=VALUE strings from BuildOptions (default Dockerfile ARGs).
+// kanikoBuildArgs returns kaniko --build-arg KEY=VALUE strings from BuildOptions (default OCI build definition ARGs).
 // Only used when artifact.Spec.Image.BuildOptions is set.
 func kanikoBuildArgs(artifact *buildv1alpha2.OSArtifact) []string {
 	if artifact.Spec.Image.BuildOptions == nil {

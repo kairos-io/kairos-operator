@@ -43,7 +43,7 @@ const (
 	CompatibleAurorabootVersion     = "v0.19.3"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
-	// OCISpecSecretKey is the Secret data key for the OCI build definition (avoids "Dockerfile" naming).
+	// OCISpecSecretKey is the Secret data key for the OCI build definition.
 	OCISpecSecretKey = "ociSpec"
 )
 
@@ -238,7 +238,7 @@ func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact
 		return err
 	}
 
-	final := AssembleFinalDockerfile(hasBuildOptions, middleContent)
+	final := AssembleFinalOCISpec(hasBuildOptions, middleContent)
 
 	// Ensure OCISpec and Ref exist in-memory so volume mount and kaniko use the rendered secret.
 	if artifact.Spec.Image.OCISpec == nil {

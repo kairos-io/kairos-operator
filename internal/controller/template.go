@@ -14,7 +14,7 @@ import (
 // the same as the author of the values and most likely the operator of the cluster.
 var forbiddenDirectivesRE = regexp.MustCompile(`\{\{-?\s*(define|template|block)\s`)
 
-// renderOCIBuildTemplate renders an OCI build definition (e.g. Dockerfile-format)
+// renderOCIBuildTemplate renders an OCI build definition (containerfile format)
 // that contains Go template syntax using the provided key-value pairs. Only simple
 // value substitution and basic control flow (if/else/range/with) are allowed.
 // The directives "define", "template", and "block" are explicitly forbidden.
