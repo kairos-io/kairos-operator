@@ -16,15 +16,21 @@ limitations under the License.
 
 package controller
 
-// Final Dockerfile is built by concatenating sections when buildOptions is set:
+// Final OCI build definition is built by concatenating sections when buildOptions is set:
 //   baseImageSection + userOciSpecContent (optional) + kairosInitSection
-// When only ociSpec (no buildOptions), the final Dockerfile is just the user's ociSpec.
-// See https://github.com/kairos-io/kairos/blob/master/images/Dockerfile
+// When only ociSpec (no buildOptions), the final definition is just the user's ociSpec.
+// Order matches https://github.com/kairos-io/kairos/blob/master/images/Dockerfile:
+//   global ARGs, then FROM kairos-init (stage alias), then FROM base-kairos + stage ARGs, then RUN.
+// The kairos-init FROM must be before base-kairos so both FROMs see the global ARGs.
 
-// DefaultDockerfileBaseImageSection is injected at the top when buildOptions is set.
+// DefaultOCISpecBaseImageSection is injected at the top when buildOptions is set.
 // BASE_IMAGE has no default; validation requires buildOptions.baseImage when buildOptions is set.
-const DefaultDockerfileBaseImageSection = `# base image section
+const DefaultOCISpecBaseImageSection = `# base image section
 ARG BASE_IMAGE
+ARG KAIROS_INIT=v0.7.0
+
+FROM quay.io/kairos/kairos-init:${KAIROS_INIT} AS kairos-init
+
 FROM ${BASE_IMAGE} AS base-kairos
 ARG MODEL=generic
 ARG TRUSTED_BOOT=false
@@ -34,10 +40,8 @@ ARG VERSION
 ARG FIPS=no-fips
 `
 
-// DefaultDockerfileKairosInitSection is injected at the end when buildOptions is set.
-const DefaultDockerfileKairosInitSection = `# kairos init section
-ARG KAIROS_INIT=v0.7.0
-FROM quay.io/kairos/kairos-init:${KAIROS_INIT} AS kairos-init
+// DefaultOCISpecKairosInitSection is the RUN that uses the kairos-init stage (injected at the end when buildOptions is set).
+const DefaultOCISpecKairosInitSection = `# kairos init section
 RUN --mount=type=bind,from=kairos-init,src=/kairos-init,dst=/kairos-init \
  if [ -n "${KUBERNETES_DISTRO}" ]; then \
  K8S_FLAG="-p ${KUBERNETES_DISTRO}"; \
@@ -57,15 +61,15 @@ RUN --mount=type=bind,from=kairos-init,src=/kairos-init,dst=/kairos-init \
  eval /kairos-init -l debug -s init -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\"
 `
 
-// AssembleFinalDockerfile returns the final OCI build definition.
+// AssembleFinalOCISpec returns the final OCI build definition.
 // When buildOptions is set: baseImageSection + middle + kairosInitSection.
 // When only ociSpec: middle is the sole content (no wrapping).
-func AssembleFinalDockerfile(buildOptionsSet bool, middleContent string) string {
+func AssembleFinalOCISpec(buildOptionsSet bool, middleContent string) string {
 	if !buildOptionsSet {
 		return middleContent
 	}
 	if middleContent != "" {
-		return DefaultDockerfileBaseImageSection + "\n" + middleContent + "\n" + DefaultDockerfileKairosInitSection
+		return DefaultOCISpecBaseImageSection + "\n" + middleContent + "\n" + DefaultOCISpecKairosInitSection
 	}
-	return DefaultDockerfileBaseImageSection + "\n" + DefaultDockerfileKairosInitSection
+	return DefaultOCISpecBaseImageSection + "\n" + DefaultOCISpecKairosInitSection
 }
