@@ -184,7 +184,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 							Namespace: namespace,
 						},
 						StringData: map[string]string{
-							"Dockerfile": "FROM ubuntu",
+							OCISpecSecretKey: "FROM ubuntu",
 						},
 						Type: "Opaque",
 					}, metav1.CreateOptions{})
@@ -192,7 +192,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					OCISpec: &buildv1alpha2.OCISpec{
-						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
+						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
 					},
 				}
 			})
@@ -347,7 +347,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 							Namespace: namespace,
 						},
 						StringData: map[string]string{
-							"Dockerfile": "FROM ubuntu",
+							OCISpecSecretKey: "FROM ubuntu",
 						},
 						Type: "Opaque",
 					}, metav1.CreateOptions{})
@@ -355,7 +355,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					OCISpec: &buildv1alpha2.OCISpec{
-						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
 						BuildContextVolume: "my-context",
 					},
 				}
@@ -619,14 +619,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 					&corev1.Secret{
 						ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
-						StringData: map[string]string{"Dockerfile": "FROM ubuntu"},
+						StringData: map[string]string{OCISpecSecretKey: "FROM ubuntu"},
 						Type:       "Opaque",
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					OCISpec: &buildv1alpha2.OCISpec{
-						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "Dockerfile"},
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
 						BuildContextVolume: "build-ctx",
 					},
 				}
@@ -656,19 +656,27 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
-		When("spec.image.buildOptions is set", func() {
+		When("spec.image.buildOptions is set (default Dockerfile mode)", func() {
 			BeforeEach(func() {
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					BuildOptions: &buildv1alpha2.BuildOptions{Version: "v3.6.0"},
 				}
 			})
 
-			It("startBuild returns an error (not yet implemented)", func() {
+			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
 				result, err := r.startBuild(context.TODO(), artifact)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("buildOptions"))
-				Expect(err.Error()).To(ContainSubstring("not yet implemented"))
-				Expect(result.RequeueAfter).To(BeZero())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				var pods corev1.PodList
+				Expect(r.List(context.TODO(), &pods, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+				})).To(Succeed())
+				Expect(pods.Items).ToNot(BeEmpty())
+				kaniko := findInitContainerByName(&pods.Items[0], "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+				Expect(kaniko.Args).To(ContainElement("--build-arg"))
+				Expect(kaniko.Args).To(ContainElement("VERSION=v3.6.0"))
 			})
 		})
 	})
@@ -757,7 +765,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 						Namespace: namespace,
 					},
 					StringData: map[string]string{
-						"Dockerfile": "FROM {{ .BaseImage }}\nRUN {{ .InstallCmd }}\n",
+						OCISpecSecretKey: "FROM {{ .BaseImage }}\nRUN {{ .InstallCmd }}\n",
 					},
 					Type: "Opaque",
 				}, metav1.CreateOptions{})
@@ -765,7 +773,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 			artifact.Spec.Image = buildv1alpha2.ImageSpec{
 				OCISpec: &buildv1alpha2.OCISpec{
-					Ref: &buildv1alpha2.SecretKeySelector{Name: ocispecSecretName, Key: "Dockerfile"},
+					Ref: &buildv1alpha2.SecretKeySelector{Name: ocispecSecretName, Key: OCISpecSecretKey},
 				},
 			}
 		})
@@ -790,7 +798,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("renders the OCI build definition with Secret values", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				// The rendered Secret should exist
@@ -798,12 +806,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM opensuse/leap:15.6\nRUN zypper install -y curl\n"))
 			})
 
 			It("updates the rendered Secret when the values Secret changes", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Update the values Secret
@@ -822,14 +830,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Image.OCISpec.Ref.Name = ocispecSecretName
 				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{Name: valuesSecretName}
 
-				err = r.renderOCISpec(context.TODO(), artifact)
+				err = r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
 			})
 		})
@@ -843,14 +851,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("renders the OCI build definition with inline values", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
 			})
 		})
@@ -877,14 +885,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("inline values take precedence over Secret values", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				// BaseImage from inline, InstallCmd from Secret
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
 			})
@@ -892,14 +900,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("no template values are provided", func() {
 			It("renders template variables as empty strings", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM \nRUN \n"))
 			})
 		})
@@ -954,7 +962,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 								},
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM other-image",
+								OCISpecSecretKey: "FROM other-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
@@ -962,7 +970,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 
 				It("refuses to update the Secret and returns an error", func() {
-					err := r.renderOCISpec(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
 					Expect(err.Error()).To(ContainSubstring(string(artifact.UID)))
@@ -979,7 +987,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 								Namespace: namespace,
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM unrelated-image",
+								OCISpecSecretKey: "FROM unrelated-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
@@ -987,7 +995,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 
 				It("refuses to update the Secret and returns an error", func() {
-					err := r.renderOCISpec(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
 				})
@@ -1013,7 +1021,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 								},
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM old-image",
+								OCISpecSecretKey: "FROM old-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
@@ -1027,14 +1035,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 
 				It("updates the Secret successfully", func() {
-					err := r.renderOCISpec(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 						context.TODO(), renderedSecretName, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
 
-					rendered := string(renderedSecret.Data["Dockerfile"])
+					rendered := string(renderedSecret.Data[OCISpecSecretKey])
 					Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
 				})
 			})
@@ -1045,15 +1053,15 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Image.OCISpec.Ref.Key = ""
 			})
 
-			It("defaults to reading the 'Dockerfile' key from the Secret", func() {
-				err := r.renderOCISpec(context.TODO(), artifact)
+			It("defaults to reading the ociSpec key from the Secret", func() {
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM \nRUN \n"))
 			})
 		})

@@ -199,16 +199,13 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		buildCtxVol = artifact.Spec.Image.OCISpec.BuildContextVolume
 	}
 	hasOCISpecRef := artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil
-	hasBuildOptions := artifact.Spec.Image.BuildOptions != nil
 
 	switch {
 	case artifact.Spec.Image.Ref != "":
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			unpackContainer("baseimage", r.ToolImage, artifact.Spec.Image.Ref, arch))
 	case hasOCISpecRef:
-		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(buildCtxVol)...)
-	case hasBuildOptions:
-		return &corev1.Pod{}
+		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(artifact, buildCtxVol, arch)...)
 	default:
 		return &corev1.Pod{}
 	}
@@ -493,6 +490,37 @@ func builderPodBaseVolumes(pvcName string, artifact *buildv1alpha2.OSArtifact) [
 	}
 }
 
+// kanikoBuildArgs returns kaniko --build-arg KEY=VALUE strings from BuildOptions (default Dockerfile ARGs).
+// Only used when artifact.Spec.Image.BuildOptions is set.
+func kanikoBuildArgs(artifact *buildv1alpha2.OSArtifact) []string {
+	if artifact.Spec.Image.BuildOptions == nil {
+		return nil
+	}
+	opts := artifact.Spec.Image.BuildOptions
+	var args []string
+	addArg := func(key, value string) {
+		if value != "" {
+			args = append(args, "--build-arg", key+"="+value)
+		}
+	}
+	addArg("VERSION", opts.Version)
+	addArg("BASE_IMAGE", opts.BaseImage)
+	addArg("MODEL", opts.Model)
+	addArg("KUBERNETES_DISTRO", opts.KubernetesDistro)
+	addArg("KUBERNETES_VERSION", opts.KubernetesVersion)
+	if opts.TrustedBoot {
+		addArg("TRUSTED_BOOT", "true")
+	} else {
+		addArg("TRUSTED_BOOT", "false")
+	}
+	if opts.FIPS {
+		addArg("FIPS", "fips")
+	} else {
+		addArg("FIPS", "no-fips")
+	}
+	return args
+}
+
 func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
 	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
 		volumes = append(volumes, corev1.Volume{
@@ -522,7 +550,7 @@ func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.A
 	return volumes
 }
 
-func baseImageBuildContainers(buildContextVolume string) []corev1.Container {
+func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string) []corev1.Container {
 	kanikoVolumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "rootfs",
@@ -541,20 +569,26 @@ func baseImageBuildContainers(buildContextVolume string) []corev1.Container {
 		})
 	}
 
+	kanikoArgs := []string{
+		"--dockerfile", "ocispec/"+OCISpecSecretKey,
+		"--context", "dir:///workspace",
+		"--destination", "whatever", // TODO: when spec.image.push is true, use builtImageName and push (mount PushCredentialsSecretRef for kaniko auth)
+		"--tar-path", "/rootfs/image.tar",
+		"--no-push",
+		"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
+	}
+	kanikoArgs = append(kanikoArgs, kanikoBuildArgs(artifact)...)
+	if arch != "" {
+		kanikoArgs = append(kanikoArgs, "--customPlatform=linux/"+arch)
+	}
+
 	return []corev1.Container{
 		{
 			ImagePullPolicy: corev1.PullAlways,
 			Name:            "kaniko-build",
 			Image:           "gcr.io/kaniko-project/executor:latest",
-			Args: []string{
-				"--dockerfile", "ocispec/Dockerfile",
-				"--context", "dir:///workspace",
-				"--destination", "whatever", // TODO: when spec.image.push is true, use builtImageName and push (mount PushCredentialsSecretRef for kaniko auth)
-				"--tar-path", "/rootfs/image.tar",
-				"--no-push",
-				"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
-			},
-			VolumeMounts: kanikoVolumeMounts,
+			Args:            kanikoArgs,
+			VolumeMounts:    kanikoVolumeMounts,
 		},
 		{
 			ImagePullPolicy: corev1.PullAlways,
