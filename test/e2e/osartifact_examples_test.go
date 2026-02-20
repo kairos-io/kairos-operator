@@ -310,8 +310,8 @@ spec:
 		It("combines templated Dockerfile (dashboard + user parts), importer, and buildImage", func() {
 			templateSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "template-", Namespace: "default"},
-				StringData: map[string]string{ // TODO: remove "FROM" as soon as we implement buildOptions + ociSpec
-					"ociSpec": "FROM {{ .BaseImage }}\n{{ .DashboardPart }}\n{{ .UserPart }}\n",
+				StringData: map[string]string{
+					"ociSpec": "{{ .DashboardPart }}\n{{ .UserPart }}\n",
 				},
 				Type: corev1.SecretTypeOpaque,
 			}, metav1.CreateOptions{})
@@ -320,7 +320,6 @@ spec:
 			valuesSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "values-", Namespace: "default"},
 				StringData: map[string]string{
-					"BaseImage":     HadronPreKairosified,
 					"DashboardPart": "RUN echo 'dashboard-part' > /etc/dashboard-done.txt\nCOPY dashboard-bundle.txt /etc/dashboard-bundle.txt\n",
 					"UserPart":      "RUN echo 'user-part' > /etc/user-done.txt\n",
 				},
