@@ -109,7 +109,7 @@ func joinQuoted(ss []string) string {
 	return out
 }
 
-var _ = FDescribe("OSArtifact examples", func() {
+var _ = Describe("OSArtifact examples", func() {
 	var tc *TestClients
 
 	BeforeEach(func() {
