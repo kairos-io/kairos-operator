@@ -156,7 +156,7 @@ spec:
 	})
 
 	Describe("OCISpec only (custom Dockerfile)", func() {
-		It("builds from a custom Dockerfile and respects builtImageName", func() {
+		It("builds from a custom Dockerfile and respects buildImage", func() {
 			secret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "ocispec-", Namespace: "default"},
 				StringData: map[string]string{
@@ -178,7 +178,10 @@ spec:
       ref:
         name: %s
         key: Dockerfile
-    builtImageName: my-registry.example.com/e2e/oci-only-built:latest
+    buildImage:
+      registry: my-registry.example.com
+      repository: e2e/oci-only-built
+      tag: latest
   artifacts:
     arch: amd64
     iso: true
@@ -304,7 +307,7 @@ spec:
 	})
 
 	Describe("OCISpec + BuildOptions with template and importer", func() {
-		It("combines templated Dockerfile (dashboard + user parts), importer, and builtImageName", func() {
+		It("combines templated Dockerfile (dashboard + user parts), importer, and buildImage", func() {
 			templateSecret, err := clientset.CoreV1().Secrets("default").Create(context.TODO(), &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{GenerateName: "template-", Namespace: "default"},
 				StringData: map[string]string{ // TODO: remove "FROM" as soon as we implement buildOptions + ociSpec
@@ -346,7 +349,10 @@ spec:
       model: generic
       kubernetesDistro: k3s
       kubernetesVersion: "v1.28.0"
-    builtImageName: my-registry.example.com/e2e/dashboard-user-kairos:v3.6.0
+    buildImage:
+      registry: my-registry.example.com
+      repository: e2e/dashboard-user-kairos
+      tag: v3.6.0
   volumes:
     - name: build-context
       emptyDir: {}

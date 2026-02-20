@@ -58,7 +58,10 @@ spec:
       model: generic
       kubernetesDistro: k3s
       kubernetesVersion: "v1.28.0"
-    builtImageName: my-registry.example.com/my-ns/dashboard-user-kairos:v3.6.0
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/dashboard-user-kairos
+      tag: v3.6.0
     push: true
     pushCredentialsSecretRef:
       name: registry-credentials

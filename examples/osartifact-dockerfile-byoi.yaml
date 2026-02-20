@@ -56,7 +56,10 @@ spec:
       ref:
         name: my-kairos-ocispec
         key: Dockerfile
-    builtImageName: "my-registry.example.com/my-custom-kairos:latest"
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-custom-kairos
+      tag: latest
   artifacts:
     iso: true
     cloudConfigRef:

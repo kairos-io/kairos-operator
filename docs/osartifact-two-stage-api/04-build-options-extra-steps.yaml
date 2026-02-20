@@ -18,7 +18,10 @@ spec:
       preKairosInitSteps: |
         RUN apt-get update && apt-get install -y --no-install-recommends \
           curl jq && rm -rf /var/lib/apt/lists/*
-    builtImageName: my-registry.example.com/my-ns/standard-kairos-extra:v3.6.0
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/standard-kairos-extra
+      tag: v3.6.0
     push: true
     pushCredentialsSecretRef:
       name: registry-credentials

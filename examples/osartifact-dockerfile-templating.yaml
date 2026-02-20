@@ -55,7 +55,10 @@ spec:
         name: my-template-values
       templateValues:
         KairosVersion: "v3.6.1"  # overrides the v3.6.0 from the Secret
-    builtImageName: "my-registry.example.com/my-templated-kairos:latest"
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-templated-kairos
+      tag: latest
   artifacts:
     iso: true
   exporters:

@@ -116,12 +116,12 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("at least one of buildOptions or ociSpec must be set"))
 		})
 
-		It("returns error when builtImageName set and ref set (mutually exclusive)", func() {
+		It("returns error when buildImage set and ref set (mutually exclusive)", func() {
 			spec := validImageRef("quay.io/kairos/kairos:v1")
-			spec.Image.BuiltImageName = "my-registry.io/my-image:tag"
+			spec.Image.BuildImage = &v1alpha2.BuildImage{Registry: "my-registry.io", Repository: "my-image", Tag: "tag"}
 			err := spec.Validate()
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("builtImageName"))
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
 			Expect(err.Error()).To(ContainSubstring("ref must be empty"))
 		})
 
@@ -211,14 +211,27 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
-		It("returns nil when builtImageName set and building (ref empty)", func() {
+		It("returns nil when buildImage set and building (ref empty)", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
-					BuiltImageName: "my-registry.io/my-image:tag",
-					OCISpec:        &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"}},
+					BuildImage: &v1alpha2.BuildImage{Registry: "my-registry.io", Repository: "my-image", Tag: "tag"},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"}},
 				},
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
+		It("returns error when buildImage set but tag missing", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "img", Tag: ""},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "Dockerfile"}},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
+			Expect(err.Error()).To(ContainSubstring("registry, repository, and tag are all required"))
 		})
 	})
 

@@ -52,8 +52,8 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 
 // builtImageName returns the name of the built image (for the packed tarball). Only used when building; defaults to the OSArtifact name.
 func builtImageName(artifact *buildv1alpha2.OSArtifact) string {
-	if artifact.Spec.Image.BuiltImageName != "" {
-		return artifact.Spec.Image.BuiltImageName
+	if artifact.Spec.Image.BuildImage != nil && artifact.Spec.Image.BuildImage.ImageRef() != "" {
+		return artifact.Spec.Image.BuildImage.ImageRef()
 	}
 	return artifact.Name
 }

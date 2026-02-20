@@ -15,7 +15,10 @@ spec:
       model: generic
       kubernetesDistro: k0s
       kubernetesVersion: "v1.28.0"
-    builtImageName: my-registry.example.com/my-ns/kairosified-base:v3.6.0
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/kairosified-base
+      tag: v3.6.0
     push: true
     pushCredentialsSecretRef:
       name: registry-credentials

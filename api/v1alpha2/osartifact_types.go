@@ -33,6 +33,26 @@ var reservedVolumeNames = map[string]bool{
 	"cloudconfig": true,
 }
 
+// BuildImage specifies the registry, repository, and tag of the built image. Used when building (Ref empty); makes it easy for tools like updatecli or renovate to bump only the tag.
+type BuildImage struct {
+	// Registry is the image registry (e.g. myregistry.com).
+	Registry string `json:"registry"`
+
+	// Repository is the image repository and path (e.g. my-ns/myimage).
+	Repository string `json:"repository"`
+
+	// Tag is the image tag (e.g. v3.6.0).
+	Tag string `json:"tag"`
+}
+
+// ImageRef returns the full image reference (registry/repository:tag).
+func (b *BuildImage) ImageRef() string {
+	if b == nil {
+		return ""
+	}
+	return b.Registry + "/" + b.Repository + ":" + b.Tag
+}
+
 // ImageSpec describes how to obtain the Stage 1 OCI image (pre-built or built from a definition).
 //
 // When Ref is set, the image is pre-built (no build). BuildOptions and OCISpec are ignored.
@@ -56,9 +76,9 @@ type ImageSpec struct {
 	// +optional
 	OCISpec *OCISpec `json:"ociSpec,omitempty"`
 
-	// BuiltImageName is the name of the built image (e.g. the reference embedded in the packed tarball). Only used when building (Ref empty); ignored when Ref is set. When empty, defaults to the OSArtifact resource name. Mutually exclusive with Ref: when set, Ref must be empty.
+	// BuildImage is the registry, repository, and tag of the built image. Only used when building (Ref empty); when set, Ref must be empty. When empty, the built image name defaults to the OSArtifact resource name. Splitting into registry/repository/tag makes it easier for tools like updatecli or renovate to bump only the tag.
 	// +optional
-	BuiltImageName string `json:"builtImageName,omitempty"`
+	BuildImage *BuildImage `json:"buildImage,omitempty"`
 
 	// Push, when true, pushes the built image to a registry. Only used when building; ignored when Ref is set.
 	// TODO: implement push in controller (kaniko --destination + auth from PushCredentialsSecretRef; today we always use --no-push).
@@ -263,9 +283,14 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 	hasBuildOptions := img.BuildOptions != nil
 	hasOCISpec := img.OCISpec != nil && img.OCISpec.Ref != nil
 
-	// BuiltImageName is only used when building; mutually exclusive with Ref.
-	if img.BuiltImageName != "" && hasRef {
-		return fmt.Errorf("spec.image.builtImageName is only used when building; ref must be empty when builtImageName is set")
+	// BuildImage is only used when building; mutually exclusive with Ref.
+	if img.BuildImage != nil && img.BuildImage.ImageRef() != "" && hasRef {
+		return fmt.Errorf("spec.image.buildImage is only used when building; ref must be empty when buildImage is set")
+	}
+	if img.BuildImage != nil && (img.BuildImage.Registry != "" || img.BuildImage.Repository != "" || img.BuildImage.Tag != "") {
+		if img.BuildImage.Registry == "" || img.BuildImage.Repository == "" || img.BuildImage.Tag == "" {
+			return fmt.Errorf("spec.image.buildImage: when set, registry, repository, and tag are all required")
+		}
 	}
 
 	if hasRef {

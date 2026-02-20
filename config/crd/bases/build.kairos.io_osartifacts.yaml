@@ -3835,6 +3835,19 @@ spec:
                 type: array
               image:
                 properties:
+                  buildImage:
+                    properties:
+                      registry:
+                        type: string
+                      repository:
+                        type: string
+                      tag:
+                        type: string
+                    required:
+                    - registry
+                    - repository
+                    - tag
+                    type: object
                   buildOptions:
                     properties:
                       baseImage:
@@ -3854,8 +3867,6 @@ spec:
                     required:
                     - version
                     type: object
-                  builtImageName:
-                    type: string
                   ociSpec:
                     properties:
                       buildContextVolume:
