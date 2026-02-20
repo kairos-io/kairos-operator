@@ -659,7 +659,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 		When("spec.image.buildOptions is set (default Dockerfile mode)", func() {
 			BeforeEach(func() {
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
-					BuildOptions: &buildv1alpha2.BuildOptions{Version: "v3.6.0"},
+					BuildOptions: &buildv1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:22.04"},
 				}
 			})
 

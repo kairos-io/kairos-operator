@@ -138,7 +138,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 		It("returns error when buildOptions without version", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
-					BuildOptions: &v1alpha2.BuildOptions{},
+					BuildOptions: &v1alpha2.BuildOptions{BaseImage: "ubuntu:22.04"},
 				},
 			}
 			err := spec.Validate()
@@ -146,15 +146,26 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("buildOptions.version is required"))
 		})
 
+		It("returns error when buildOptions without baseImage", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0"},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buildOptions.baseImage is required"))
+		})
+
 		It("returns nil when only ref", func() {
 			spec := validImageRef("quay.io/kairos/kairos:v1")
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
-		It("returns nil when only buildOptions with version", func() {
+		It("returns nil when only buildOptions with version and baseImage", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
-					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0"},
+					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:22.04"},
 				},
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
@@ -174,7 +185,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 		It("returns nil when both buildOptions and ociSpec (operator injects FROM + kairos-init)", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
-					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0"},
+					BuildOptions: &v1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:22.04"},
 					OCISpec: &v1alpha2.OCISpec{
 						Ref: &v1alpha2.SecretKeySelector{Name: "my-ocispec", Key: "ociSpec"},
 					},

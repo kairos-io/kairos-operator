@@ -22,8 +22,9 @@ package controller
 // See https://github.com/kairos-io/kairos/blob/master/images/Dockerfile
 
 // DefaultDockerfileBaseImageSection is injected at the top when buildOptions is set.
+// BASE_IMAGE has no default; validation requires buildOptions.baseImage when buildOptions is set.
 const DefaultDockerfileBaseImageSection = `# base image section
-ARG BASE_IMAGE=ubuntu:20.04
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS base-kairos
 ARG MODEL=generic
 ARG TRUSTED_BOOT=false
