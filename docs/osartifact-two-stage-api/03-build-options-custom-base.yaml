@@ -1,0 +1,33 @@
+# -----------------------------------------------------------------------------
+# Stage 1 option B: Build with options, baseImage = your image (kairosify) + push
+# Stage 2: Generate ISO
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: kairosify-custom-base
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      version: v3.6.0
+      baseImage: my-registry.example.com/my-org/base:24.04
+      model: generic
+      kubernetesDistro: k0s
+      kubernetesVersion: "v1.28.0"
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/kairosified-base
+      tag: v3.6.0
+    push: true
+    pushCredentialsSecretRef:
+      name: registry-credentials
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []

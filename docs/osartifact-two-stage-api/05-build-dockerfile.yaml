@@ -1,0 +1,51 @@
+# -----------------------------------------------------------------------------
+# Stage 1 option C: Build with your OCI build definition (full control) + push
+# Stage 2: Generate ISO
+# -----------------------------------------------------------------------------
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: my-ocispec
+  namespace: default
+type: Opaque
+stringData:
+  Dockerfile: |
+    FROM quay.io/kairos/kairos-init:v0.7.0 AS kairos-init
+    FROM opensuse/leap:15.6
+    ARG MODEL=generic
+    ARG VERSION=v3.6.0
+    COPY --from=kairos-init /kairos-init /kairos-init
+    RUN /kairos-init -l debug -s install -m "${MODEL}" --version "${VERSION}" && \
+        /kairos-init -l debug -s init -m "${MODEL}" --version "${VERSION}" && \
+        rm -f /kairos-init
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: full-control-ocispec
+  namespace: default
+spec:
+  image:
+    ociSpec:
+      ref:
+        name: my-ocispec
+        key: Dockerfile
+      # templateValuesFrom: { name: my-template-values }
+      # templateValues: { SomeVar: "value" }
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/full-control-kairos
+      tag: latest
+    push: true
+    pushCredentialsSecretRef:
+      name: registry-credentials
+
+  artifacts:
+    arch: amd64
+    iso: true
+    cloudConfigRef:
+      name: cloud-config
+      key: userdata
+
+  exporters: []

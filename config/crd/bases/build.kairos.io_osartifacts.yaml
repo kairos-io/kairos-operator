@@ -30,52 +30,51 @@ spec:
             type: object
           spec:
             properties:
-              arch:
-                enum:
-                - amd64
-                - arm64
-                type: string
-              azureImage:
-                type: boolean
-              baseImageDockerfile:
+              artifacts:
                 properties:
-                  key:
+                  arch:
+                    enum:
+                    - amd64
+                    - arm64
                     type: string
-                  name:
+                  azureImage:
+                    type: boolean
+                  bundles:
+                    items:
+                      type: string
+                    type: array
+                  cloudConfigRef:
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  cloudImage:
+                    type: boolean
+                  diskSize:
                     type: string
-                required:
-                - name
+                  gceImage:
+                    type: boolean
+                  grubConfig:
+                    type: string
+                  iso:
+                    type: boolean
+                  kairosRelease:
+                    type: string
+                  netboot:
+                    type: boolean
+                  netbootURL:
+                    type: string
+                  osRelease:
+                    type: string
+                  overlayISOVolume:
+                    type: string
+                  overlayRootfsVolume:
+                    type: string
                 type: object
-              baseImageName:
-                type: string
-              bundles:
-                items:
-                  type: string
-                type: array
-              cloudConfigRef:
-                properties:
-                  key:
-                    type: string
-                  name:
-                    type: string
-                required:
-                - name
-                type: object
-              cloudImage:
-                type: boolean
-              diskSize:
-                type: string
-              dockerfileTemplateValues:
-                additionalProperties:
-                  type: string
-                type: object
-              dockerfileTemplateValuesFrom:
-                properties:
-                  name:
-                    default: ""
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
               exporters:
                 items:
                   properties:
@@ -3834,12 +3833,81 @@ spec:
                   - template
                   type: object
                 type: array
-              gceImage:
-                type: boolean
-              grubConfig:
-                type: string
-              imageName:
-                type: string
+              image:
+                properties:
+                  buildImage:
+                    properties:
+                      registry:
+                        type: string
+                      repository:
+                        type: string
+                      tag:
+                        type: string
+                    required:
+                    - registry
+                    - repository
+                    - tag
+                    type: object
+                  buildOptions:
+                    properties:
+                      baseImage:
+                        type: string
+                      fips:
+                        type: boolean
+                      kubernetesDistro:
+                        type: string
+                      kubernetesVersion:
+                        type: string
+                      model:
+                        type: string
+                      trustedBoot:
+                        type: boolean
+                      version:
+                        type: string
+                    required:
+                    - version
+                    type: object
+                  ociSpec:
+                    properties:
+                      buildContextVolume:
+                        type: string
+                      ref:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      templateValues:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      templateValuesFrom:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                  push:
+                    type: boolean
+                  pushCredentialsSecretRef:
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  ref:
+                    type: string
+                type: object
               imagePullSecrets:
                 items:
                   properties:
@@ -4531,16 +4599,6 @@ spec:
                   - name
                   type: object
                 type: array
-              iso:
-                type: boolean
-              kairosRelease:
-                type: string
-              netboot:
-                type: boolean
-              netbootURL:
-                type: string
-              osRelease:
-                type: string
               volume:
                 properties:
                   accessModes:
@@ -4627,15 +4685,6 @@ spec:
                   volumeMode:
                     type: string
                   volumeName:
-                    type: string
-                type: object
-              volumeBindings:
-                properties:
-                  buildContext:
-                    type: string
-                  overlayISO:
-                    type: string
-                  overlayRootfs:
                     type: string
                 type: object
               volumes:
@@ -5419,6 +5468,8 @@ spec:
                   - name
                   type: object
                 type: array
+            required:
+            - image
             type: object
           status:
             properties:

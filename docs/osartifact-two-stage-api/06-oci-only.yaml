@@ -1,0 +1,30 @@
+# -----------------------------------------------------------------------------
+# Stage 1 only: Build with options + push. No stage 2 (no ISO/disk).
+# -----------------------------------------------------------------------------
+# When you only want to produce and push OCI images, omit artifacts or leave
+# all artifact types disabled.
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: oci-only-build
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      version: v3.6.0
+      baseImage: ubuntu:24.04
+      model: generic
+      kubernetesDistro: k3s
+      kubernetesVersion: "v1.28.0"
+    buildImage:
+      registry: my-registry.example.com
+      repository: my-ns/kairos-oci
+      tag: v3.6.0
+    push: true
+    pushCredentialsSecretRef:
+      name: registry-credentials
+
+  # No artifacts: we only build and push the OCI image.
+  # artifacts: {}
+  # exporters: []
