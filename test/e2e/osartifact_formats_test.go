@@ -92,8 +92,10 @@ var _ = Describe("OSArtifact Format Tests", func() {
 				echo "Raw disk verification passed: $raw_file"
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
-				ImageName:  "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
-				CloudImage: true,
+				Image: buildv1alpha2.ImageSpec{
+					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{CloudImage: true},
 			}
 			artifactName, artifactLabelSelector = createArtifactWithExporter(tc, "cloudimage-", spec, verifyScript)
 		})
@@ -117,10 +119,14 @@ var _ = Describe("OSArtifact Format Tests", func() {
 					GenerateName: "netboot-",
 				},
 				Spec: buildv1alpha2.OSArtifactSpec{
-					ImageName:  "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
-					ISO:        true,
-					Netboot:    true,
-					NetbootURL: "http://example.com",
+					Image: buildv1alpha2.ImageSpec{
+						Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+					},
+					Artifacts: &buildv1alpha2.ArtifactSpec{
+						ISO:        true,
+						Netboot:    true,
+						NetbootURL: "http://example.com",
+					},
 					Exporters: []batchv1.JobSpec{
 						{
 							Template: corev1.PodTemplateSpec{
@@ -228,8 +234,10 @@ var _ = Describe("OSArtifact Format Tests", func() {
 				echo "VHD verification passed: $vhd_file"
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
-				ImageName:  "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
-				AzureImage: true,
+				Image: buildv1alpha2.ImageSpec{
+					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{AzureImage: true},
 			}
 			artifactName, artifactLabelSelector = createArtifactWithExporter(tc, "azure-", spec, verifyScript)
 		})
@@ -278,8 +286,10 @@ var _ = Describe("OSArtifact Format Tests", func() {
 				echo "GCE verification passed: $gce_file"
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
-				ImageName: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
-				GCEImage:  true,
+				Image: buildv1alpha2.ImageSpec{
+					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{GCEImage: true},
 			}
 			artifactName, artifactLabelSelector = createArtifactWithExporter(tc, "gce-", spec, verifyScript)
 		})
