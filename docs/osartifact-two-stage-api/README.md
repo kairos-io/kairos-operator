@@ -106,6 +106,9 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 
 ### Design decisions (short)
 
-- **Two modes only:** (1) No custom OCI spec → build options + default build definition. (2) User supplies full OCI build definition. No “partial” definition or operator-injected kairos-init block.
-- **User OCI build definition = final image:** Operator does not run kairos-init on top of the user’s build. User’s build definition must produce a Kairos-ready image (e.g. run kairos-init inside it).
+- **Image build modes (when `image.ref` is empty):**
+  1. **BuildOptions only (no custom OCI spec):** Operator uses the embedded default OCI build definition (matching the kairos/images Dockerfile ARGs), injects `PreKairosInitSteps`/`kairos-init` as described above, and applies `buildOptions` as build args.
+  2. **OCISpec only (no BuildOptions):** User-supplied OCI build definition is used as-is; the operator does not inject `kairos-init` or modify the build stages. The user’s definition must produce a Kairos-ready image (e.g. by running `kairos-init` inside it).
+  3. **OCISpec + BuildOptions:** Operator combines them by using `buildOptions.baseImage` (when set) as the `FROM` at the top of the build and appending the `kairos-init` block at the end, while passing `buildOptions` as build args into the user-supplied OCI build definition.
+- **User OCI build definition = final image segment:** In modes (2) and (3) the user-controlled OCI build definition is treated as the final image content it defines; the operator only wraps it in (3) and does not alter its internal steps.
 - **Volume bindings:** Scoped by stage (build context under image; overlays under artifacts) so each binding lives where it is used.
