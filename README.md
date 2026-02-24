@@ -39,7 +39,7 @@ ginkgo test/e2e
 ginkgo internal/controller
 ```
 
-Note: OSArtifact controller tests require `USE_EXISTING_CLUSTER=true` and will be skipped in the unit test suite. Use `make controller-tests` to run them with a real cluster.
+Note: OSArtifact controller tests require `USE_EXISTING_CLUSTER=true` and will be skipped in the unit test suite. Use `make controller-tests` to run them: it sets up a Kind cluster and installs CRDs but does not deploy the operator, so the test (using a direct client) is the only actor.
 
 ## Contributing
 

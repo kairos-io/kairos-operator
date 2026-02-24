@@ -160,9 +160,10 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
-// checkSecretOwnership verifies that a Secret with the given name either does not exist,
-// is owned by the specified OSArtifact, or has no owner (so we can adopt it in CreateOrUpdate).
-// Returns an error only if the Secret exists and is owned by a different resource.
+// checkSecretOwnership verifies that a Secret with the given name either does not exist
+// or is owned by the specified OSArtifact. Returns an error if the Secret exists and is
+// not owned by this OSArtifact (whether it has another owner or no owner), so we never
+// overwrite a user-created Secret that happens to match the rendered name.
 func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretName, namespace string, owner *buildv1alpha2.OSArtifact) error {
 	existingSecret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, existingSecret)
@@ -174,11 +175,7 @@ func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretN
 		if metav1.IsControlledBy(existingSecret, owner) {
 			return nil // already ours
 		}
-		// Secret exists but is not owned by us. Refuse only if it has another owner (would block adoption).
-		if len(existingSecret.OwnerReferences) > 0 {
-			return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
-		}
-		// No owner: we will adopt it in CreateOrUpdate so it gets cascade-deleted with the artifact.
+		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
 	}
 	return nil
 }
@@ -299,6 +296,10 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 		return ctrl.Result{Requeue: true}, err
 	}
 
+	// Refetch so we have the latest resourceVersion before status update (avoids 409 if the object was updated elsewhere).
+	if err := r.Get(ctx, client.ObjectKeyFromObject(artifact), artifact); err != nil {
+		return ctrl.Result{Requeue: true}, err
+	}
 	artifact.Status.Phase = buildv1alpha2.Building
 	if err := r.Status().Update(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err

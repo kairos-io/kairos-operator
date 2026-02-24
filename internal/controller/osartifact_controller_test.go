@@ -99,8 +99,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 	}
 
 	BeforeEach(func() {
-		// These tests require a real cluster (USE_EXISTING_CLUSTER=true)
-		// Skip if running in envtest environment
+		// These tests require a real cluster (USE_EXISTING_CLUSTER=true). Use `make controller-tests`
+		// which sets up Kind and installs CRDs but does not deploy the operator. The test uses a
+		// direct client and is the only actor creating resources (e.g. the rendered OCI spec Secret).
 		if os.Getenv("USE_EXISTING_CLUSTER") != "true" {
 			Skip("OSArtifact tests require USE_EXISTING_CLUSTER=true - skipping in envtest environment")
 		}
@@ -661,6 +662,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{
 					BuildOptions: &buildv1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:22.04"},
 				}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 			})
 
 			It("startBuild succeeds and creates a pod with kaniko build-args", func() {

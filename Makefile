@@ -191,8 +191,11 @@ kind-setup-image: docker-build ## Load the controller image into the kind cluste
 kind-teardown: ## Delete the kind cluster
 	$(KIND) delete cluster --name $(CLUSTER_NAME) || true
 
+# Controller tests use a real cluster (Kind) but do NOT deploy the operator. The test uses a
+# direct client and calls reconciler methods directly, so the test is the only actor creating
+# resources (e.g. the rendered OCI spec Secret). This avoids races and keeps expectations clear.
 .PHONY: controller-tests
-controller-tests: kind-setup install undeploy-dev deploy-dev ## Run controller tests that require a real cluster (OSArtifact tests)
+controller-tests: kind-setup install ## Run controller tests that require a real cluster (OSArtifact tests)
 	USE_EXISTING_CLUSTER=true go test ./internal/controller/... -v -ginkgo.v -ginkgo.focus="OSArtifact"
 
 ##@ Dependencies
