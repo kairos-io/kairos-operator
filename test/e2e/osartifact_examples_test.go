@@ -68,6 +68,14 @@ iso_file=$(ls /artifacts/*.iso 2>/dev/null | head -n1)
 echo "PASS: ISO produced"`
 }
 
+func verifyPackedImageExists() string {
+	return `set -e
+tar_file=$(ls /artifacts/*.tar 2>/dev/null | head -n1)
+[ -z "$tar_file" ] && echo "ERROR: no .tar file found" && ls -la /artifacts/ && exit 1
+[ ! -s "$tar_file" ] && echo "ERROR: tarball empty" && exit 1
+echo "PASS: packed image tarball produced"`
+}
+
 // verifyFilesInSquashfs builds a script that extracts ISO, finds squashfs, extracts the given paths, and checks each contains expected content.
 func verifyFilesInSquashfs(pathToContent map[string]string) string {
 	script := `
@@ -138,20 +146,34 @@ spec:
 	})
 
 	Describe("BuildOptions only (default Dockerfile)", func() {
-		It("is skipped until BuildOptions-only is implemented", func() {
-			Skip("image.buildOptions (default OCI build mode) is not yet implemented")
-		})
-	})
-
-	Describe("BuildOptions with custom baseImage", func() {
-		It("is skipped until BuildOptions-only is implemented", func() {
-			Skip("image.buildOptions (default OCI build mode) is not yet implemented")
-		})
-	})
-
-	Describe("BuildOptions with preKairosInitSteps", func() {
-		It("is skipped until BuildOptions-only is implemented", func() {
-			Skip("image.buildOptions (default OCI build mode) is not yet implemented")
+		It("kairosifies the base image (default OCI spec) and produces an ISO", func() {
+			// buildOptions means kairosify: baseImage is a non-kairosified base (e.g. HadronBase).
+			// No ociSpec; operator uses default Dockerfile (FROM baseImage + kairos-init).
+			// Include k3s so we verify the full kairosify path works.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: buildoptions-only
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      baseImage: %s
+      version: v3.6.0
+      model: generic
+      kubernetesDistro: k3s
+    buildImage:
+      registry: my-registry.example.com
+      repository: e2e/buildoptions-only
+      tag: v3.6.0
+  artifacts:
+    arch: amd64
+    iso: true
+`, HadronBase)
+			artifact := artifactFromYAML(y)
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "buildoptions-", verifyISOExists())
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
 		})
 	})
 
@@ -194,8 +216,30 @@ spec:
 	})
 
 	Describe("OCI-only build (no Stage 2)", func() {
-		It("is skipped until BuildOptions-only is implemented", func() {
-			Skip("image.buildOptions (default OCI build mode) is not yet implemented")
+		It("builds OCI image only (no ISO/artifacts) and produces packed tarball in /artifacts", func() {
+			// No spec.artifacts: controller runs Stage 1 (build + createImageContainer) only; no build-iso.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: oci-only
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      baseImage: %s
+      version: v3.6.0
+      model: generic
+      kubernetesDistro: k3s
+    buildImage:
+      registry: my-registry.example.com
+      repository: e2e/oci-only-built
+      tag: latest
+`, HadronBase)
+			artifact := artifactFromYAML(y)
+			// Exporter runs verifyPackedImageExists(): ensures /artifacts/*.tar exists and is non-empty; test fails otherwise.
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "oci-only-", verifyPackedImageExists())
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
 		})
 	})
 
