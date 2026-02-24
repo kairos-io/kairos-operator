@@ -347,7 +347,7 @@ spec:
       version: v3.6.0
       model: generic
       kubernetesDistro: k3s
-      kubernetesVersion: "v1.28.0"
+      kubernetesVersion: "v1.35.1+k3s1"
     buildImage:
       registry: my-registry.example.com
       repository: e2e/dashboard-user-kairos

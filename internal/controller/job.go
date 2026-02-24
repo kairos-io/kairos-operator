@@ -569,8 +569,10 @@ func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVo
 		})
 	}
 
+	// Use absolute path so Kaniko resolves the file correctly when both
+	// build-context (at /workspace) and ocispec (at /workspace/ocispec) are mounted.
 	kanikoArgs := []string{
-		"--dockerfile", "ocispec/" + OCISpecSecretKey,
+		"--dockerfile", "/workspace/ocispec/" + OCISpecSecretKey,
 		"--context", "dir:///workspace",
 		"--destination", "whatever", // TODO: when spec.image.push is true, use builtImageName and push (mount PushCredentialsSecretRef for kaniko auth)
 		"--tar-path", "/rootfs/image.tar",
@@ -589,6 +591,7 @@ func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVo
 			Image:           "gcr.io/kaniko-project/executor:latest",
 			Args:            kanikoArgs,
 			VolumeMounts:    kanikoVolumeMounts,
+			SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		},
 		{
 			ImagePullPolicy: corev1.PullAlways,
