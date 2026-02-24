@@ -98,9 +98,9 @@ rm -rf /tmp/rootfs && mkdir -p /tmp/rootfs
 	for path, content := range pathToContent {
 		script += fmt.Sprintf(`
 [ ! -f /tmp/rootfs/%s ] && echo "ERROR: file not found: %s" && exit 1
-grep -q %q /tmp/rootfs/%s || (echo "ERROR: %s content mismatch" && exit 1)
+grep -q %q /tmp/rootfs/%s || (echo "ERROR: %s content mismatch" && echo "--- content of %s ---" && cat /tmp/rootfs/%s && exit 1)
 echo "PASS: %s"
-`, path, path, content, path, path, path)
+`, path, path, content, path, path, path, path, path)
 	}
 	script += "\necho \"All checks passed\"\n"
 	return script
@@ -173,6 +173,38 @@ spec:
 `, HadronBase)
 			artifact := artifactFromYAML(y)
 			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "buildoptions-", verifyISOExists())
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+
+		It("builds with fips: true and produces an ISO with FIPS enabled in the image", func() {
+			// Full build with buildOptions.fips: true. Verifies the Dockerfile built successfully
+			// and that kairos-init received --fips (not as a quoted string): the image must contain
+			// /etc/kairos-release with KAIROS_FIPS=true (written by kairos-init when --fips is used).
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: buildoptions-fips
+  namespace: default
+spec:
+  image:
+    buildOptions:
+      baseImage: %s
+      version: v3.6.0
+      model: generic
+      fips: true
+    buildImage:
+      registry: my-registry.example.com
+      repository: e2e/buildoptions-fips
+      tag: v3.6.0
+  artifacts:
+    arch: amd64
+    iso: true
+`, HadronBase)
+			artifact := artifactFromYAML(y)
+			// Verify ISO exists and rootfs contains KAIROS_FIPS="true" (proves --fips was applied).
+			verifyScript := verifyFilesInSquashfs(map[string]string{"etc/kairos-release": `KAIROS_FIPS="true"`})
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "buildoptions-fips-", verifyScript)
 			runArtifactTest(tc, artifactName, artifactLabelSelector)
 		})
 	})

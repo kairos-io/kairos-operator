@@ -510,13 +510,9 @@ func kanikoBuildArgs(artifact *buildv1alpha2.OSArtifact) []string {
 	addArg("KUBERNETES_VERSION", opts.KubernetesVersion)
 	if opts.TrustedBoot {
 		addArg("TRUSTED_BOOT", "true")
-	} else {
-		addArg("TRUSTED_BOOT", "false")
 	}
 	if opts.FIPS {
 		addArg("FIPS", "fips")
-	} else {
-		addArg("FIPS", "no-fips")
 	}
 	return args
 }
@@ -591,7 +587,7 @@ func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVo
 			Image:           "gcr.io/kaniko-project/executor:latest",
 			Args:            kanikoArgs,
 			VolumeMounts:    kanikoVolumeMounts,
-			SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+			SecurityContext: &corev1.SecurityContext{Privileged: ptr(false)},
 		},
 		{
 			ImagePullPolicy: corev1.PullAlways,
