@@ -57,7 +57,7 @@ RUN if [ -n "${KUBERNETES_DISTRO}" ]; then \
  K8S_FLAG=""; \
  K8S_VERSION_FLAG=""; \
  fi; \
- if [ "$FIPS" == "fips" ]; then FIPS_FLAG="--fips"; else FIPS_FLAG=""; fi; \
+ if [ "$FIPS" = "fips" ]; then FIPS_FLAG="--fips"; else FIPS_FLAG=""; fi; \
  eval /kairos-init -l debug -s install -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\" && \
  eval /kairos-init -l debug -s init -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\" && \
  rm /kairos-init
