@@ -160,10 +160,9 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	return pod, nil
 }
 
-// checkSecretOwnership verifies that a Secret with the given name either does not exist
-// or is owned by the specified OSArtifact. This prevents name collision attacks where
-// a malicious user could create an OSArtifact to overwrite unrelated Secrets.
-// Returns an error if the Secret exists but is not owned by the artifact.
+// checkSecretOwnership verifies that a Secret with the given name either does not exist,
+// is owned by the specified OSArtifact, or has no owner (so we can adopt it in CreateOrUpdate).
+// Returns an error only if the Secret exists and is owned by a different resource.
 func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretName, namespace string, owner *buildv1alpha2.OSArtifact) error {
 	existingSecret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, existingSecret)
@@ -171,11 +170,16 @@ func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretN
 		return fmt.Errorf("failed to check for existing Secret: %w", err)
 	}
 
-	// If Secret exists but is not owned by this OSArtifact, refuse to proceed
-	if err == nil && !metav1.IsControlledBy(existingSecret, owner) {
-		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
+	if err == nil {
+		if metav1.IsControlledBy(existingSecret, owner) {
+			return nil // already ours
+		}
+		// Secret exists but is not owned by us. Refuse only if it has another owner (would block adoption).
+		if len(existingSecret.OwnerReferences) > 0 {
+			return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
+		}
+		// No owner: we will adopt it in CreateOrUpdate so it gets cascade-deleted with the artifact.
 	}
-
 	return nil
 }
 

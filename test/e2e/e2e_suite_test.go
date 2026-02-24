@@ -215,24 +215,45 @@ func (tc *TestClients) WaitForExportCompletion(artifactLabelSelector labels.Sele
 
 // collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
 // Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
+// Logs are fetched per container (only for containers that have started) so we get init container
+// output (e.g. kaniko-build) even when the pod is stuck in PodInitializing and main containers
+// have not run yet.
 func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) string {
 	var buf strings.Builder
+	const ns = "default"
 
 	buf.WriteString("=== Builder Pod Describe (events, status, init container details) ===\n")
 	cmd := exec.Command("kubectl", "describe", "pods",
 		"-l", artifactLabelSelector.String(),
-		"-n", "default")
+		"-n", ns)
 	out, _ := cmd.CombinedOutput()
 	buf.Write(out)
 	buf.WriteString("\n")
 
-	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
-	cmd = exec.Command("kubectl", "logs",
-		"-l", artifactLabelSelector.String(),
-		"--all-containers=true", "--prefix=true", "--tail=80",
-		"-n", "default")
-	out, _ = cmd.CombinedOutput()
-	buf.Write(out)
+	buf.WriteString("=== Builder Pod Logs (last 80 lines per container that has run) ===\n")
+	pods, err := clientset.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: artifactLabelSelector.String(),
+	})
+	if err != nil {
+		fmt.Fprintf(&buf, "failed to list pods: %v\n", err)
+	} else {
+		for _, pod := range pods.Items {
+			for _, s := range pod.Status.InitContainerStatuses {
+				if s.State.Running != nil || s.State.Terminated != nil {
+					cmd := exec.Command("kubectl", "logs", pod.Name, "-c", s.Name, "--tail=80", "-n", ns)
+					out, _ := cmd.CombinedOutput()
+					fmt.Fprintf(&buf, "--- Pod %s / InitContainer %s ---\n%s\n", pod.Name, s.Name, out)
+				}
+			}
+			for _, s := range pod.Status.ContainerStatuses {
+				if s.State.Running != nil || s.State.Terminated != nil {
+					cmd := exec.Command("kubectl", "logs", pod.Name, "-c", s.Name, "--tail=80", "-n", ns)
+					out, _ := cmd.CombinedOutput()
+					fmt.Fprintf(&buf, "--- Pod %s / Container %s ---\n%s\n", pod.Name, s.Name, out)
+				}
+			}
+		}
+	}
 	buf.WriteString("\n")
 
 	jobs, err := tc.Jobs.List(context.TODO(), metav1.ListOptions{
@@ -318,6 +339,9 @@ var _ = BeforeSuite(func() {
 	}
 
 	installOperator()
+
+	By("verifying pods can download from the internet (e.g. k3s from GitHub)")
+	verifyPodCanDownload(context.Background(), clientset)
 })
 
 var _ = AfterSuite(func() {
@@ -352,6 +376,45 @@ func createCluster() (string, string) {
 	Expect(err).NotTo(HaveOccurred())
 
 	return kubeconfigPath, clusterName
+}
+
+// verifyPodCanDownload runs a one-off pod in default namespace that downloads a file from the internet
+// (the k3s release URL used by kairos-init). Ensures the cluster has outbound access so OCI builds
+// that run kairos-init (e.g. k3s install) can succeed.
+func verifyPodCanDownload(ctx context.Context, k8s *kubernetes.Clientset) {
+	const (
+		ns   = "default"
+		name = "e2e-network-check"
+		url  = "https://github.com/k3s-io/k3s/releases/download/v1.35.1%2Bk3s1/sha256sum-amd64.txt"
+	)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    "download",
+				Image:   "alpine:latest",
+				Command: []string{"wget", "-q", "-O", "/dev/null", "--timeout=30", url},
+			}},
+		},
+	}
+	_, err := k8s.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	defer func() {
+		_ = k8s.CoreV1().Pods(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	}()
+
+	var p *corev1.Pod
+	Eventually(func(g Gomega) {
+		var getErr error
+		p, getErr = k8s.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(p.Status.Phase).To(BeElementOf(corev1.PodSucceeded, corev1.PodFailed),
+			"pod should complete (succeed or fail)")
+	}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+
+	Expect(p.Status.Phase).To(Equal(corev1.PodSucceeded),
+		"download pod must succeed (pod may have no outbound access to GitHub)")
 }
 
 func getControllerPodName() {

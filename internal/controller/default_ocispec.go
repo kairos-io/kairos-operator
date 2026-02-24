@@ -40,10 +40,11 @@ ARG VERSION
 ARG FIPS=no-fips
 `
 
-// DefaultOCISpecKairosInitSection is the RUN that uses the kairos-init stage (injected at the end when buildOptions is set).
+// DefaultOCISpecKairosInitSection is the COPY + RUN that use the kairos-init stage (injected at the end when buildOptions is set).
+// We use COPY --from instead of RUN --mount=type=bind,from=kairos-init because Kaniko does not reliably support bind mounts from another stage (see examples/osartifact-dockerfile-byoi.yaml).
 const DefaultOCISpecKairosInitSection = `# kairos init section
-RUN --mount=type=bind,from=kairos-init,src=/kairos-init,dst=/kairos-init \
- if [ -n "${KUBERNETES_DISTRO}" ]; then \
+COPY --from=kairos-init /kairos-init /kairos-init
+RUN if [ -n "${KUBERNETES_DISTRO}" ]; then \
  K8S_FLAG="-p ${KUBERNETES_DISTRO}"; \
  if [ "${KUBERNETES_DISTRO}" = "k0s" ] && [ -n "${KUBERNETES_VERSION}" ]; then \
  K8S_VERSION_FLAG="--provider-k0s-version \"${KUBERNETES_VERSION}\""; \
@@ -58,7 +59,8 @@ RUN --mount=type=bind,from=kairos-init,src=/kairos-init,dst=/kairos-init \
  fi; \
  if [ "$FIPS" == "fips" ]; then FIPS_FLAG="--fips"; else FIPS_FLAG=""; fi; \
  eval /kairos-init -l debug -s install -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\" && \
- eval /kairos-init -l debug -s init -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\"
+ eval /kairos-init -l debug -s init -m \"${MODEL}\" -t \"${TRUSTED_BOOT}\" ${K8S_FLAG} ${K8S_VERSION_FLAG} --version \"${VERSION}\" \"${FIPS_FLAG}\" && \
+ rm /kairos-init
 `
 
 // AssembleFinalOCISpec returns the final OCI build definition.
