@@ -246,29 +246,41 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	buf.Write(out)
 	buf.WriteString("\n")
 
-	buf.WriteString("=== Builder Pod Logs (last 80 lines per container that has run) ===\n")
-	pods, err := clientset.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{
-		LabelSelector: artifactLabelSelector.String(),
-	})
-	if err != nil {
-		fmt.Fprintf(&buf, "failed to list pods: %v\n", err)
-	} else {
-		for _, pod := range pods.Items {
-			for _, s := range pod.Status.InitContainerStatuses {
-				if s.State.Running != nil || s.State.Terminated != nil {
-					cmd := exec.Command("kubectl", "logs", pod.Name, "-c", s.Name, "--tail=80", "-n", ns)
-					out, _ := cmd.CombinedOutput()
-					fmt.Fprintf(&buf, "--- Pod %s / InitContainer %s ---\n%s\n", pod.Name, s.Name, out)
+	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
+	podList, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
+	if err == nil {
+		for _, p := range podList.Items {
+			podName := p.GetName()
+			// Collect container names (init + main) so we get logs even when --all-containers fails (e.g. one container not started)
+			var containers []string
+			if inits, _, _ := unstructured.NestedSlice(p.Object, "spec", "initContainers"); inits != nil {
+				for _, c := range inits {
+					if m, _ := c.(map[string]interface{}); m != nil {
+						if n, ok := m["name"].(string); ok {
+							containers = append(containers, n)
+						}
+					}
 				}
 			}
-			for _, s := range pod.Status.ContainerStatuses {
-				if s.State.Running != nil || s.State.Terminated != nil {
-					cmd := exec.Command("kubectl", "logs", pod.Name, "-c", s.Name, "--tail=80", "-n", ns)
-					out, _ := cmd.CombinedOutput()
-					fmt.Fprintf(&buf, "--- Pod %s / Container %s ---\n%s\n", pod.Name, s.Name, out)
+			if mains, _, _ := unstructured.NestedSlice(p.Object, "spec", "containers"); mains != nil {
+				for _, c := range mains {
+					if m, _ := c.(map[string]interface{}); m != nil {
+						if n, ok := m["name"].(string); ok {
+							containers = append(containers, n)
+						}
+					}
 				}
+			}
+			for _, cName := range containers {
+				cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", podName, "-c", cName, "--tail=80", "-n", ns)
+				out, _ := cmd.CombinedOutput()
+				fmt.Fprintf(&buf, "--- Pod %s / %s ---\n%s\n", podName, cName, string(out))
 			}
 		}
+	} else {
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "-l", artifactLabelSelector.String(), "--all-containers=true", "--prefix=true", "--tail=80", "-n", ns)
+		out, _ := cmd.CombinedOutput()
+		buf.Write(out)
 	}
 	buf.WriteString("\n")
 
@@ -292,6 +304,10 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	return buf.String()
 }
 
+// cleanupTimeout is the time to wait for artifact/pods/pvcs/jobs to be removed after deleting the artifact.
+// CI can be slow; 5 minutes gives enough time for finalizers and GC.
+const cleanupTimeout = 5 * time.Minute
+
 // Cleanup deletes the artifact and waits for all related resources to be cleaned up
 func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels.Selector) {
 	By("cleaning up resources")
@@ -302,22 +318,22 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 		res, err := tc.Artifacts.List(context.TODO(), metav1.ListOptions{})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.PVCs.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.Jobs.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 }
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,

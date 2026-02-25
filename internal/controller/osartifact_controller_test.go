@@ -666,6 +666,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
+				// Refresh artifact so we have latest ResourceVersion (e.g. if a controller added finalizer).
+				Expect(r.Get(context.TODO(), client.ObjectKeyFromObject(artifact), artifact)).To(Succeed())
 				result, err := r.startBuild(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.RequeueAfter).To(BeZero())
