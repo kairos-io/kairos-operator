@@ -213,6 +213,22 @@ func (tc *TestClients) WaitForExportCompletion(artifactLabelSelector labels.Sele
 	}).WithTimeout(time.Hour).Should(Succeed())
 }
 
+// dumpJobLogs writes job describe and pod logs to GinkgoWriter. Call from a deferred function when a spec fails to aid debugging.
+func dumpJobLogs(namespace, jobName string) {
+	if jobName == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== Verification Job %s (namespace %s) - describe and logs =====\n", jobName, namespace)
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "describe", "job/"+jobName, "-n", namespace)
+	out, _ := cmd.CombinedOutput()
+	GinkgoWriter.Write(out)
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n----- Job logs (tail 200) -----\n")
+	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "job/"+jobName, "-n", namespace, "--all-containers=true", "--prefix=true", "--tail=200")
+	out, _ = cmd.CombinedOutput()
+	GinkgoWriter.Write(out)
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== End verification job %s =====\n\n", jobName)
+}
+
 // collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
 // Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
 // Logs are fetched per container (only for containers that have started) so we get init container
@@ -505,6 +521,25 @@ func installOperator() {
 	getControllerPodName()
 	By("waiting the controller pod to be running")
 	waitUntilControllerIsRunning()
+
+	installRegistry()
+}
+
+// installRegistry deploys the in-cluster registry (with auth) used by OCI push e2e tests.
+func installRegistry() {
+	By("deploying the in-cluster registry (config/registry)")
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/registry")
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(out))
+
+	By("waiting for registry deployments to be ready")
+	for _, name := range []string{"registry", "registry-noauth"} {
+		rolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
+			"deployment/"+name, "-n", "registry", "--timeout=2m")
+		rolloutOut, err := rolloutCmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "rollout %s: %s", name, string(rolloutOut))
+		_ = rolloutOut
+	}
 }
 
 // buildAndLoadImages builds and loads both the operator and node-labeler images into the kind cluster

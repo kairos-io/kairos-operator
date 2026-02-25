@@ -244,6 +244,45 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("buildImage"))
 			Expect(err.Error()).To(ContainSubstring("registry, repository, and tag are all required"))
 		})
+
+		It("returns error when push is true but buildImage is missing", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:    true,
+					OCISpec: &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("push"))
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
+		})
+
+		It("returns error when push is true but buildImage is incomplete", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:       true,
+					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "", Tag: "latest"},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
+			// Either our push validation or the "all required" validation may fire
+			Expect(err.Error()).To(Or(ContainSubstring("push"), ContainSubstring("registry, repository, and tag are all required")))
+		})
+
+		It("returns nil when push is true and buildImage is set with registry, repository, tag", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:       true,
+					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "ns/img", Tag: "latest"},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
 	})
 
 	Describe("spec.artifacts", func() {

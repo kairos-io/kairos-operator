@@ -81,7 +81,6 @@ type ImageSpec struct {
 	BuildImage *BuildImage `json:"buildImage,omitempty"`
 
 	// Push, when true, pushes the built image to a registry. Only used when building; ignored when Ref is set.
-	// TODO: implement push in controller (kaniko --destination + auth from PushCredentialsSecretRef; today we always use --no-push).
 	// +optional
 	Push bool `json:"push,omitempty"`
 
@@ -301,6 +300,13 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 	// Building: at least one of BuildOptions or OCISpec must be set.
 	if !hasBuildOptions && !hasOCISpec {
 		return fmt.Errorf("spec.image: when ref is empty, at least one of buildOptions or ociSpec must be set")
+	}
+
+	// When pushing, buildImage (registry, repository, tag) is required so we have a valid destination.
+	if img.Push {
+		if img.BuildImage == nil || img.BuildImage.Registry == "" || img.BuildImage.Repository == "" || img.BuildImage.Tag == "" {
+			return fmt.Errorf("spec.image.push is true but buildImage is missing or incomplete; when pushing, registry, repository, and tag are required")
+		}
 	}
 
 	if hasBuildOptions {
