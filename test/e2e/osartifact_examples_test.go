@@ -76,6 +76,7 @@ func createExampleArtifact(tc *TestClients, artifact *buildv1alpha2.OSArtifact, 
 
 // createArtifactNoExporters creates an OSArtifact with GenerateName and no Exporters (for OCI-only build+push tests).
 func createArtifactNoExporters(tc *TestClients, artifact *buildv1alpha2.OSArtifact, namePrefix string) (string, labels.Selector) {
+	artifact.Name = ""
 	artifact.GenerateName = namePrefix
 	artifact.Spec.Exporters = nil
 	return tc.CreateArtifact(artifact)
@@ -141,8 +142,11 @@ func ptr[T any](v T) *T { return &v }
 // uniqueTestSuffix returns a short random suffix for artifact and image names to avoid collisions when tests run in parallel.
 func uniqueTestSuffix() string {
 	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if n, err := rand.Read(b); err == nil && n == len(b) {
+		return hex.EncodeToString(b)
+	}
+	// Fall back to a timestamp-based suffix if entropy is unavailable.
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // craneInstallScript returns a shell script that installs crane and sets CRANE. Append a line that uses "$CRANE" (e.g. export or pull).
@@ -296,10 +300,10 @@ func verifyPullWithCredentials(imageRef, credentialsSecretName, filePathInImage,
 	Expect(err).ToNot(HaveOccurred())
 	jobName := job.Name
 	defer func() {
-		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 		if CurrentSpecReport().Failed() {
 			dumpJobLogs("default", jobName)
 		}
+		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 	}()
 	Eventually(func(g Gomega) {
 		j, e := clientset.BatchV1().Jobs("default").Get(context.TODO(), job.Name, metav1.GetOptions{})
@@ -332,10 +336,10 @@ func verifyPullFailsWithoutCredentials(imageRef string) {
 	Expect(err).ToNot(HaveOccurred())
 	jobName := job.Name
 	defer func() {
-		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 		if CurrentSpecReport().Failed() {
 			dumpJobLogs("default", jobName)
 		}
+		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 	}()
 	Eventually(func(g Gomega) {
 		j, e := clientset.BatchV1().Jobs("default").Get(context.TODO(), job.Name, metav1.GetOptions{})
@@ -366,10 +370,10 @@ func verifyPullSucceedsWithoutCredentials(imageRef, filePathInImage, expectedCon
 	Expect(err).ToNot(HaveOccurred())
 	jobName := job.Name
 	defer func() {
-		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 		if CurrentSpecReport().Failed() {
 			dumpJobLogs("default", jobName)
 		}
+		_ = clientset.BatchV1().Jobs("default").Delete(context.TODO(), job.Name, metav1.DeleteOptions{})
 	}()
 	Eventually(func(g Gomega) {
 		j, e := clientset.BatchV1().Jobs("default").Get(context.TODO(), job.Name, metav1.GetOptions{})
