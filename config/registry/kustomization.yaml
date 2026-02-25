@@ -1,0 +1,11 @@
+# In-cluster registry with basic auth for e2e (e.g. OSArtifact push tests).
+# Deploy with: kubectl apply -k config/registry
+# Registry URL from inside the cluster: registry.registry.svc.cluster.local:5000
+# Credentials (e2e only): user e2epush, password e2epushpass
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - htpasswd-secret.yaml
+  - deployment.yaml
+  - service.yaml
