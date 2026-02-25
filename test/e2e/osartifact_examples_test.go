@@ -462,7 +462,7 @@ spec:
 		})
 	})
 
-	FDescribe("OCI-only build (no Stage 2)", func() {
+	Describe("OCI-only build (no Stage 2)", func() {
 		It("builds from custom Dockerfile, pushes to registry with credentials, and pull without credentials fails", func() {
 			suffix := uniqueTestSuffix()
 
