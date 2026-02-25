@@ -20,3 +20,5 @@ Credentials used by this kustomization (for e2e only):
 - Password: `e2epushpass`
 
 The e2e suite creates a Secret of type `kubernetes.io/dockerconfigjson` with these credentials for the registry URL so that kaniko and verification pods can push/pull.
+
+**No-auth registry (registry-noauth):** A second deployment `registry-noauth` on port 5001 with no `REGISTRY_AUTH` is provided for e2e tests that push without credentials (e.g. internal/no-auth registries). URL: `registry-noauth.registry.svc.cluster.local:5001`.
