@@ -221,11 +221,11 @@ func dumpJobLogs(namespace, jobName string) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== Verification Job %s (namespace %s) - describe and logs =====\n", jobName, namespace)
 	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "describe", "job/"+jobName, "-n", namespace)
 	out, _ := cmd.CombinedOutput()
-	GinkgoWriter.Write(out)
+	_, _ = GinkgoWriter.Write(out)
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n----- Job logs (tail 200) -----\n")
 	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "job/"+jobName, "-n", namespace, "--all-containers=true", "--prefix=true", "--tail=200")
 	out, _ = cmd.CombinedOutput()
-	GinkgoWriter.Write(out)
+	_, _ = GinkgoWriter.Write(out)
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== End verification job %s =====\n\n", jobName)
 }
 
