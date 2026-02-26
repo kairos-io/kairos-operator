@@ -240,7 +240,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 		BeforeEach(func() {
 			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
 			// Ref requires artifacts (validation); use minimal so create-image is the main container.
-			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{}
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 		})
 
 		When("spec.importers is set", func() {

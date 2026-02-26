@@ -522,7 +522,7 @@ spec:
 
 	Describe("OCI-only build (no Stage 2)", func() {
 		It("builds OCI image only (no ISO/artifacts) and produces packed tarball in /artifacts", func() {
-			// No spec.artifacts: controller runs Stage 1 (build + createImageContainer) only; no build-iso.
+			// No spec.artifacts: OCI-only build; Kaniko always writes the image tarball to /artifacts/<name>.tar for exporters.
 			y := fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact

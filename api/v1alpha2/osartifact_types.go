@@ -332,6 +332,9 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 
 func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error {
 	a := s.Artifacts
+	if !a.ISO && !a.CloudImage && !a.AzureImage && !a.GCEImage && !a.Netboot {
+		return fmt.Errorf("spec.artifacts: at least one artifact type must be enabled (iso, cloudImage, azureImage, gceImage, netboot)")
+	}
 	if a.OverlayISOVolume != "" && !volumeNames[a.OverlayISOVolume] {
 		return fmt.Errorf("spec.artifacts.overlayISOVolume references volume %q which is not defined in spec.volumes", a.OverlayISOVolume)
 	}

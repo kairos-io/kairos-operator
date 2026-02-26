@@ -50,48 +50,46 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 	}
 }
 
+// unpackAndPackToArtifactsContainer unpacks image.ref to /rootfs and writes the packed tarball to /artifacts.
+// Stage 1 for ref: one container puts the image tarball in the artifacts volume.
+func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolImage string) corev1.Container {
+	arch, _ := artifact.Spec.ArchSanitized()
+	unpackCmd := "auroraboot unpack"
+	if arch != "" {
+		unpackCmd = fmt.Sprintf("%s --arch %s", unpackCmd, arch)
+	}
+	unpackCmd = fmt.Sprintf("%s %s /rootfs", unpackCmd, artifact.Spec.Image.Ref)
+
+	imageName := builtImageName(artifact)
+	packCmd := "luet util pack"
+	if arch != "" {
+		packCmd = fmt.Sprintf("%s --arch %s --os linux", packCmd, arch)
+	}
+	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
+
+	script := fmt.Sprintf(
+		"%s && tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
+		unpackCmd, packCmd, artifact.Name, artifact.Name,
+	)
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "pull-image-baseimage",
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{script},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "rootfs", MountPath: "/rootfs"},
+			{Name: "artifacts", MountPath: "/artifacts"},
+		},
+	}
+}
+
 // builtImageName returns the name of the built image (for the packed tarball). Only used when building; defaults to the OSArtifact name.
 func builtImageName(artifact *buildv1alpha2.OSArtifact) string {
 	if artifact.Spec.Image.BuildImage != nil && artifact.Spec.Image.BuildImage.ImageRef() != "" {
 		return artifact.Spec.Image.BuildImage.ImageRef()
 	}
 	return artifact.Name
-}
-
-func createImageContainer(containerImage string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
-	imageName := builtImageName(artifact)
-	arch, _ := artifact.Spec.ArchSanitized()
-
-	packCmd := "luet util pack"
-	if arch != "" {
-		packCmd = fmt.Sprintf("luet util pack --arch %s --os linux", arch)
-	}
-	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
-
-	return corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		Name:            "create-image",
-		Image:           containerImage,
-		Command:         []string{"/bin/bash", "-cxe"},
-		Args: []string{
-			fmt.Sprintf(
-				"tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
-				packCmd,
-				artifact.Name,
-				artifact.Name,
-			),
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      "rootfs",
-				MountPath: "/rootfs",
-			},
-			{
-				Name:      "artifacts",
-				MountPath: "/artifacts",
-			},
-		},
-	}
 }
 
 func osReleaseContainer(containerImage string) corev1.Container {
@@ -187,13 +185,10 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	volumes = appendCloudConfigVolume(volumes, artifacts)
 	volumes = append(volumes, artifact.Spec.Volumes...)
 
-	podSpec := corev1.PodSpec{
-		AutomountServiceAccountToken: ptr(false),
-		RestartPolicy:                corev1.RestartPolicyNever,
-		Volumes:                      volumes,
-		ImagePullSecrets:             artifact.Spec.ImagePullSecrets,
-		InitContainers:               append([]corev1.Container{}, artifact.Spec.Importers...),
-	}
+	// Two slices: sequential (inits) and parallel (mains). If no mains, promote last init to main so the pod has a main container.
+	// Importers are part of inits (they run first).
+	inits := append([]corev1.Container{}, artifact.Spec.Importers...)
+	var mains []corev1.Container
 
 	buildCtxVol := ""
 	if artifact.Spec.Image.OCISpec != nil {
@@ -203,48 +198,59 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 
 	switch {
 	case artifact.Spec.Image.Ref != "":
-		podSpec.InitContainers = append(podSpec.InitContainers,
-			unpackContainer("baseimage", r.ToolImage, artifact.Spec.Image.Ref, arch))
+		inits = append(inits, unpackAndPackToArtifactsContainer(artifact, r.ToolImage))
 	case hasOCISpecRef:
-		if artifacts == nil {
-			// OCI-only (no stage 2): use kaniko as the main container because a Pod must have at least one container
-			podSpec.Containers = append(podSpec.Containers, kanikoBuildContainer(artifact, buildCtxVol, arch))
-		} else {
-			podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildInitContainers(artifact, buildCtxVol, arch, r.ToolImage)...)
-		}
+		inits = append(inits, kanikoBuildContainer(artifact, buildCtxVol, arch))
 	default:
 		return &corev1.Pod{}
 	}
 
 	if artifacts != nil {
+		if hasOCISpecRef {
+			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifact.Name))
+		}
 		for i, bundle := range artifacts.Bundles {
-			podSpec.InitContainers = append(podSpec.InitContainers, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
+			inits = append(inits, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
 		}
 		if artifacts.OSRelease != "" {
-			podSpec.InitContainers = append(podSpec.InitContainers, osReleaseContainer(r.ToolImage))
+			inits = append(inits, osReleaseContainer(r.ToolImage))
 		}
 		if artifacts.KairosRelease != "" {
-			podSpec.InitContainers = append(podSpec.InitContainers, kairosReleaseContainer(r.ToolImage))
+			inits = append(inits, kairosReleaseContainer(r.ToolImage))
+		}
+		if artifacts.ISO || artifacts.Netboot {
+			inits = append(inits, buildIsoContainer)
+		}
+		if artifacts.Netboot {
+			inits = append(inits, extractNetboot)
+		}
+		// These can run in parallel (all read from rootfs/artifacts; no ordering between them).
+		if artifacts.CloudImage {
+			mains = append(mains, buildCloudImageContainer)
+		}
+		if artifacts.AzureImage {
+			mains = append(mains, buildAzureCloudImageContainer)
+		}
+		if artifacts.GCEImage {
+			mains = append(mains, buildGCECloudImageContainer)
 		}
 	}
 
-	if artifacts != nil && (artifacts.ISO || artifacts.Netboot) {
-		podSpec.InitContainers = append(podSpec.InitContainers, buildIsoContainer)
+	if len(inits) == 0 {
+		return &corev1.Pod{}
 	}
-	if artifacts != nil && artifacts.Netboot {
-		podSpec.Containers = append(podSpec.Containers, extractNetboot)
+	// If no main containers, make the last init the main container so the pod has exactly one main.
+	if len(mains) == 0 {
+		mains = inits[len(inits)-1:]
+		inits = inits[:len(inits)-1]
 	}
-	if artifacts != nil && artifacts.CloudImage {
-		podSpec.Containers = append(podSpec.Containers, buildCloudImageContainer)
-	}
-	if artifacts != nil && artifacts.AzureImage {
-		podSpec.Containers = append(podSpec.Containers, buildAzureCloudImageContainer)
-	}
-	if artifacts != nil && artifacts.GCEImage {
-		podSpec.Containers = append(podSpec.Containers, buildGCECloudImageContainer)
-	}
-	if artifacts != nil {
-		podSpec.Containers = append(podSpec.Containers, createImageContainer(r.ToolImage, artifact))
+	podSpec := corev1.PodSpec{
+		AutomountServiceAccountToken: ptr(false),
+		RestartPolicy:                corev1.RestartPolicyNever,
+		Volumes:                      volumes,
+		ImagePullSecrets:             artifact.Spec.ImagePullSecrets,
+		InitContainers:               inits,
+		Containers:                   mains,
 	}
 
 	return &corev1.Pod{
@@ -577,13 +583,13 @@ func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.A
 	return volumes
 }
 
-// imageExtractorContainer returns a container that unpacks the kaniko OCI tarball to /rootfs using AuroraBoot (same image as rest of pipeline).
-func imageExtractorContainer(toolImage, arch string) corev1.Container {
+// imageExtractorContainer unpacks the OCI tarball from /artifacts/<name>.tar (written by Kaniko) to /rootfs using AuroraBoot.
+func imageExtractorContainer(toolImage, arch string, artifactName string) corev1.Container {
 	cmd := "auroraboot unpack"
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
-	cmd = fmt.Sprintf("%s ocifile:/rootfs/image.tar /rootfs", cmd)
+	cmd = fmt.Sprintf("%s ocifile:/artifacts/%s.tar /rootfs", cmd, artifactName)
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "image-extractor",
@@ -592,21 +598,24 @@ func imageExtractorContainer(toolImage, arch string) corev1.Container {
 		Args:            []string{cmd},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "rootfs", MountPath: "/rootfs"},
+			{Name: "artifacts", MountPath: "/artifacts", ReadOnly: true},
 		},
 	}
 }
 
-// kanikoBuildContainer returns the Kaniko build container. Used as init container when building for stage 2, or as the sole main container for OCI-only (no artifacts).
+// kanikoBuildContainer returns the Kaniko build container. The image tarball is always written to /artifacts/<name>.tar.
 func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string) corev1.Container {
 	kanikoVolumeMounts := []corev1.VolumeMount{
 		{Name: "rootfs", MountPath: "/rootfs"},
 		{Name: "ocispec", MountPath: "/workspace/ocispec"},
+		{Name: "artifacts", MountPath: "/artifacts"},
 	}
 	if buildContextVolume != "" {
 		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
 			Name: buildContextVolume, MountPath: "/workspace",
 		})
 	}
+	tarPath := "/artifacts/" + artifact.Name + ".tar"
 
 	doPush := artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil
 	destination := "whatever"
@@ -620,7 +629,7 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 		"--dockerfile", "/workspace/ocispec/" + OCISpecSecretKey,
 		"--context", "dir:///workspace",
 		"--destination", destination,
-		"--tar-path", "/rootfs/image.tar",
+		"--tar-path", tarPath,
 		"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
 	}
 	if !doPush {
@@ -650,21 +659,5 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 		Env:             kanikoEnv,
 		VolumeMounts:    kanikoVolumeMounts,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(false)},
-	}
-}
-
-// baseImageBuildInitContainers returns init containers for OCI build when stage 2 is used: kaniko, image-extractor, cleanup.
-func baseImageBuildInitContainers(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, toolImage string) []corev1.Container {
-	return []corev1.Container{
-		kanikoBuildContainer(artifact, buildContextVolume, arch),
-		imageExtractorContainer(toolImage, arch),
-		{
-			ImagePullPolicy: corev1.PullAlways,
-			Name:            "cleanup",
-			Image:           "busybox",
-			Command:         []string{"/bin/rm"},
-			Args:            []string{"/rootfs/image.tar"},
-			VolumeMounts:    []corev1.VolumeMount{{Name: "rootfs", MountPath: "/rootfs"}},
-		},
 	}
 }

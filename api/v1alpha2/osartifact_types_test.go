@@ -12,7 +12,7 @@ import (
 func validImageRef(ref string) v1alpha2.OSArtifactSpec {
 	return v1alpha2.OSArtifactSpec{
 		Image:     v1alpha2.ImageSpec{Ref: ref},
-		Artifacts: &v1alpha2.ArtifactSpec{}, // Ref requires at least artifacts section; enable ISO/CloudImage/etc. as needed
+		Artifacts: &v1alpha2.ArtifactSpec{ISO: true}, // Ref requires at least one artifact type
 	}
 }
 
@@ -139,7 +139,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 					Ref:          "quay.io/kairos/kairos:v1",
 					BuildOptions: &v1alpha2.BuildOptions{Version: "v1"},
 				},
-				Artifacts: &v1alpha2.ArtifactSpec{}, // Ref requires artifacts
+				Artifacts: &v1alpha2.ArtifactSpec{ISO: true}, // Ref requires at least one artifact type
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
@@ -297,7 +297,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 	Describe("spec.artifacts", func() {
 		It("returns error when overlayISOVolume references missing volume", func() {
 			spec := validImageRef("img")
-			spec.Artifacts = &v1alpha2.ArtifactSpec{OverlayISOVolume: "missing"}
+			spec.Artifacts = &v1alpha2.ArtifactSpec{ISO: true, OverlayISOVolume: "missing"}
 			err := spec.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overlayISOVolume"))
@@ -306,7 +306,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 
 		It("returns error when overlayRootfsVolume references missing volume", func() {
 			spec := validImageRef("img")
-			spec.Artifacts = &v1alpha2.ArtifactSpec{OverlayRootfsVolume: "missing"}
+			spec.Artifacts = &v1alpha2.ArtifactSpec{ISO: true, OverlayRootfsVolume: "missing"}
 			err := spec.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overlayRootfsVolume"))
@@ -316,6 +316,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := validImageRef("img")
 			spec.Volumes = []corev1.Volume{{Name: "iso-ov"}, {Name: "rootfs-ov"}}
 			spec.Artifacts = &v1alpha2.ArtifactSpec{
+				ISO:                 true,
 				OverlayISOVolume:    "iso-ov",
 				OverlayRootfsVolume: "rootfs-ov",
 			}
