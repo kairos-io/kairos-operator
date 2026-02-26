@@ -28,8 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const aurorabootUnpackCmd = "auroraboot unpack"
+
 func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
-	cmd := "auroraboot unpack"
+	cmd := aurorabootUnpackCmd
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
@@ -54,7 +56,7 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 // Stage 1 for ref: one container puts the image tarball in the artifacts volume.
 func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolImage string) corev1.Container {
 	arch, _ := artifact.Spec.ArchSanitized()
-	unpackCmd := "auroraboot unpack"
+	unpackCmd := aurorabootUnpackCmd
 	if arch != "" {
 		unpackCmd = fmt.Sprintf("%s --arch %s", unpackCmd, arch)
 	}
@@ -585,7 +587,7 @@ func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.A
 
 // imageExtractorContainer unpacks the OCI tarball from /artifacts/<name>.tar (written by Kaniko) to /rootfs using AuroraBoot.
 func imageExtractorContainer(toolImage, arch string, artifactName string) corev1.Container {
-	cmd := "auroraboot unpack"
+	cmd := aurorabootUnpackCmd
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
