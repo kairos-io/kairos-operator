@@ -8,10 +8,11 @@ import (
 	"github.com/kairos-io/kairos-operator/api/v1alpha2"
 )
 
-// validImageRef returns a minimal spec with image.ref set so Validate passes
+// validImageRef returns a minimal spec with image.ref and artifacts set so Validate passes (Ref requires artifacts).
 func validImageRef(ref string) v1alpha2.OSArtifactSpec {
 	return v1alpha2.OSArtifactSpec{
-		Image: v1alpha2.ImageSpec{Ref: ref},
+		Image:     v1alpha2.ImageSpec{Ref: ref},
+		Artifacts: &v1alpha2.ArtifactSpec{}, // Ref requires at least artifacts section; enable ISO/CloudImage/etc. as needed
 	}
 }
 
@@ -81,10 +82,17 @@ var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
 })
 
 var _ = Describe("OSArtifactSpec.Validate", func() {
-	Describe("spec.image is required", func() {
-		It("validates when image.ref is set", func() {
+		Describe("spec.image is required", func() {
+		It("validates when image.ref is set with artifacts", func() {
 			spec := validImageRef("quay.io/kairos/kairos:v1")
 			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
+		It("returns error when image.ref is set without artifacts", func() {
+			spec := v1alpha2.OSArtifactSpec{Image: v1alpha2.ImageSpec{Ref: "quay.io/kairos/kairos:v1"}}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.artifacts is required when spec.image.ref is set"))
 		})
 	})
 
@@ -131,6 +139,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 					Ref:          "quay.io/kairos/kairos:v1",
 					BuildOptions: &v1alpha2.BuildOptions{Version: "v1"},
 				},
+				Artifacts: &v1alpha2.ArtifactSpec{}, // Ref requires artifacts
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})

@@ -268,6 +268,10 @@ func (s *OSArtifactSpec) Validate() error {
 	if err := validateImageSpec(&s.Image, volumeNames); err != nil {
 		return err
 	}
+	// When using a pre-built image (image.ref), artifacts are required; otherwise the OSArtifact would be a no-op.
+	if s.Image.Ref != "" && s.Artifacts == nil {
+		return fmt.Errorf("spec.artifacts is required when spec.image.ref is set (pre-built image); specify which artifacts to produce (e.g. ISO, cloud image)")
+	}
 	if s.Artifacts != nil {
 		if err := s.validateArtifactSpec(volumeNames); err != nil {
 			return err
