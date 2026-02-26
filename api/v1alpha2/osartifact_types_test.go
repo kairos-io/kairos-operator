@@ -82,7 +82,7 @@ var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
 })
 
 var _ = Describe("OSArtifactSpec.Validate", func() {
-		Describe("spec.image is required", func() {
+	Describe("spec.image is required", func() {
 		It("validates when image.ref is set with artifacts", func() {
 			spec := validImageRef("quay.io/kairos/kairos:v1")
 			Expect(spec.Validate()).ToNot(HaveOccurred())
