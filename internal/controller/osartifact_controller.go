@@ -63,6 +63,7 @@ type OSArtifactReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
