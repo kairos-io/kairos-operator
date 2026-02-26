@@ -206,7 +206,12 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		podSpec.InitContainers = append(podSpec.InitContainers,
 			unpackContainer("baseimage", r.ToolImage, artifact.Spec.Image.Ref, arch))
 	case hasOCISpecRef:
-		podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildContainers(artifact, buildCtxVol, arch, r.ToolImage)...)
+		if artifacts == nil {
+			// OCI-only (no stage 2): use kaniko as the main container because a Pod must have at least one container
+			podSpec.Containers = append(podSpec.Containers, kanikoBuildContainer(artifact, buildCtxVol, arch))
+		} else {
+			podSpec.InitContainers = append(podSpec.InitContainers, baseImageBuildInitContainers(artifact, buildCtxVol, arch, r.ToolImage)...)
+		}
 	default:
 		return &corev1.Pod{}
 	}
@@ -238,7 +243,9 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	if artifacts != nil && artifacts.GCEImage {
 		podSpec.Containers = append(podSpec.Containers, buildGCECloudImageContainer)
 	}
-	podSpec.Containers = append(podSpec.Containers, createImageContainer(r.ToolImage, artifact))
+	if artifacts != nil {
+		podSpec.Containers = append(podSpec.Containers, createImageContainer(r.ToolImage, artifact))
+	}
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -589,22 +596,15 @@ func imageExtractorContainer(toolImage, arch string) corev1.Container {
 	}
 }
 
-func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, toolImage string) []corev1.Container {
+// kanikoBuildContainer returns the Kaniko build container. Used as init container when building for stage 2, or as the sole main container for OCI-only (no artifacts).
+func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string) corev1.Container {
 	kanikoVolumeMounts := []corev1.VolumeMount{
-		{
-			Name:      "rootfs",
-			MountPath: "/rootfs",
-		},
-		{
-			Name:      "ocispec",
-			MountPath: "/workspace/ocispec",
-		},
+		{Name: "rootfs", MountPath: "/rootfs"},
+		{Name: "ocispec", MountPath: "/workspace/ocispec"},
 	}
-
 	if buildContextVolume != "" {
 		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name:      buildContextVolume,
-			MountPath: "/workspace",
+			Name: buildContextVolume, MountPath: "/workspace",
 		})
 	}
 
@@ -642,31 +642,29 @@ func baseImageBuildContainers(artifact *buildv1alpha2.OSArtifact, buildContextVo
 		kanikoEnv = append(kanikoEnv, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/kaniko/.docker"})
 	}
 
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "kaniko-build",
+		Image:           "gcr.io/kaniko-project/executor:latest",
+		Args:            kanikoArgs,
+		Env:             kanikoEnv,
+		VolumeMounts:    kanikoVolumeMounts,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(false)},
+	}
+}
+
+// baseImageBuildInitContainers returns init containers for OCI build when stage 2 is used: kaniko, image-extractor, cleanup.
+func baseImageBuildInitContainers(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, toolImage string) []corev1.Container {
 	return []corev1.Container{
-		{
-			ImagePullPolicy: corev1.PullAlways,
-			Name:            "kaniko-build",
-			Image:           "gcr.io/kaniko-project/executor:latest",
-			Args:            kanikoArgs,
-			Env:             kanikoEnv,
-			VolumeMounts:    kanikoVolumeMounts,
-			SecurityContext: &corev1.SecurityContext{Privileged: ptr(false)},
-		},
+		kanikoBuildContainer(artifact, buildContextVolume, arch),
 		imageExtractorContainer(toolImage, arch),
 		{
 			ImagePullPolicy: corev1.PullAlways,
 			Name:            "cleanup",
 			Image:           "busybox",
 			Command:         []string{"/bin/rm"},
-			Args: []string{
-				"/rootfs/image.tar",
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      "rootfs",
-					MountPath: "/rootfs",
-				},
-			},
+			Args:            []string{"/rootfs/image.tar"},
+			VolumeMounts:    []corev1.VolumeMount{{Name: "rootfs", MountPath: "/rootfs"}},
 		},
 	}
 }
