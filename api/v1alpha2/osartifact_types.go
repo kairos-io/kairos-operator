@@ -208,6 +208,9 @@ const (
 type OSArtifactStatus struct {
 	// +kubebuilder:default=Pending
 	Phase ArtifactPhase `json:"phase,omitempty"`
+	// Message reports success or failure details (e.g. export job failure reason).
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true

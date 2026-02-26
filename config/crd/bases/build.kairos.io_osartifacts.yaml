@@ -5473,6 +5473,8 @@ spec:
             type: object
           status:
             properties:
+              message:
+                type: string
               phase:
                 default: Pending
                 type: string

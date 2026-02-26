@@ -81,6 +81,18 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.Update(ctx, &artifact)
 	}
 
+	// Skip reconciliation if the namespace is terminating; creating ConfigMaps etc. would be forbidden.
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: artifact.Namespace}, &ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{Requeue: true}, err
+	}
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
 	if !controllerutil.ContainsFinalizer(&artifact, FinalizerName) {
 		controllerutil.AddFinalizer(&artifact, FinalizerName)
 		if err := r.Update(ctx, &artifact); err != nil {
@@ -392,6 +404,10 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 				},
 				Spec: artifact.Spec.Exporters[i],
 			}
+			// Default BackoffLimit to 0 so a failed export job does not retry (fail fast, report once).
+			if job.Spec.BackoffLimit == nil {
+				job.Spec.BackoffLimit = ptr(int32(0))
+			}
 
 			// Clean up template metadata to remove server-managed fields that shouldn't be in JobSpec.Template
 			job.Spec.Template.ObjectMeta = metav1.ObjectMeta{
@@ -420,13 +436,21 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 		} else if job.Spec.Completions == nil || *job.Spec.Completions == 1 {
 			if job.Status.Succeeded > 0 {
 				succeeded++
+			} else if exportJobFailed(job) {
+				artifact.Status.Phase = buildv1alpha2.Error
+				artifact.Status.Message = exportJobFailureMessage(job)
+				if err := r.Status().Update(ctx, artifact); err != nil {
+					return ctrl.Result{Requeue: true}, err
+				}
+				return ctrl.Result{}, nil
 			}
 		} else if *job.Spec.BackoffLimit <= job.Status.Failed {
 			artifact.Status.Phase = buildv1alpha2.Error
+			artifact.Status.Message = exportJobFailureMessage(job)
 			if err := r.Status().Update(ctx, artifact); err != nil {
 				return ctrl.Result{Requeue: true}, err
 			}
-			break
+			return ctrl.Result{}, nil
 		}
 	}
 
@@ -438,6 +462,32 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// exportJobFailed returns true when the Job has permanently failed (e.g. backoffLimit exceeded).
+func exportJobFailed(job *batchv1.Job) bool {
+	for _, c := range job.Status.Conditions {
+		if c.Status == corev1.ConditionTrue && (c.Type == batchv1.JobFailed || c.Type == batchv1.JobFailureTarget) {
+			return true
+		}
+	}
+	return false
+}
+
+// exportJobFailureMessage returns a short message for the Job failure (reason and/or message from status).
+func exportJobFailureMessage(job *batchv1.Job) string {
+	for _, c := range job.Status.Conditions {
+		if c.Status == corev1.ConditionTrue && (c.Type == batchv1.JobFailed || c.Type == batchv1.JobFailureTarget) {
+			if c.Message != "" {
+				return fmt.Sprintf("export job %s failed: %s", job.Name, c.Message)
+			}
+			if c.Reason != "" {
+				return fmt.Sprintf("export job %s failed: %s", job.Name, c.Reason)
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("export job %s failed", job.Name)
 }
 
 // SetupWithManager sets up the controller with the Manager.
