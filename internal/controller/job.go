@@ -223,13 +223,13 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		// UKI (signed) artifacts: run build-uki for each requested output type (<name>-uki.iso, etc.).
 		if artifacts.UKI != nil && (artifacts.UKI.ISO || artifacts.UKI.Container || artifacts.UKI.EFI) {
 			if artifacts.UKI.ISO {
-				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "iso", volumeMounts))
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, "iso", volumeMounts))
 			}
 			if artifacts.UKI.Container {
-				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "container", volumeMounts))
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, "container", volumeMounts))
 			}
 			if artifacts.UKI.EFI {
-				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "uki", volumeMounts))
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, "uki", volumeMounts))
 			}
 		}
 		// Unsigned ISO when artifacts.ISO or Netboot is set (output <name>.iso); can run alongside UKI ISO (<name>-uki.iso).
@@ -377,7 +377,7 @@ func ukiArtifactName(artifactName string) string {
 	return artifactName + "-uki"
 }
 
-func buildUKICommand(artifact *buildv1alpha2.OSArtifact, arch, outputType string) string {
+func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) string {
 	var cmd strings.Builder
 	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
 	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifact.Name))
@@ -395,7 +395,7 @@ func buildUKICommand(artifact *buildv1alpha2.OSArtifact, arch, outputType string
 	return cmd.String()
 }
 
-func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch, outputType string, mounts []corev1.VolumeMount) corev1.Container {
+func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, outputType string, mounts []corev1.VolumeMount) corev1.Container {
 	name := "build-uki-" + outputType
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -403,7 +403,7 @@ func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 		Name:            name,
 		Image:           toolImage,
 		Command:         []string{"/bin/bash", "-cxe"},
-		Args:            []string{buildUKICommand(artifact, arch, outputType)},
+		Args:            []string{buildUKICommand(artifact, outputType)},
 		VolumeMounts:    mounts,
 	}
 }
@@ -451,7 +451,7 @@ func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv
 	return artifact.Name
 }
 
-func buildNetbootCmd(artifact *buildv1alpha2.OSArtifact, isoBasename string) string {
+func buildNetbootCmd(isoBasename string) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug netboot")
 	fmt.Fprintf(&c, " /artifacts/%s.iso", isoBasename)
@@ -476,7 +476,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Image:           toolImage,
 		Command:         []string{"/bin/bash", "-cxe"},
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
-		Args:            []string{buildNetbootCmd(artifact, isoBasename)},
+		Args:            []string{buildNetbootCmd(isoBasename)},
 		VolumeMounts:    mounts,
 	}
 }
