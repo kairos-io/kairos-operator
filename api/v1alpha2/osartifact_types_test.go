@@ -8,10 +8,11 @@ import (
 	"github.com/kairos-io/kairos-operator/api/v1alpha2"
 )
 
-// validImageRef returns a minimal spec with image.ref set so Validate passes
+// validImageRef returns a minimal spec with image.ref and artifacts set so Validate passes (Ref requires artifacts).
 func validImageRef(ref string) v1alpha2.OSArtifactSpec {
 	return v1alpha2.OSArtifactSpec{
-		Image: v1alpha2.ImageSpec{Ref: ref},
+		Image:     v1alpha2.ImageSpec{Ref: ref},
+		Artifacts: &v1alpha2.ArtifactSpec{ISO: true}, // Ref requires at least one artifact type
 	}
 }
 
@@ -82,9 +83,16 @@ var _ = Describe("OSArtifactSpec.ArchSanitized", func() {
 
 var _ = Describe("OSArtifactSpec.Validate", func() {
 	Describe("spec.image is required", func() {
-		It("validates when image.ref is set", func() {
+		It("validates when image.ref is set with artifacts", func() {
 			spec := validImageRef("quay.io/kairos/kairos:v1")
 			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
+		It("returns error when image.ref is set without artifacts", func() {
+			spec := v1alpha2.OSArtifactSpec{Image: v1alpha2.ImageSpec{Ref: "quay.io/kairos/kairos:v1"}}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.artifacts is required when spec.image.ref is set"))
 		})
 	})
 
@@ -131,6 +139,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 					Ref:          "quay.io/kairos/kairos:v1",
 					BuildOptions: &v1alpha2.BuildOptions{Version: "v1"},
 				},
+				Artifacts: &v1alpha2.ArtifactSpec{ISO: true}, // Ref requires at least one artifact type
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
@@ -244,12 +253,51 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("buildImage"))
 			Expect(err.Error()).To(ContainSubstring("registry, repository, and tag are all required"))
 		})
+
+		It("returns error when push is true but buildImage is missing", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:    true,
+					OCISpec: &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("push"))
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
+		})
+
+		It("returns error when push is true but buildImage is incomplete", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:       true,
+					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "", Tag: "latest"},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buildImage"))
+			// Either our push validation or the "all required" validation may fire
+			Expect(err.Error()).To(Or(ContainSubstring("push"), ContainSubstring("registry, repository, and tag are all required")))
+		})
+
+		It("returns nil when push is true and buildImage is set with registry, repository, tag", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Push:       true,
+					BuildImage: &v1alpha2.BuildImage{Registry: "r.io", Repository: "ns/img", Tag: "latest"},
+					OCISpec:    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+				},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
 	})
 
 	Describe("spec.artifacts", func() {
 		It("returns error when overlayISOVolume references missing volume", func() {
 			spec := validImageRef("img")
-			spec.Artifacts = &v1alpha2.ArtifactSpec{OverlayISOVolume: "missing"}
+			spec.Artifacts = &v1alpha2.ArtifactSpec{ISO: true, OverlayISOVolume: "missing"}
 			err := spec.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overlayISOVolume"))
@@ -258,7 +306,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 
 		It("returns error when overlayRootfsVolume references missing volume", func() {
 			spec := validImageRef("img")
-			spec.Artifacts = &v1alpha2.ArtifactSpec{OverlayRootfsVolume: "missing"}
+			spec.Artifacts = &v1alpha2.ArtifactSpec{ISO: true, OverlayRootfsVolume: "missing"}
 			err := spec.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("overlayRootfsVolume"))
@@ -268,6 +316,7 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			spec := validImageRef("img")
 			spec.Volumes = []corev1.Volume{{Name: "iso-ov"}, {Name: "rootfs-ov"}}
 			spec.Artifacts = &v1alpha2.ArtifactSpec{
+				ISO:                 true,
 				OverlayISOVolume:    "iso-ov",
 				OverlayRootfsVolume: "rootfs-ov",
 			}

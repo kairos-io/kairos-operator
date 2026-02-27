@@ -59,6 +59,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 		return nil
 	}
 
+	// findContainerInPod finds a container by name in init or main containers (e.g. kaniko-build can be either when OCI-only).
+	findContainerInPod := func(pod *corev1.Pod, name string) *corev1.Container {
+		if c := findInitContainerByName(pod, name); c != nil {
+			return c
+		}
+		return findContainerByName(pod, name)
+	}
+
 	// testContainerCommand tests that a container exists with expected command substrings
 	testContainerCommand := func(containerName string, expectedSubstrings []string) {
 		pvc, err := r.createPVC(context.TODO(), artifact)
@@ -121,7 +129,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Name:      randStringRunes(10),
 			},
 			Spec: buildv1alpha2.OSArtifactSpec{
-				Image: buildv1alpha2.ImageSpec{Ref: testImageName},
+				Image:     buildv1alpha2.ImageSpec{Ref: testImageName},
+				Artifacts: &buildv1alpha2.ArtifactSpec{}, // Ref requires artifacts (validation)
 			},
 		}
 
@@ -198,34 +207,30 @@ var _ = Describe("OSArtifactReconciler", func() {
 				}
 			})
 
-			It("creates an Init Container to build the image", func() {
+			It("creates a container to build the image", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				By("checking if an init container was created")
-				initContainerNames := make([]string, 0, len(pod.Spec.InitContainers))
-				for _, c := range pod.Spec.InitContainers {
-					initContainerNames = append(initContainerNames, c.Name)
-				}
-				Expect(initContainerNames).To(ContainElement("kaniko-build"))
+				By("checking if a build container (kaniko-build) was created")
+				kaniko := findContainerInPod(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
 
-				By("checking if init containers complete successfully")
+				By("checking if the build completes successfully")
+				kanikoIsInit := findInitContainerByName(pod, "kaniko-build") != nil
 				Eventually(func() bool {
 					p, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
-
-					var allReady = false
-					if len(p.Status.InitContainerStatuses) > 0 {
-						allReady = true
+					if kanikoIsInit {
+						var allReady = len(p.Status.InitContainerStatuses) > 0
+						for _, c := range p.Status.InitContainerStatuses {
+							allReady = allReady && c.Ready
+						}
+						return allReady
 					}
-					for _, c := range p.Status.InitContainerStatuses {
-						allReady = allReady && c.Ready
-					}
-
-					return allReady
+					return p.Status.Phase == corev1.PodSucceeded
 				}, 2*time.Minute, 5*time.Second).Should(BeTrue())
 			})
 		})
@@ -234,6 +239,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 	Describe("Importers and User Volumes", func() {
 		BeforeEach(func() {
 			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+			// Ref requires artifacts (validation); use minimal so create-image is the main container.
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 		})
 
 		When("spec.importers is set", func() {
@@ -375,7 +382,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
 					var hasContextMount bool
@@ -394,7 +401,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
 					var hasOCISpecMount bool
@@ -410,7 +417,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 			When("buildContextVolume is not set", func() {
 				BeforeEach(func() {
 					// Parent BeforeEach already created the secret and set OCISpec with BuildContextVolume.
-					// Only override to clear BuildContextVolume and Volumes so kaniko has no extra workspace mount.
+					// Clear BuildContextVolume and Volumes so kaniko has no extra workspace mount (build context at /workspace).
 					artifact.Spec.Image.OCISpec.BuildContextVolume = ""
 					artifact.Spec.Volumes = nil
 				})
@@ -421,14 +428,15 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
+					// Kaniko always has rootfs, ocispec, and artifacts (tarball written to volume). No extra workspace mount.
 					mountNames := make([]string, 0, len(kaniko.VolumeMounts))
 					for _, vm := range kaniko.VolumeMounts {
 						mountNames = append(mountNames, vm.Name)
 					}
-					Expect(mountNames).To(ConsistOf("rootfs", "ocispec"))
+					Expect(mountNames).To(ConsistOf("rootfs", "ocispec", "artifacts"))
 				})
 			})
 		})
@@ -453,7 +461,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
 
@@ -482,7 +490,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
 
@@ -513,7 +521,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
@@ -528,7 +536,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-iso"))
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-rootfs"))
@@ -569,7 +577,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(findInitContainerByName(pod, "build-iso")).ToNot(BeNil())
+				Expect(findContainerInPod(pod, "build-iso")).ToNot(BeNil())
 				Expect(findContainerByName(pod, "build-cloud-image")).ToNot(BeNil())
 			})
 		})
@@ -595,7 +603,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				buildIso := findInitContainerByName(pod, "build-iso")
+				buildIso := findContainerInPod(pod, "build-iso")
 				Expect(buildIso).ToNot(BeNil())
 				Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
 				Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
@@ -666,6 +674,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 
 			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
+				// Refresh artifact so we have latest ResourceVersion (e.g. if a controller added finalizer).
+				Expect(r.Get(context.TODO(), client.ObjectKeyFromObject(artifact), artifact)).To(Succeed())
 				result, err := r.startBuild(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.RequeueAfter).To(BeZero())
@@ -929,7 +939,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 							Name:      "other-artifact",
 						},
 						Spec: buildv1alpha2.OSArtifactSpec{
-							Image: buildv1alpha2.ImageSpec{Ref: "quay.io/fake:1"},
+							Image:     buildv1alpha2.ImageSpec{Ref: "quay.io/fake:1"},
+							Artifacts: &buildv1alpha2.ArtifactSpec{},
 						},
 					}
 

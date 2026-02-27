@@ -81,7 +81,6 @@ type ImageSpec struct {
 	BuildImage *BuildImage `json:"buildImage,omitempty"`
 
 	// Push, when true, pushes the built image to a registry. Only used when building; ignored when Ref is set.
-	// TODO: implement push in controller (kaniko --destination + auth from PushCredentialsSecretRef; today we always use --no-push).
 	// +optional
 	Push bool `json:"push,omitempty"`
 
@@ -209,6 +208,9 @@ const (
 type OSArtifactStatus struct {
 	// +kubebuilder:default=Pending
 	Phase ArtifactPhase `json:"phase,omitempty"`
+	// Message reports success or failure details (e.g. export job failure reason).
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -269,6 +271,10 @@ func (s *OSArtifactSpec) Validate() error {
 	if err := validateImageSpec(&s.Image, volumeNames); err != nil {
 		return err
 	}
+	// When using a pre-built image (image.ref), artifacts are required; otherwise the OSArtifact would be a no-op.
+	if s.Image.Ref != "" && s.Artifacts == nil {
+		return fmt.Errorf("spec.artifacts is required when spec.image.ref is set (pre-built image); specify which artifacts to produce (e.g. ISO, cloud image)")
+	}
 	if s.Artifacts != nil {
 		if err := s.validateArtifactSpec(volumeNames); err != nil {
 			return err
@@ -303,6 +309,13 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 		return fmt.Errorf("spec.image: when ref is empty, at least one of buildOptions or ociSpec must be set")
 	}
 
+	// When pushing, buildImage (registry, repository, tag) is required so we have a valid destination.
+	if img.Push {
+		if img.BuildImage == nil || img.BuildImage.Registry == "" || img.BuildImage.Repository == "" || img.BuildImage.Tag == "" {
+			return fmt.Errorf("spec.image.push is true but buildImage is missing or incomplete; when pushing, registry, repository, and tag are required")
+		}
+	}
+
 	if hasBuildOptions {
 		if img.BuildOptions.Version == "" {
 			return fmt.Errorf("spec.image.buildOptions.version is required when using buildOptions")
@@ -322,6 +335,9 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 
 func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error {
 	a := s.Artifacts
+	if !a.ISO && !a.CloudImage && !a.AzureImage && !a.GCEImage && !a.Netboot {
+		return fmt.Errorf("spec.artifacts: at least one artifact type must be enabled (iso, cloudImage, azureImage, gceImage, netboot)")
+	}
 	if a.OverlayISOVolume != "" && !volumeNames[a.OverlayISOVolume] {
 		return fmt.Errorf("spec.artifacts.overlayISOVolume references volume %q which is not defined in spec.volumes", a.OverlayISOVolume)
 	}
