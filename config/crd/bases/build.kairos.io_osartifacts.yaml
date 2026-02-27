@@ -87,6 +87,11 @@ spec:
                     required:
                     - keysVolume
                     type: object
+                    x-kubernetes-validations:
+                    - message: keysVolume is required when at least one of iso, container,
+                        or efi is true
+                      rule: '!( (self.iso || self.container || self.efi) && (!has(self.keysVolume)
+                        || self.keysVolume == "") )'
                 type: object
               exporters:
                 items:

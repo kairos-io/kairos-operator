@@ -169,6 +169,8 @@ type ArtifactSpec struct {
 }
 
 // UKISpec groups UKI (signed/trusted boot) artifact options. Keys are read from the volume named by KeysVolume.
+//
+// +kubebuilder:validation:XValidation:rule="!( (self.iso || self.container || self.efi) && (!has(self.keysVolume) || self.keysVolume == \"\") )",message="keysVolume is required when at least one of iso, container, or efi is true"
 type UKISpec struct {
 	// ISO requests a signed UKI ISO (auroraboot build-uki --output-type iso).
 	// +optional
