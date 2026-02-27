@@ -41,11 +41,12 @@ From the Stage 1 image: ISO, cloud image, netboot, VHD, GCE, etc. (auroraboot). 
 
 - **artifacts.***: iso, cloudImage, diskSize, cloudConfigRef, grubConfig, arch, etc.
 - **artifacts.overlayISOVolume**, **artifacts.overlayRootfsVolume** (strings): volume names from `spec.volumes` for --overlay-iso and --overlay-rootfs (replaces top-level overlay volumeBindings).
+- **artifacts.uki** (object, optional): group for UKI (signed) artifacts. When present, **artifacts.uki.iso**, **artifacts.uki.container**, and **artifacts.uki.efi** (booleans) request a signed ISO, a signed UKI OCI image, or a raw directory of .efi files respectively. **artifacts.uki.keysVolume** (string) names a volume from `spec.volumes` that holds the signing keys (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem). **Validation:** when any of `uki.iso`, `uki.container`, or `uki.efi` is true, `uki.keysVolume` is mandatory. The operator runs `auroraboot build-uki` with the appropriate `--output-type` and mounts the keys volume at `/uki-keys`.
 
 ### Volume bindings (scoped)
 
 - **Stage 1:** **image.ociSpec.buildContextVolume** (optional): volume name for OCI build context at /workspace (kaniko). Only used when building from OCISpec (BuildOptions-only has no user COPY).
-- **Stage 2:** **artifacts.overlayISOVolume**, **artifacts.overlayRootfsVolume** (optional).
+- **Stage 2:** **artifacts.overlayISOVolume**, **artifacts.overlayRootfsVolume**, **artifacts.uki** (iso/container/efi + keysVolume) (optional).
 - **spec.volumes** and **spec.importers** remain at spec level (feed both stages as needed).
 
 ### Summary
@@ -85,6 +86,7 @@ Each example is a target-API manifest (desired state). Secrets: `cloud-config` (
 | Pre-built image + importers + overlay volumes (scoped under artifacts) | [07-importers-and-scoped-bindings.yaml](07-importers-and-scoped-bindings.yaml) | `image.ref` | ISO + overlayISOVolume, overlayRootfsVolume + importers |
 | Custom OCI spec + build-context volume (scoped under image.ociSpec) | [08-ocispec-build-context-volume.yaml](08-ocispec-build-context-volume.yaml) | `image.ociSpec` + buildContextVolume + importers | ISO |
 | Templated Dockerfile (dashboard + user parts) + BuildOptions (baseImage) | [09-ocispec-buildoptions-kairosify.yaml](09-ocispec-buildoptions-kairosify.yaml) | `image.ociSpec` (template, no FROM) + `image.buildOptions` (baseImage + version, etc.) + push | ISO |
+| Pre-built image + UKI (signed) artifacts | [10-uki-keys-volume.yaml](10-uki-keys-volume.yaml) | `image.ref` + artifacts.uki (iso/container/efi + keysVolume) + importer | UKI ISO / container / efi |
 
 ---
 
