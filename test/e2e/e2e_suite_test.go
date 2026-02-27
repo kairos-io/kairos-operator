@@ -246,11 +246,50 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	buf.Write(out)
 	buf.WriteString("\n")
 
-	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
+	// Line limit for builder pod logs; use more when debugging build failures (e.g. kaniko/kairos-init output).
+	const builderPodLogTail = 500
+
 	podList, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 	if err == nil {
 		for _, p := range podList.Items {
 			podName := p.GetName()
+
+			// Emit container statuses (init + main) so we see which container failed and its exit code.
+			buf.WriteString("=== Builder Pod Container Statuses ===\n")
+			if statuses, _, _ := unstructured.NestedSlice(p.Object, "status", "initContainerStatuses"); statuses != nil {
+				for _, s := range statuses {
+					if m, _ := s.(map[string]interface{}); m != nil {
+						name, _ := m["name"].(string)
+						state, _, _ := unstructured.NestedMap(m, "state")
+						term, _, _ := unstructured.NestedMap(state, "terminated")
+						reason, _, _ := unstructured.NestedString(term, "reason")
+						exitCode, _, _ := unstructured.NestedInt64(term, "exitCode")
+						if reason != "" || exitCode != 0 {
+							fmt.Fprintf(&buf, "init %s: reason=%s exitCode=%d\n", name, reason, exitCode)
+						} else {
+							fmt.Fprintf(&buf, "init %s: %v\n", name, state)
+						}
+					}
+				}
+			}
+			if statuses, _, _ := unstructured.NestedSlice(p.Object, "status", "containerStatuses"); statuses != nil {
+				for _, s := range statuses {
+					if m, _ := s.(map[string]interface{}); m != nil {
+						name, _ := m["name"].(string)
+						state, _, _ := unstructured.NestedMap(m, "state")
+						term, _, _ := unstructured.NestedMap(state, "terminated")
+						reason, _, _ := unstructured.NestedString(term, "reason")
+						exitCode, _, _ := unstructured.NestedInt64(term, "exitCode")
+						if reason != "" || exitCode != 0 {
+							fmt.Fprintf(&buf, "container %s: reason=%s exitCode=%d\n", name, reason, exitCode)
+						} else {
+							fmt.Fprintf(&buf, "container %s: %v\n", name, state)
+						}
+					}
+				}
+			}
+			buf.WriteString("\n")
+
 			// Collect container names (init + main) so we get logs even when --all-containers fails (e.g. one container not started)
 			var containers []string
 			if inits, _, _ := unstructured.NestedSlice(p.Object, "spec", "initContainers"); inits != nil {
@@ -271,14 +310,16 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 					}
 				}
 			}
+			fmt.Fprintf(&buf, "=== Builder Pod Logs (last %d lines per container) ===\n", builderPodLogTail)
 			for _, cName := range containers {
-				cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", podName, "-c", cName, "--tail=80", "-n", ns)
+				cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", podName, "-c", cName, "--tail="+fmt.Sprint(builderPodLogTail), "-n", ns)
 				out, _ := cmd.CombinedOutput()
 				fmt.Fprintf(&buf, "--- Pod %s / %s ---\n%s\n", podName, cName, string(out))
 			}
 		}
 	} else {
-		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "-l", artifactLabelSelector.String(), "--all-containers=true", "--prefix=true", "--tail=80", "-n", ns)
+		fmt.Fprintf(&buf, "=== Builder Pod Logs (last %d lines) ===\n", builderPodLogTail)
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "-l", artifactLabelSelector.String(), "--all-containers=true", "--prefix=true", "--tail="+fmt.Sprint(builderPodLogTail), "-n", ns)
 		out, _ := cmd.CombinedOutput()
 		buf.Write(out)
 	}
