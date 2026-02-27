@@ -662,7 +662,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					"build-uki-container should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 
-			It("adds build-uki-efi container with keys volume mount and flags, no build-iso", func() {
+			It("adds build-uki-uki container (raw EFI) with keys volume mount and flags, no build-iso", func() {
 				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
 					EFI:        true,
 					KeysVolume: ukiKeysVolumeName,
@@ -675,10 +675,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.efi is requested")
-				buildUKI := findContainerInPod(pod, "build-uki-efi")
+				// EFI output uses auroraboot --output-type uki, so container name is build-uki-uki
+				buildUKI := findContainerInPod(pod, "build-uki-uki")
 				Expect(buildUKI).ToNot(BeNil())
 				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type efi"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type uki"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
@@ -693,7 +694,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}
 				}
 				Expect(hasKeysMount).To(BeTrue(),
-					"build-uki-efi should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+					"build-uki-uki should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 		})
 
