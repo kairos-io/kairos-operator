@@ -24,7 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const testImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+const (
+	testImageName     = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName = "uki-keys" // volume name used in UKI tests
+)
 
 var _ = Describe("OSArtifactReconciler", func() {
 	var r *OSArtifactReconciler
@@ -588,11 +591,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
 					UKI: &buildv1alpha2.UKISpec{
 						ISO:        true,
-						KeysVolume: "uki-keys",
+						KeysVolume: ukiKeysVolumeName,
 					},
 				}
 				artifact.Spec.Volumes = []corev1.Volume{
-					{Name: "uki-keys", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					{Name: ukiKeysVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				}
 			})
 
@@ -609,25 +612,26 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type iso"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
 
 				var hasKeysMount bool
 				for _, vm := range buildUKI.VolumeMounts {
-					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
 						hasKeysMount = true
 						break
 					}
 				}
-				Expect(hasKeysMount).To(BeTrue(), "build-uki-iso should have uki-keys volume mounted at /uki-keys")
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-iso should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 
 			It("adds build-uki-container container with keys volume mount and flags, no build-iso", func() {
 				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
 					Container:  true,
-					KeysVolume: "uki-keys",
+					KeysVolume: ukiKeysVolumeName,
 				}
 
 				pvc, err := r.createPVC(context.TODO(), artifact)
@@ -642,25 +646,26 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type container"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
 
 				var hasKeysMount bool
 				for _, vm := range buildUKI.VolumeMounts {
-					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
 						hasKeysMount = true
 						break
 					}
 				}
-				Expect(hasKeysMount).To(BeTrue(), "build-uki-container should have uki-keys volume mounted at /uki-keys")
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-container should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 
 			It("adds build-uki-efi container with keys volume mount and flags, no build-iso", func() {
 				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
 					EFI:        true,
-					KeysVolume: "uki-keys",
+					KeysVolume: ukiKeysVolumeName,
 				}
 
 				pvc, err := r.createPVC(context.TODO(), artifact)
@@ -675,19 +680,20 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type efi"))
 				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
-				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
 
 				var hasKeysMount bool
 				for _, vm := range buildUKI.VolumeMounts {
-					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
 						hasKeysMount = true
 						break
 					}
 				}
-				Expect(hasKeysMount).To(BeTrue(), "build-uki-efi should have uki-keys volume mounted at /uki-keys")
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-efi should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 		})
 
