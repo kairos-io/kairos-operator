@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-noauth
+  namespace: registry
+  labels:
+    app: registry-noauth
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5001
+      targetPort: 5000
+      name: registry
+  selector:
+    app: registry-noauth

@@ -1,0 +1,27 @@
+# No-auth registry for e2e (push without credentials). Do not use in production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-noauth
+  namespace: registry
+  labels:
+    app: registry-noauth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-noauth
+  template:
+    metadata:
+      labels:
+        app: registry-noauth
+    spec:
+      containers:
+        - name: registry
+          image: registry:2
+          ports:
+            - containerPort: 5000
+          env:
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+            # No REGISTRY_AUTH: allow push/pull without credentials (e2e only)

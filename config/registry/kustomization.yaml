@@ -1,0 +1,13 @@
+# In-cluster registries for e2e: one with auth, one without.
+# Deploy with: kubectl apply -k config/registry
+# With auth: registry.registry.svc.cluster.local:5000 (user e2epush, password e2epushpass)
+# No auth:   registry-noauth.registry.svc.cluster.local:5001
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - htpasswd-secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - deployment-noauth.yaml
+  - service-noauth.yaml
