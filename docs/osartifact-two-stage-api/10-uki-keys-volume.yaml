@@ -15,6 +15,8 @@
 #   - Set spec.artifacts.uki with the volume name and which outputs you want.
 #
 # When any of uki.iso, uki.container, or uki.efi is true, keysVolume is mandatory.
+# UKI outputs use a distinct basename (e.g. <artifact-name>-uki.iso) so they do not
+# collide with unsigned artifacts (<artifact-name>.iso from build-iso).
 # The operator runs auroraboot build-uki (once per output type), mounts the keys
 # volume at a fixed path (e.g. /uki-keys), and passes:
 #   --public-keys /uki-keys

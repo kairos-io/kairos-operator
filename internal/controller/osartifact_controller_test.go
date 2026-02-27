@@ -582,6 +582,49 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
+		When("spec.artifacts.uki is set (UKI signed artifacts)", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					UKI: &buildv1alpha2.UKISpec{
+						ISO:        true,
+						KeysVolume: "uki-keys",
+					},
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "uki-keys", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			It("adds build-uki-iso container with keys volume mount and flags, no build-iso", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.iso is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-iso")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type iso"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(), "build-uki-iso should have uki-keys volume mounted at /uki-keys")
+			})
+		})
+
 		When("spec.artifacts.overlayISOVolume and overlayRootfsVolume are set", func() {
 			BeforeEach(func() {
 				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}

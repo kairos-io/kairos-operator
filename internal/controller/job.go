@@ -220,6 +220,19 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		if artifacts.KairosRelease != "" {
 			inits = append(inits, kairosReleaseContainer(r.ToolImage))
 		}
+		// UKI (signed) artifacts: run build-uki for each requested output type (<name>-uki.iso, etc.).
+		if artifacts.UKI != nil && (artifacts.UKI.ISO || artifacts.UKI.Container || artifacts.UKI.EFI) {
+			if artifacts.UKI.ISO {
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "iso", volumeMounts))
+			}
+			if artifacts.UKI.Container {
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "container", volumeMounts))
+			}
+			if artifacts.UKI.EFI {
+				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, arch, "uki", volumeMounts))
+			}
+		}
+		// Unsigned ISO when artifacts.ISO or Netboot is set (output <name>.iso); can run alongside UKI ISO (<name>-uki.iso).
 		if artifacts.ISO || artifacts.Netboot {
 			inits = append(inits, buildIsoContainer)
 		}
@@ -312,6 +325,12 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 		})
 	}
 	mounts = appendOverlayVolumeMounts(mounts, overlayISO, overlayRootfs)
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.UKI != nil && artifact.Spec.Artifacts.UKI.KeysVolume != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      artifact.Spec.Artifacts.UKI.KeysVolume,
+			MountPath: "/uki-keys",
+		})
+	}
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.CloudConfigRef != nil {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "cloudconfig",
@@ -351,6 +370,44 @@ func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 	}
 }
 
+const ukiKeysMountPath = "/uki-keys"
+
+// ukiArtifactName returns the basename for UKI outputs so they do not collide with unsigned artifacts (e.g. <name>-uki.iso vs <name>.iso).
+func ukiArtifactName(artifactName string) string {
+	return artifactName + "-uki"
+}
+
+func buildUKICommand(artifact *buildv1alpha2.OSArtifact, arch, outputType string) string {
+	var cmd strings.Builder
+	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
+	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifact.Name))
+	fmt.Fprintf(&cmd, " --output-dir %s", "/artifacts")
+	fmt.Fprintf(&cmd, " --output-type %s", outputType)
+	fmt.Fprintf(&cmd, " --public-keys %s", ukiKeysMountPath)
+	fmt.Fprintf(&cmd, " --tpm-pcr-private-key %s/tpm2-pcr-private.pem", ukiKeysMountPath)
+	fmt.Fprintf(&cmd, " --sb-key %s/db.key", ukiKeysMountPath)
+	fmt.Fprintf(&cmd, " --sb-cert %s/db.pem", ukiKeysMountPath)
+	// Note: auroraboot build-uki does not support --arch; arch is not passed.
+	fmt.Fprintf(&cmd, " %s", "dir:/rootfs")
+	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
+		fmt.Fprintf(&cmd, " --cloud-config %s", "/cloud-config.yaml")
+	}
+	return cmd.String()
+}
+
+func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch, outputType string, mounts []corev1.VolumeMount) corev1.Container {
+	name := "build-uki-" + outputType
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
+		Name:            name,
+		Image:           toolImage,
+		Command:         []string{"/bin/bash", "-cxe"},
+		Args:            []string{buildUKICommand(artifact, arch, outputType)},
+		VolumeMounts:    mounts,
+	}
+}
+
 func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug")
@@ -386,12 +443,20 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 	}
 }
 
-func buildNetbootCmd(artifact *buildv1alpha2.OSArtifact) string {
+// isoBasenameForNetboot returns the ISO basename (without .iso) so netboot finds the right file: use UKI name when the ISO was built by build-uki.
+func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
+	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
+		return ukiArtifactName(artifact.Name)
+	}
+	return artifact.Name
+}
+
+func buildNetbootCmd(artifact *buildv1alpha2.OSArtifact, isoBasename string) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug netboot")
-	fmt.Fprintf(&c, " /artifacts/%s.iso", artifact.Name)
+	fmt.Fprintf(&c, " /artifacts/%s.iso", isoBasename)
 	c.WriteString(" /artifacts")
-	fmt.Fprintf(&c, " %s", artifact.Name)
+	fmt.Fprintf(&c, " %s", isoBasename)
 	return c.String()
 }
 
@@ -403,6 +468,7 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 }
 
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
+	isoBasename := isoBasenameForNetboot(artifact, artifacts)
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
@@ -410,7 +476,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Image:           toolImage,
 		Command:         []string{"/bin/bash", "-cxe"},
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
-		Args:            []string{buildNetbootCmd(artifact)},
+		Args:            []string{buildNetbootCmd(artifact, isoBasename)},
 		VolumeMounts:    mounts,
 	}
 }
