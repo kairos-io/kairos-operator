@@ -796,7 +796,7 @@ spec:
       keysVolume: uki-keys
 `, HadronPreKairosified)
 			artifact := artifactFromYAML(y)
-			// When the controller implements build-uki, a signed UKI ISO will be produced.
+			// The controller uses build-uki to produce a signed UKI ISO; this test verifies the ISO exists.
 			verifyScript := verifyISOExists()
 			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "uki-keys-", verifyScript)
 			runArtifactTest(tc, artifactName, artifactLabelSelector)
