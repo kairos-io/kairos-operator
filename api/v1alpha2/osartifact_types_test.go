@@ -322,5 +322,47 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			}
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
+
+		Describe("uki", func() {
+			It("returns error when uki.iso is true but keysVolume is empty", func() {
+				spec := validImageRef("img")
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					UKI: &v1alpha2.UKISpec{ISO: true},
+				}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("uki.keysVolume"))
+				Expect(err.Error()).To(ContainSubstring("required"))
+			})
+
+			It("returns error when uki.keysVolume references missing volume", func() {
+				spec := validImageRef("img")
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					UKI: &v1alpha2.UKISpec{ISO: true, KeysVolume: "missing-keys"},
+				}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("uki.keysVolume"))
+				Expect(err.Error()).To(ContainSubstring("missing-keys"))
+			})
+
+			It("returns nil when uki has keysVolume and volume exists in spec.volumes", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					UKI: &v1alpha2.UKISpec{ISO: true, KeysVolume: "uki-keys"},
+				}
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+
+			It("returns nil when only uki artifacts are requested (no iso/cloudImage/etc)", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					UKI: &v1alpha2.UKISpec{EFI: true, KeysVolume: "uki-keys"},
+				}
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+		})
 	})
 })

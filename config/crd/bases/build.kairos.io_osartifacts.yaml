@@ -74,6 +74,19 @@ spec:
                     type: string
                   overlayRootfsVolume:
                     type: string
+                  uki:
+                    properties:
+                      container:
+                        type: boolean
+                      efi:
+                        type: boolean
+                      iso:
+                        type: boolean
+                      keysVolume:
+                        type: string
+                    required:
+                    - keysVolume
+                    type: object
                 type: object
               exporters:
                 items:
