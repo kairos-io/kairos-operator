@@ -623,6 +623,72 @@ var _ = Describe("OSArtifactReconciler", func() {
 				}
 				Expect(hasKeysMount).To(BeTrue(), "build-uki-iso should have uki-keys volume mounted at /uki-keys")
 			})
+
+			It("adds build-uki-container container with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					Container:  true,
+					KeysVolume: "uki-keys",
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.container is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-container")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type container"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(), "build-uki-container should have uki-keys volume mounted at /uki-keys")
+			})
+
+			It("adds build-uki-efi container with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					EFI:        true,
+					KeysVolume: "uki-keys",
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.efi is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-efi")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type efi"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys /uki-keys"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key /uki-keys/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert /uki-keys/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == "uki-keys" && vm.MountPath == "/uki-keys" {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(), "build-uki-efi should have uki-keys volume mounted at /uki-keys")
+			})
 		})
 
 		When("spec.artifacts.overlayISOVolume and overlayRootfsVolume are set", func() {
