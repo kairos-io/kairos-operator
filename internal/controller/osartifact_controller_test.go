@@ -24,7 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const testImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+const (
+	testImageName     = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName = "uki-keys" // volume name used in UKI tests
+)
 
 var _ = Describe("OSArtifactReconciler", func() {
 	var r *OSArtifactReconciler
@@ -579,6 +582,119 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				Expect(findContainerInPod(pod, "build-iso")).ToNot(BeNil())
 				Expect(findContainerByName(pod, "build-cloud-image")).ToNot(BeNil())
+			})
+		})
+
+		When("spec.artifacts.uki is set (UKI signed artifacts)", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					UKI: &buildv1alpha2.UKISpec{
+						ISO:        true,
+						KeysVolume: ukiKeysVolumeName,
+					},
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: ukiKeysVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			It("adds build-uki-iso container with keys volume mount and flags, no build-iso", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.iso is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-iso")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type iso"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-iso should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+			})
+
+			It("adds build-uki-container container with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					Container:  true,
+					KeysVolume: ukiKeysVolumeName,
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.container is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-container")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type container"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-container should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+			})
+
+			It("adds build-uki-uki container (raw EFI) with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					EFI:        true,
+					KeysVolume: ukiKeysVolumeName,
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.efi is requested")
+				// EFI output uses auroraboot --output-type uki, so container name is build-uki-uki
+				buildUKI := findContainerInPod(pod, "build-uki-uki")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-uki should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
 			})
 		})
 

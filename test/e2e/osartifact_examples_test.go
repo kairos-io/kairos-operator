@@ -765,4 +765,41 @@ spec:
 			runArtifactTest(tc, artifactName, artifactLabelSelector)
 		})
 	})
+
+	Describe("UKI (signed) artifacts", func() {
+		It("uses uki keys volume and importer to produce signed UKI ISO", func() {
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: uki-keys-volume
+  namespace: default
+spec:
+  image:
+    ref: %s
+  volumes:
+    - name: uki-keys
+      emptyDir: {}
+  importers:
+    - name: generate-uki-keys
+      image: quay.io/kairos/auroraboot:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - auroraboot genkey my-uki -o /keys
+      volumeMounts:
+        - name: uki-keys
+          mountPath: /keys
+  artifacts:
+    arch: amd64
+    uki:
+      iso: true
+      keysVolume: uki-keys
+`, HadronPreKairosified)
+			artifact := artifactFromYAML(y)
+			// The controller uses build-uki to produce a signed UKI ISO; this test verifies the ISO exists.
+			verifyScript := verifyISOExists()
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "uki-keys-", verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
 })

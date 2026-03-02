@@ -161,6 +161,31 @@ type ArtifactSpec struct {
 	// OverlayRootfsVolume names a volume (from spec.volumes) for --overlay-rootfs (auroraboot build-iso).
 	// +optional
 	OverlayRootfsVolume string `json:"overlayRootfsVolume,omitempty"`
+
+	// UKI specifies signed (UKI) artifact outputs and the volume holding signing keys.
+	// When any of iso, container, or efi is true, keysVolume is required and must reference spec.volumes.
+	// +optional
+	UKI *UKISpec `json:"uki,omitempty"`
+}
+
+// UKISpec groups UKI (signed/trusted boot) artifact options. Keys are read from the volume named by KeysVolume.
+//
+// +kubebuilder:validation:XValidation:rule="!( (self.iso || self.container || self.efi) && (!has(self.keysVolume) || self.keysVolume == \"\") )",message="keysVolume is required when at least one of iso, container, or efi is true"
+type UKISpec struct {
+	// ISO requests a signed UKI ISO (auroraboot build-uki --output-type iso).
+	// +optional
+	ISO bool `json:"iso,omitempty"`
+
+	// Container requests a signed UKI OCI image (auroraboot build-uki --output-type container).
+	// +optional
+	Container bool `json:"container,omitempty"`
+
+	// EFI requests a raw directory of signed .efi files (auroraboot build-uki --output-type uki).
+	// +optional
+	EFI bool `json:"efi,omitempty"`
+
+	// KeysVolume names a volume (from spec.volumes) that holds signing keys (PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem). Required whenever the uki block is used (all UKI outputs need signing keys).
+	KeysVolume string `json:"keysVolume"`
 }
 
 // OSArtifactSpec defines the desired state of OSArtifact
@@ -335,14 +360,24 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 
 func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error {
 	a := s.Artifacts
-	if !a.ISO && !a.CloudImage && !a.AzureImage && !a.GCEImage && !a.Netboot {
-		return fmt.Errorf("spec.artifacts: at least one artifact type must be enabled (iso, cloudImage, azureImage, gceImage, netboot)")
+	hasStandard := a.ISO || a.CloudImage || a.AzureImage || a.GCEImage || a.Netboot
+	hasUKI := a.UKI != nil && (a.UKI.ISO || a.UKI.Container || a.UKI.EFI)
+	if !hasStandard && !hasUKI {
+		return fmt.Errorf("spec.artifacts: at least one artifact type must be enabled (iso, cloudImage, azureImage, gceImage, netboot, or uki.iso/uki.container/uki.efi)")
 	}
 	if a.OverlayISOVolume != "" && !volumeNames[a.OverlayISOVolume] {
 		return fmt.Errorf("spec.artifacts.overlayISOVolume references volume %q which is not defined in spec.volumes", a.OverlayISOVolume)
 	}
 	if a.OverlayRootfsVolume != "" && !volumeNames[a.OverlayRootfsVolume] {
 		return fmt.Errorf("spec.artifacts.overlayRootfsVolume references volume %q which is not defined in spec.volumes", a.OverlayRootfsVolume)
+	}
+	if hasUKI {
+		if a.UKI.KeysVolume == "" {
+			return fmt.Errorf("spec.artifacts.uki.keysVolume is required when any of uki.iso, uki.container, or uki.efi is true")
+		}
+		if !volumeNames[a.UKI.KeysVolume] {
+			return fmt.Errorf("spec.artifacts.uki.keysVolume references volume %q which is not defined in spec.volumes", a.UKI.KeysVolume)
+		}
 	}
 	return nil
 }

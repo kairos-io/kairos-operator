@@ -1,0 +1,65 @@
+# -----------------------------------------------------------------------------
+# UKI (trusted boot) artifacts with a keys volume (target API)
+#
+# To build signed UKI artifacts (Secure Boot, TPM), auroraboot build-uki
+# needs a directory containing:
+#   - Public keys for Secure Boot auto-enroll: PK.auth, KEK.auth, db.auth
+#   - Signing keys: db.key, db.pem (Secure Boot), tpm2-pcr-private.pem (TPM PCR)
+#
+# You can generate these with: auroraboot genkey <name> -o keys/
+#
+# This example uses the same volume/importer pattern as overlay and build-context:
+#   - Define a volume (e.g. emptyDir) in spec.volumes.
+#   - Optionally attach an importer that populates it (e.g. run auroraboot genkey
+#     or copy key files from a Secret).
+#   - Set spec.artifacts.uki with the volume name and which outputs you want.
+#
+# When any of uki.iso, uki.container, or uki.efi is true, keysVolume is mandatory.
+# UKI outputs use a distinct basename (e.g. <artifact-name>-uki.iso) so they do not
+# collide with unsigned artifacts (<artifact-name>.iso from build-iso).
+# The operator runs auroraboot build-uki (once per output type), mounts the keys
+# volume at a fixed path (e.g. /uki-keys), and passes:
+#   --public-keys /uki-keys
+#   --tpm-pcr-private-key /uki-keys/tpm2-pcr-private.pem
+#   --sb-key /uki-keys/db.key
+#   --sb-cert /uki-keys/db.pem
+#
+# Expected key file names in the volume (same as auroraboot genkey output):
+#   PK.auth, KEK.auth, db.auth, db.key, db.pem, tpm2-pcr-private.pem
+# -----------------------------------------------------------------------------
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: uki-keys-volume
+  namespace: default
+spec:
+  image:
+    # Use a pre-built UKI-capable image (built with trustedBoot: true).
+    ref: quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2
+
+  volumes:
+    - name: uki-keys
+      emptyDir: {}
+
+  # Importer populates the keys volume. Options:
+  # 1) Run auroraboot genkey to generate keys (as below).
+  # 2) Copy from a Secret that holds key files (mount Secret, cp to /keys).
+  importers:
+    - name: generate-uki-keys
+      image: quay.io/kairos/auroraboot:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - auroraboot genkey my-uki -o /keys
+      volumeMounts:
+        - name: uki-keys
+          mountPath: /keys
+
+  artifacts:
+    arch: amd64
+    # UKI (signed) artifacts: all fields grouped under uki. When any of iso,
+    # container, or efi is true, keysVolume is required (validation).
+    uki:
+      iso: true
+      # container: true   # signed UKI in OCI image
+      # efi: true        # raw directory of .efi files
+      keysVolume: uki-keys
