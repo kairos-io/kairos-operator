@@ -2,6 +2,8 @@ module github.com/kairos-io/kairos-operator
 
 go 1.25.0
 
+toolchain go1.24.4
+
 godebug default=go1.23
 
 require (
