@@ -24,7 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const testImageName = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+const (
+	testImageName     = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName = "uki-keys" // volume name used in UKI tests
+)
 
 var _ = Describe("OSArtifactReconciler", func() {
 	var r *OSArtifactReconciler
@@ -59,6 +62,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 		return nil
 	}
 
+	// findContainerInPod finds a container by name in init or main containers (e.g. kaniko-build can be either when OCI-only).
+	findContainerInPod := func(pod *corev1.Pod, name string) *corev1.Container {
+		if c := findInitContainerByName(pod, name); c != nil {
+			return c
+		}
+		return findContainerByName(pod, name)
+	}
+
 	// testContainerCommand tests that a container exists with expected command substrings
 	testContainerCommand := func(containerName string, expectedSubstrings []string) {
 		pvc, err := r.createPVC(context.TODO(), artifact)
@@ -91,17 +102,17 @@ var _ = Describe("OSArtifactReconciler", func() {
 			}, metav1.CreateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 
-		artifact.Spec.CloudConfigRef = &buildv1alpha2.SecretKeySelector{
-			Name: secretName,
-			Key:  "cloud-config.yaml",
+		if artifact.Spec.Artifacts == nil {
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{}
 		}
-
+		artifact.Spec.Artifacts.CloudConfigRef = &buildv1alpha2.SecretKeySelector{Name: secretName, Key: "cloud-config.yaml"}
 		testContainerCommand(containerName, []string{"--cloud-config /cloud-config.yaml"})
 	}
 
 	BeforeEach(func() {
-		// These tests require a real cluster (USE_EXISTING_CLUSTER=true)
-		// Skip if running in envtest environment
+		// These tests require a real cluster (USE_EXISTING_CLUSTER=true). Use `make controller-tests`
+		// which sets up Kind and installs CRDs but does not deploy the operator. The test uses a
+		// direct client and is the only actor creating resources (e.g. the rendered OCI spec Secret).
 		if os.Getenv("USE_EXISTING_CLUSTER") != "true" {
 			Skip("OSArtifact tests require USE_EXISTING_CLUSTER=true - skipping in envtest environment")
 		}
@@ -119,6 +130,10 @@ var _ = Describe("OSArtifactReconciler", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: namespace,
 				Name:      randStringRunes(10),
+			},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image:     buildv1alpha2.ImageSpec{Ref: testImageName},
+				Artifacts: &buildv1alpha2.ArtifactSpec{}, // Ref requires artifacts (validation)
 			},
 		}
 
@@ -171,9 +186,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 	})
 
 	Describe("CreateBuilderPod", func() {
-		When("BaseImageDockerfile is set", func() {
+		When("image.ociSpec is set", func() {
 			BeforeEach(func() {
-				secretName := artifact.Name + "-dockerfile"
+				secretName := artifact.Name + "-ocispec"
 
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 					&corev1.Secret{
@@ -182,49 +197,43 @@ var _ = Describe("OSArtifactReconciler", func() {
 							Namespace: namespace,
 						},
 						StringData: map[string]string{
-							"Dockerfile": "FROM ubuntu",
+							OCISpecSecretKey: "FROM ubuntu",
 						},
 						Type: "Opaque",
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.BaseImageDockerfile = &buildv1alpha2.SecretKeySelector{
-					Name: secretName,
-					Key:  "Dockerfile",
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
+					},
 				}
-
-				// Whatever, just to let it work
-				artifact.Spec.ImageName = "quay.io/kairos-ci/" + artifact.Name + ":latest"
 			})
 
-			It("creates an Init Container to build the image", func() {
+			It("creates a container to build the image", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				By("checking if an init container was created")
-				initContainerNames := make([]string, 0, len(pod.Spec.InitContainers))
-				for _, c := range pod.Spec.InitContainers {
-					initContainerNames = append(initContainerNames, c.Name)
-				}
-				Expect(initContainerNames).To(ContainElement("kaniko-build"))
+				By("checking if a build container (kaniko-build) was created")
+				kaniko := findContainerInPod(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
 
-				By("checking if init containers complete successfully")
+				By("checking if the build completes successfully")
+				kanikoIsInit := findInitContainerByName(pod, "kaniko-build") != nil
 				Eventually(func() bool {
 					p, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
-
-					var allReady = false
-					if len(p.Status.InitContainerStatuses) > 0 {
-						allReady = true
+					if kanikoIsInit {
+						var allReady = len(p.Status.InitContainerStatuses) > 0
+						for _, c := range p.Status.InitContainerStatuses {
+							allReady = allReady && c.Ready
+						}
+						return allReady
 					}
-					for _, c := range p.Status.InitContainerStatuses {
-						allReady = allReady && c.Ready
-					}
-
-					return allReady
+					return p.Status.Phase == corev1.PodSucceeded
 				}, 2*time.Minute, 5*time.Second).Should(BeTrue())
 			})
 		})
@@ -232,7 +241,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 	Describe("Importers and User Volumes", func() {
 		BeforeEach(func() {
-			artifact.Spec.ImageName = testImageName
+			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+			// Ref requires artifacts (validation); use minimal so create-image is the main container.
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 		})
 
 		When("spec.importers is set", func() {
@@ -333,12 +344,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 	Describe("Volume Bindings", func() {
 		BeforeEach(func() {
-			artifact.Spec.ImageName = testImageName
+			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
 		})
 
-		Describe("buildContext binding", func() {
+		Describe("buildContext binding (image.ociSpec.buildContextVolume)", func() {
 			BeforeEach(func() {
-				secretName := artifact.Name + "-dockerfile"
+				secretName := artifact.Name + "-ocispec"
 
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 					&corev1.Secret{
@@ -347,30 +358,25 @@ var _ = Describe("OSArtifactReconciler", func() {
 							Namespace: namespace,
 						},
 						StringData: map[string]string{
-							"Dockerfile": "FROM ubuntu",
+							OCISpecSecretKey: "FROM ubuntu",
 						},
 						Type: "Opaque",
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.BaseImageDockerfile = &buildv1alpha2.SecretKeySelector{
-					Name: secretName,
-					Key:  "Dockerfile",
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
+						BuildContextVolume: "my-context",
+					},
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "my-context", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				}
 			})
 
-			When("volumeBindings.buildContext is set", func() {
-				BeforeEach(func() {
-					artifact.Spec.Volumes = []corev1.Volume{
-						{
-							Name:         "my-context",
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-						},
-					}
-					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-						BuildContext: "my-context",
-					}
-				})
+			When("buildContextVolume is set", func() {
+				BeforeEach(func() {})
 
 				It("mounts the build context volume at /workspace on kaniko", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
@@ -379,7 +385,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
 					var hasContextMount bool
@@ -391,27 +397,33 @@ var _ = Describe("OSArtifactReconciler", func() {
 					Expect(hasContextMount).To(BeTrue(), "kaniko should have my-context mounted at /workspace")
 				})
 
-				It("preserves the dockerfile mount at /workspace/dockerfile", func() {
+				It("preserves the ocispec mount at /workspace/ocispec", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
-					var hasDockerfileMount bool
+					var hasOCISpecMount bool
 					for _, vm := range kaniko.VolumeMounts {
-						if vm.Name == "dockerfile" && vm.MountPath == "/workspace/dockerfile" {
-							hasDockerfileMount = true
+						if vm.Name == "ocispec" && vm.MountPath == "/workspace/ocispec" {
+							hasOCISpecMount = true
 						}
 					}
-					Expect(hasDockerfileMount).To(BeTrue(), "kaniko should still have dockerfile mounted at /workspace/dockerfile")
+					Expect(hasOCISpecMount).To(BeTrue(), "kaniko should still have ocispec mounted at /workspace/ocispec")
 				})
 			})
 
-			When("volumeBindings.buildContext is not set", func() {
+			When("buildContextVolume is not set", func() {
+				BeforeEach(func() {
+					// Parent BeforeEach already created the secret and set OCISpec with BuildContextVolume.
+					// Clear BuildContextVolume and Volumes so kaniko has no extra workspace mount (build context at /workspace).
+					artifact.Spec.Image.OCISpec.BuildContextVolume = ""
+					artifact.Spec.Volumes = nil
+				})
 				It("kaniko does not have an extra workspace mount", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
@@ -419,34 +431,30 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findInitContainerByName(pod, "kaniko-build")
+					kaniko := findContainerInPod(pod, "kaniko-build")
 					Expect(kaniko).ToNot(BeNil())
 
+					// Kaniko always has rootfs, ocispec, and artifacts (tarball written to volume). No extra workspace mount.
 					mountNames := make([]string, 0, len(kaniko.VolumeMounts))
 					for _, vm := range kaniko.VolumeMounts {
 						mountNames = append(mountNames, vm.Name)
 					}
-					Expect(mountNames).To(ConsistOf("rootfs", "dockerfile"))
+					Expect(mountNames).To(ConsistOf("rootfs", "ocispec", "artifacts"))
 				})
 			})
 		})
 
-		Describe("overlay bindings on build-iso", func() {
+		Describe("overlay bindings on build-iso (artifacts.overlayISOVolume / overlayRootfsVolume)", func() {
 			BeforeEach(func() {
-				artifact.Spec.ISO = true
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 			})
 
-			When("overlayISO is set", func() {
+			When("overlayISOVolume is set", func() {
 				BeforeEach(func() {
 					artifact.Spec.Volumes = []corev1.Volume{
-						{
-							Name:         "my-iso-overlay",
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-						},
+						{Name: "my-iso-overlay", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					}
-					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-						OverlayISO: "my-iso-overlay",
-					}
+					artifact.Spec.Artifacts.OverlayISOVolume = "my-iso-overlay"
 				})
 
 				It("adds --overlay-iso flag and volume mount to build-iso", func() {
@@ -456,7 +464,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
 
@@ -470,17 +478,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 			})
 
-			When("overlayRootfs is set", func() {
+			When("overlayRootfsVolume is set", func() {
 				BeforeEach(func() {
 					artifact.Spec.Volumes = []corev1.Volume{
-						{
-							Name:         "my-rootfs-overlay",
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-						},
+						{Name: "my-rootfs-overlay", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					}
-					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-						OverlayRootfs: "my-rootfs-overlay",
-					}
+					artifact.Spec.Artifacts.OverlayRootfsVolume = "my-rootfs-overlay"
 				})
 
 				It("adds --overlay-rootfs flag and volume mount to build-iso", func() {
@@ -490,7 +493,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
 
@@ -504,22 +507,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 			})
 
-			When("both overlayISO and overlayRootfs are set", func() {
+			When("both overlayISOVolume and overlayRootfsVolume are set", func() {
 				BeforeEach(func() {
 					artifact.Spec.Volumes = []corev1.Volume{
-						{
-							Name:         "iso-ov",
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-						},
-						{
-							Name:         "rootfs-ov",
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-						},
+						{Name: "iso-ov", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "rootfs-ov", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					}
-					artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-						OverlayISO:    "iso-ov",
-						OverlayRootfs: "rootfs-ov",
-					}
+					artifact.Spec.Artifacts.OverlayISOVolume = "iso-ov"
+					artifact.Spec.Artifacts.OverlayRootfsVolume = "rootfs-ov"
 				})
 
 				It("includes both flags in build-iso command", func() {
@@ -529,7 +524,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
 					Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
@@ -544,7 +539,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					buildIso := findInitContainerByName(pod, "build-iso")
+					buildIso := findContainerInPod(pod, "build-iso")
 					Expect(buildIso).ToNot(BeNil())
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-iso"))
 					Expect(buildIso.Args[0]).ToNot(ContainSubstring("--overlay-rootfs"))
@@ -553,23 +548,282 @@ var _ = Describe("OSArtifactReconciler", func() {
 		})
 	})
 
-	Describe("Spec Validation in startBuild", func() {
-		BeforeEach(func() {
-			artifact.Spec.ImageName = testImageName
-			artifact.Spec.ISO = true
+	Describe("Two-stage API (spec.image / spec.artifacts)", func() {
+		When("spec.image.ref is set (pre-built image)", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					Arch:           "amd64",
+					ISO:            true,
+					CloudImage:     true,
+					CloudConfigRef: &buildv1alpha2.SecretKeySelector{Name: "cloud-config", Key: "userdata"},
+				}
+			})
+
+			It("uses image.ref for unpack and does not run kaniko", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findInitContainerByName(pod, "kaniko-build")).To(BeNil())
+				unpack := findInitContainerByName(pod, "pull-image-baseimage")
+				Expect(unpack).ToNot(BeNil())
+				Expect(unpack.Args[0]).To(ContainSubstring(testImageName))
+			})
+
+			It("includes build-iso and build-cloud-image from artifacts", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).ToNot(BeNil())
+				Expect(findContainerByName(pod, "build-cloud-image")).ToNot(BeNil())
+			})
 		})
 
-		When("volumeBindings references a volume not in spec.volumes", func() {
+		When("spec.artifacts.uki is set (UKI signed artifacts)", func() {
 			BeforeEach(func() {
-				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-					BuildContext: "nonexistent-volume",
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					UKI: &buildv1alpha2.UKISpec{
+						ISO:        true,
+						KeysVolume: ukiKeysVolumeName,
+					},
 				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: ukiKeysVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			It("adds build-uki-iso container with keys volume mount and flags, no build-iso", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.iso is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-iso")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type iso"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-iso should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+			})
+
+			It("adds build-uki-container container with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					Container:  true,
+					KeysVolume: ukiKeysVolumeName,
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.container is requested")
+				buildUKI := findContainerInPod(pod, "build-uki-container")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type container"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-container should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+			})
+
+			It("adds build-uki-uki container (raw EFI) with keys volume mount and flags, no build-iso", func() {
+				artifact.Spec.Artifacts.UKI = &buildv1alpha2.UKISpec{
+					EFI:        true,
+					KeysVolume: ukiKeysVolumeName,
+				}
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(findContainerInPod(pod, "build-iso")).To(BeNil(), "should not run build-iso when uki.efi is requested")
+				// EFI output uses auroraboot --output-type uki, so container name is build-uki-uki
+				buildUKI := findContainerInPod(pod, "build-uki-uki")
+				Expect(buildUKI).ToNot(BeNil())
+				Expect(buildUKI.Args[0]).To(ContainSubstring("build-uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--output-type uki"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--name "+artifact.Name+"-uki"), "UKI outputs use distinct basename to avoid collision with unsigned ISO")
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--public-keys " + ukiKeysMountPath))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--tpm-pcr-private-key " + ukiKeysMountPath + "/tpm2-pcr-private.pem"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-key " + ukiKeysMountPath + "/db.key"))
+				Expect(buildUKI.Args[0]).To(ContainSubstring("--sb-cert " + ukiKeysMountPath + "/db.pem"))
+
+				var hasKeysMount bool
+				for _, vm := range buildUKI.VolumeMounts {
+					if vm.Name == ukiKeysVolumeName && vm.MountPath == ukiKeysMountPath {
+						hasKeysMount = true
+						break
+					}
+				}
+				Expect(hasKeysMount).To(BeTrue(),
+					"build-uki-uki should have %s volume mounted at %s", ukiKeysVolumeName, ukiKeysMountPath)
+			})
+		})
+
+		When("spec.artifacts.overlayISOVolume and overlayRootfsVolume are set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					ISO:                 true,
+					OverlayISOVolume:    "iso-overlay",
+					OverlayRootfsVolume: "rootfs-overlay",
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "iso-overlay", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+					{Name: "rootfs-overlay", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			It("adds overlay flags and volume mounts to build-iso", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				buildIso := findContainerInPod(pod, "build-iso")
+				Expect(buildIso).ToNot(BeNil())
+				Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-iso /overlay-iso"))
+				Expect(buildIso.Args[0]).To(ContainSubstring("--overlay-rootfs /overlay-rootfs"))
+
+				var hasISO, hasRootfs bool
+				for _, vm := range buildIso.VolumeMounts {
+					if vm.Name == "iso-overlay" && vm.MountPath == "/overlay-iso" {
+						hasISO = true
+					}
+					if vm.Name == "rootfs-overlay" && vm.MountPath == "/overlay-rootfs" {
+						hasRootfs = true
+					}
+				}
+				Expect(hasISO).To(BeTrue())
+				Expect(hasRootfs).To(BeTrue())
+			})
+		})
+
+		When("spec.image.ociSpec with buildContextVolume is set", func() {
+			BeforeEach(func() {
+				secretName := artifact.Name + "-ocispec"
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
+						StringData: map[string]string{OCISpecSecretKey: "FROM ubuntu"},
+						Type:       "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref:                &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
+						BuildContextVolume: "build-ctx",
+					},
+				}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "build-ctx", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			It("mounts buildContextVolume at /workspace on kaniko", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				kaniko := findInitContainerByName(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+				var hasCtx bool
+				for _, vm := range kaniko.VolumeMounts {
+					if vm.Name == "build-ctx" && vm.MountPath == "/workspace" {
+						hasCtx = true
+						break
+					}
+				}
+				Expect(hasCtx).To(BeTrue(), "kaniko should have build-ctx mounted at /workspace")
+			})
+		})
+
+		When("spec.image.buildOptions is set (default OCI build / buildOptions only)", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					BuildOptions: &buildv1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:22.04"},
+				}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
+			})
+
+			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
+				// Refresh artifact so we have latest ResourceVersion (e.g. if a controller added finalizer).
+				Expect(r.Get(context.TODO(), client.ObjectKeyFromObject(artifact), artifact)).To(Succeed())
+				result, err := r.startBuild(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result.RequeueAfter).To(BeZero())
+
+				var pods corev1.PodList
+				Expect(r.List(context.TODO(), &pods, &client.ListOptions{
+					LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+				})).To(Succeed())
+				Expect(pods.Items).ToNot(BeEmpty())
+				kaniko := findInitContainerByName(&pods.Items[0], "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+				Expect(kaniko.Args).To(ContainElement("--build-arg"))
+				Expect(kaniko.Args).To(ContainElement("VERSION=v3.6.0"))
+			})
+		})
+	})
+
+	Describe("Spec Validation in startBuild", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
+		})
+
+		When("artifacts.overlayISOVolume references a volume not in spec.volumes", func() {
+			BeforeEach(func() {
+				artifact.Spec.Artifacts.OverlayISOVolume = "nonexistent-volume"
 			})
 
 			It("returns an error and does not create a PVC", func() {
 				result, err := r.startBuild(context.TODO(), artifact)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("nonexistent-volume"))
+				Expect(err.Error()).To(ContainSubstring("overlayISOVolume"))
 				Expect(result.RequeueAfter).To(BeZero())
 
 				var pvcs corev1.PersistentVolumeClaimList
@@ -611,14 +865,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 		When("spec is valid", func() {
 			BeforeEach(func() {
 				artifact.Spec.Volumes = []corev1.Volume{
-					{
-						Name:         "my-vol",
-						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-					},
+					{Name: "my-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				}
-				artifact.Spec.VolumeBindings = &buildv1alpha2.VolumeBindings{
-					OverlayISO: "my-vol",
-				}
+				artifact.Spec.Artifacts.OverlayISOVolume = "my-vol"
 			})
 
 			It("does not return a validation error", func() {
@@ -627,34 +876,34 @@ var _ = Describe("OSArtifactReconciler", func() {
 		})
 	})
 
-	Describe("Dockerfile Templating", func() {
-		var dockerfileSecretName string
+	Describe("OCI build templating", func() {
+		var ocispecSecretName string
 		var renderedSecretName string
 		var valuesSecretName string
 
 		BeforeEach(func() {
-			dockerfileSecretName = artifact.Name + "-dockerfile"
-			renderedSecretName = artifact.Name + "-rendered-dockerfile"
+			ocispecSecretName = artifact.Name + "-ocispec"
+			renderedSecretName = artifact.Name + "-rendered-ocispec"
 			valuesSecretName = artifact.Name + "-template-values"
 
 			_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      dockerfileSecretName,
+						Name:      ocispecSecretName,
 						Namespace: namespace,
 					},
 					StringData: map[string]string{
-						"Dockerfile": "FROM {{ .BaseImage }}\nRUN {{ .InstallCmd }}\n",
+						OCISpecSecretKey: "FROM {{ .BaseImage }}\nRUN {{ .InstallCmd }}\n",
 					},
 					Type: "Opaque",
 				}, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
-			artifact.Spec.BaseImageDockerfile = &buildv1alpha2.SecretKeySelector{
-				Name: dockerfileSecretName,
-				Key:  "Dockerfile",
+			artifact.Spec.Image = buildv1alpha2.ImageSpec{
+				OCISpec: &buildv1alpha2.OCISpec{
+					Ref: &buildv1alpha2.SecretKeySelector{Name: ocispecSecretName, Key: OCISpecSecretKey},
+				},
 			}
-			artifact.Spec.ImageName = "my-registry.example.com/" + artifact.Name + ":latest"
 		})
 
 		When("a Secret with template values is referenced", func() {
@@ -673,13 +922,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
-					Name: valuesSecretName,
-				}
+				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{Name: valuesSecretName}
 			})
 
-			It("renders the Dockerfile with Secret values", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+			It("renders the OCI build definition with Secret values", func() {
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				// The rendered Secret should exist
@@ -687,12 +934,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM opensuse/leap:15.6\nRUN zypper install -y curl\n"))
 			})
 
 			It("updates the rendered Secret when the values Secret changes", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Update the values Secret
@@ -708,40 +955,38 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				// Reset in-memory mutation to simulate a new reconciliation
-				artifact.Spec.BaseImageDockerfile.Name = dockerfileSecretName
-				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
-					Name: valuesSecretName,
-				}
+				artifact.Spec.Image.OCISpec.Ref.Name = ocispecSecretName
+				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{Name: valuesSecretName}
 
-				err = r.renderDockerfile(context.TODO(), artifact)
+				err = r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
 			})
 		})
 
 		When("inline template values are provided", func() {
 			BeforeEach(func() {
-				artifact.Spec.DockerfileTemplateValues = map[string]string{
+				artifact.Spec.Image.OCISpec.TemplateValues = map[string]string{
 					"BaseImage":  "alpine:3.18",
 					"InstallCmd": "apk add curl",
 				}
 			})
 
-			It("renders the Dockerfile with inline values", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+			It("renders the OCI build definition with inline values", func() {
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
 			})
 		})
@@ -762,24 +1007,20 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}, metav1.CreateOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				artifact.Spec.DockerfileTemplateValuesFrom = &corev1.LocalObjectReference{
-					Name: valuesSecretName,
-				}
+				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{Name: valuesSecretName}
 				// Inline values override Secret values
-				artifact.Spec.DockerfileTemplateValues = map[string]string{
-					"BaseImage": "alpine:3.18",
-				}
+				artifact.Spec.Image.OCISpec.TemplateValues = map[string]string{"BaseImage": "alpine:3.18"}
 			})
 
 			It("inline values take precedence over Secret values", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				// BaseImage from inline, InstallCmd from Secret
 				Expect(rendered).To(Equal("FROM alpine:3.18\nRUN zypper install -y curl\n"))
 			})
@@ -787,14 +1028,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("no template values are provided", func() {
 			It("renders template variables as empty strings", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM \nRUN \n"))
 			})
 		})
@@ -812,6 +1053,10 @@ var _ = Describe("OSArtifactReconciler", func() {
 						ObjectMeta: metav1.ObjectMeta{
 							Namespace: namespace,
 							Name:      "other-artifact",
+						},
+						Spec: buildv1alpha2.OSArtifactSpec{
+							Image:     buildv1alpha2.ImageSpec{Ref: "quay.io/fake:1"},
+							Artifacts: &buildv1alpha2.ArtifactSpec{},
 						},
 					}
 
@@ -846,7 +1091,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 								},
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM other-image",
+								OCISpecSecretKey: "FROM other-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
@@ -854,7 +1099,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 
 				It("refuses to update the Secret and returns an error", func() {
-					err := r.renderDockerfile(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
 					Expect(err.Error()).To(ContainSubstring(string(artifact.UID)))
@@ -871,7 +1116,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 								Namespace: namespace,
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM unrelated-image",
+								OCISpecSecretKey: "FROM unrelated-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
@@ -879,7 +1124,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 
 				It("refuses to update the Secret and returns an error", func() {
-					err := r.renderDockerfile(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).To(HaveOccurred())
 					Expect(err.Error()).To(ContainSubstring("already exists and is not owned by this OSArtifact"))
 				})
@@ -905,47 +1150,47 @@ var _ = Describe("OSArtifactReconciler", func() {
 								},
 							},
 							StringData: map[string]string{
-								"Dockerfile": "FROM old-image",
+								OCISpecSecretKey: "FROM old-image",
 							},
 							Type: "Opaque",
 						}, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
 
 					// Setup inline values for this test
-					artifact.Spec.DockerfileTemplateValues = map[string]string{
+					artifact.Spec.Image.OCISpec.TemplateValues = map[string]string{
 						"BaseImage":  "alpine:3.18",
 						"InstallCmd": "apk add curl",
 					}
 				})
 
 				It("updates the Secret successfully", func() {
-					err := r.renderDockerfile(context.TODO(), artifact)
+					err := r.resolveFinalOCISpec(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 						context.TODO(), renderedSecretName, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
 
-					rendered := string(renderedSecret.Data["Dockerfile"])
+					rendered := string(renderedSecret.Data[OCISpecSecretKey])
 					Expect(rendered).To(Equal("FROM alpine:3.18\nRUN apk add curl\n"))
 				})
 			})
 		})
 
-		When("the BaseImageDockerfile key is omitted", func() {
+		When("the image.ociSpec.ref key is omitted", func() {
 			BeforeEach(func() {
-				artifact.Spec.BaseImageDockerfile.Key = ""
+				artifact.Spec.Image.OCISpec.Ref.Key = ""
 			})
 
-			It("defaults to reading the 'Dockerfile' key from the Secret", func() {
-				err := r.renderDockerfile(context.TODO(), artifact)
+			It("defaults to reading the ociSpec key from the Secret", func() {
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
 					context.TODO(), renderedSecretName, metav1.GetOptions{})
 				Expect(err).ToNot(HaveOccurred())
 
-				rendered := string(renderedSecret.Data["Dockerfile"])
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
 				Expect(rendered).To(Equal("FROM \nRUN \n"))
 			})
 		})
@@ -953,12 +1198,13 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 	Describe("Auroraboot Commands", func() {
 		BeforeEach(func() {
-			artifact.Spec.ImageName = testImageName
+			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+			artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{}
 		})
 
 		When("CloudImage is enabled", func() {
 			BeforeEach(func() {
-				artifact.Spec.CloudImage = true
+				artifact.Spec.Artifacts.CloudImage = true
 			})
 
 			It("creates build-cloud-image container with correct auroraboot command", func() {
@@ -973,7 +1219,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 			When("DiskSize is set", func() {
 				BeforeEach(func() {
-					artifact.Spec.DiskSize = "32768"
+					artifact.Spec.Artifacts.DiskSize = "32768"
 				})
 
 				It("passes disk.size to auroraboot via --set flag instead of EXTEND env var", func() {
@@ -1019,9 +1265,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("Netboot is enabled", func() {
 			BeforeEach(func() {
-				artifact.Spec.Netboot = true
-				artifact.Spec.ISO = true
-				artifact.Spec.NetbootURL = "http://example.com"
+				artifact.Spec.Artifacts.Netboot = true
+				artifact.Spec.Artifacts.ISO = true
+				artifact.Spec.Artifacts.NetbootURL = "http://example.com"
 			})
 
 			It("creates build-netboot container with correct auroraboot netboot command", func() {
@@ -1049,7 +1295,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("AzureImage is enabled", func() {
 			BeforeEach(func() {
-				artifact.Spec.AzureImage = true
+				artifact.Spec.Artifacts.AzureImage = true
 			})
 
 			It("creates build-azure-cloud-image container with correct auroraboot command", func() {
@@ -1071,7 +1317,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 		When("GCEImage is enabled", func() {
 			BeforeEach(func() {
-				artifact.Spec.GCEImage = true
+				artifact.Spec.Artifacts.GCEImage = true
 			})
 
 			It("creates build-gce-cloud-image container with correct auroraboot command", func() {

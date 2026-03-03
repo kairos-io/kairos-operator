@@ -213,26 +213,116 @@ func (tc *TestClients) WaitForExportCompletion(artifactLabelSelector labels.Sele
 	}).WithTimeout(time.Hour).Should(Succeed())
 }
 
+// dumpJobLogs writes job describe and pod logs to GinkgoWriter. Call from a deferred function when a spec fails to aid debugging.
+func dumpJobLogs(namespace, jobName string) {
+	if jobName == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== Verification Job %s (namespace %s) - describe and logs =====\n", jobName, namespace)
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "describe", "job/"+jobName, "-n", namespace)
+	out, _ := cmd.CombinedOutput()
+	_, _ = GinkgoWriter.Write(out)
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n----- Job logs (tail 200) -----\n")
+	cmd = exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "job/"+jobName, "-n", namespace, "--all-containers=true", "--prefix=true", "--tail=200")
+	out, _ = cmd.CombinedOutput()
+	_, _ = GinkgoWriter.Write(out)
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n===== End verification job %s =====\n\n", jobName)
+}
+
 // collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
 // Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
+// Logs are fetched per container (only for containers that have started) so we get init container
+// output (e.g. kaniko-build) even when the pod is stuck in PodInitializing and main containers
+// have not run yet.
 func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) string {
 	var buf strings.Builder
+	const ns = "default"
 
 	buf.WriteString("=== Builder Pod Describe (events, status, init container details) ===\n")
 	cmd := exec.Command("kubectl", "describe", "pods",
 		"-l", artifactLabelSelector.String(),
-		"-n", "default")
+		"-n", ns)
 	out, _ := cmd.CombinedOutput()
 	buf.Write(out)
 	buf.WriteString("\n")
 
-	buf.WriteString("=== Builder Pod Logs (last 80 lines per container) ===\n")
-	cmd = exec.Command("kubectl", "logs",
-		"-l", artifactLabelSelector.String(),
-		"--all-containers=true", "--prefix=true", "--tail=80",
-		"-n", "default")
-	out, _ = cmd.CombinedOutput()
-	buf.Write(out)
+	// Line limit for builder pod logs; use more when debugging build failures (e.g. kaniko/kairos-init output).
+	const builderPodLogTail = 500
+
+	podList, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
+	if err == nil {
+		for _, p := range podList.Items {
+			podName := p.GetName()
+
+			// Emit container statuses (init + main) so we see which container failed and its exit code.
+			buf.WriteString("=== Builder Pod Container Statuses ===\n")
+			if statuses, _, _ := unstructured.NestedSlice(p.Object, "status", "initContainerStatuses"); statuses != nil {
+				for _, s := range statuses {
+					if m, _ := s.(map[string]interface{}); m != nil {
+						name, _ := m["name"].(string)
+						state, _, _ := unstructured.NestedMap(m, "state")
+						term, _, _ := unstructured.NestedMap(state, "terminated")
+						reason, _, _ := unstructured.NestedString(term, "reason")
+						exitCode, _, _ := unstructured.NestedInt64(term, "exitCode")
+						if reason != "" || exitCode != 0 {
+							fmt.Fprintf(&buf, "init %s: reason=%s exitCode=%d\n", name, reason, exitCode)
+						} else {
+							fmt.Fprintf(&buf, "init %s: %v\n", name, state)
+						}
+					}
+				}
+			}
+			if statuses, _, _ := unstructured.NestedSlice(p.Object, "status", "containerStatuses"); statuses != nil {
+				for _, s := range statuses {
+					if m, _ := s.(map[string]interface{}); m != nil {
+						name, _ := m["name"].(string)
+						state, _, _ := unstructured.NestedMap(m, "state")
+						term, _, _ := unstructured.NestedMap(state, "terminated")
+						reason, _, _ := unstructured.NestedString(term, "reason")
+						exitCode, _, _ := unstructured.NestedInt64(term, "exitCode")
+						if reason != "" || exitCode != 0 {
+							fmt.Fprintf(&buf, "container %s: reason=%s exitCode=%d\n", name, reason, exitCode)
+						} else {
+							fmt.Fprintf(&buf, "container %s: %v\n", name, state)
+						}
+					}
+				}
+			}
+			buf.WriteString("\n")
+
+			// Collect container names (init + main) so we get logs even when --all-containers fails (e.g. one container not started)
+			var containers []string
+			if inits, _, _ := unstructured.NestedSlice(p.Object, "spec", "initContainers"); inits != nil {
+				for _, c := range inits {
+					if m, _ := c.(map[string]interface{}); m != nil {
+						if n, ok := m["name"].(string); ok {
+							containers = append(containers, n)
+						}
+					}
+				}
+			}
+			if mains, _, _ := unstructured.NestedSlice(p.Object, "spec", "containers"); mains != nil {
+				for _, c := range mains {
+					if m, _ := c.(map[string]interface{}); m != nil {
+						if n, ok := m["name"].(string); ok {
+							containers = append(containers, n)
+						}
+					}
+				}
+			}
+			fmt.Fprintf(&buf, "=== Builder Pod Logs (last %d lines per container) ===\n", builderPodLogTail)
+			for _, cName := range containers {
+				cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", podName, "-c", cName, "--tail="+fmt.Sprint(builderPodLogTail), "-n", ns)
+				out, _ := cmd.CombinedOutput()
+				fmt.Fprintf(&buf, "--- Pod %s / %s ---\n%s\n", podName, cName, string(out))
+			}
+		}
+	} else {
+		fmt.Fprintf(&buf, "=== Builder Pod Logs (last %d lines) ===\n", builderPodLogTail)
+		cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "logs", "-l", artifactLabelSelector.String(), "--all-containers=true", "--prefix=true", "--tail="+fmt.Sprint(builderPodLogTail), "-n", ns)
+		out, _ := cmd.CombinedOutput()
+		buf.Write(out)
+	}
 	buf.WriteString("\n")
 
 	jobs, err := tc.Jobs.List(context.TODO(), metav1.ListOptions{
@@ -255,6 +345,10 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	return buf.String()
 }
 
+// cleanupTimeout is the time to wait for artifact/pods/pvcs/jobs to be removed after deleting the artifact.
+// CI can be slow; 5 minutes gives enough time for finalizers and GC.
+const cleanupTimeout = 5 * time.Minute
+
 // Cleanup deletes the artifact and waits for all related resources to be cleaned up
 func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels.Selector) {
 	By("cleaning up resources")
@@ -265,22 +359,22 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 		res, err := tc.Artifacts.List(context.TODO(), metav1.ListOptions{})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.PVCs.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 	Eventually(func(g Gomega) int {
 		res, err := tc.Jobs.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
 		return len(res.Items)
-	}).WithTimeout(time.Minute).Should(Equal(0))
+	}).WithTimeout(cleanupTimeout).Should(Equal(0))
 }
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -318,6 +412,9 @@ var _ = BeforeSuite(func() {
 	}
 
 	installOperator()
+
+	By("verifying pods can download from the internet (e.g. k3s from GitHub)")
+	verifyPodCanDownload(context.Background(), clientset)
 })
 
 var _ = AfterSuite(func() {
@@ -352,6 +449,45 @@ func createCluster() (string, string) {
 	Expect(err).NotTo(HaveOccurred())
 
 	return kubeconfigPath, clusterName
+}
+
+// verifyPodCanDownload runs a one-off pod in default namespace that downloads a file from the internet
+// (the k3s release URL used by kairos-init). Ensures the cluster has outbound access so OCI builds
+// that run kairos-init (e.g. k3s install) can succeed.
+func verifyPodCanDownload(ctx context.Context, k8s *kubernetes.Clientset) {
+	const (
+		ns   = "default"
+		name = "e2e-network-check"
+		url  = "https://github.com/k3s-io/k3s/releases/download/v1.35.1%2Bk3s1/sha256sum-amd64.txt"
+	)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    "download",
+				Image:   "alpine:latest",
+				Command: []string{"wget", "-q", "-O", "/dev/null", "--timeout=30", url},
+			}},
+		},
+	}
+	_, err := k8s.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	defer func() {
+		_ = k8s.CoreV1().Pods(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
+	}()
+
+	var p *corev1.Pod
+	Eventually(func(g Gomega) {
+		var getErr error
+		p, getErr = k8s.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+		g.Expect(getErr).NotTo(HaveOccurred())
+		g.Expect(p.Status.Phase).To(BeElementOf(corev1.PodSucceeded, corev1.PodFailed),
+			"pod should complete (succeed or fail)")
+	}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+
+	Expect(p.Status.Phase).To(Equal(corev1.PodSucceeded),
+		"download pod must succeed (pod may have no outbound access to GitHub)")
 }
 
 func getControllerPodName() {
@@ -442,6 +578,25 @@ func installOperator() {
 	getControllerPodName()
 	By("waiting the controller pod to be running")
 	waitUntilControllerIsRunning()
+
+	installRegistry()
+}
+
+// installRegistry deploys the in-cluster registry (with auth) used by OCI push e2e tests.
+func installRegistry() {
+	By("deploying the in-cluster registry (config/registry)")
+	cmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "apply", "-k", "config/registry")
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(out))
+
+	By("waiting for registry deployments to be ready")
+	for _, name := range []string{"registry", "registry-noauth"} {
+		rolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
+			"deployment/"+name, "-n", "registry", "--timeout=2m")
+		rolloutOut, err := rolloutCmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "rollout %s: %s", name, string(rolloutOut))
+		_ = rolloutOut
+	}
 }
 
 // buildAndLoadImages builds and loads both the operator and node-labeler images into the kind cluster

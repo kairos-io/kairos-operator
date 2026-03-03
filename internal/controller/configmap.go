@@ -23,13 +23,18 @@ import (
 )
 
 func (r *OSArtifactReconciler) genConfigMap(artifact *buildv1alpha2.OSArtifact) *corev1.ConfigMap {
+	grubCfg, osRelease := "", ""
+	if artifact.Spec.Artifacts != nil {
+		grubCfg = artifact.Spec.Artifacts.GRUBConfig
+		osRelease = artifact.Spec.Artifacts.OSRelease
+	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      artifact.Name,
 			Namespace: artifact.Namespace,
 		},
 		Data: map[string]string{
-			"grub.cfg":   artifact.Spec.GRUBConfig,
-			"os-release": artifact.Spec.OSRelease,
+			"grub.cfg":   grubCfg,
+			"os-release": osRelease,
 		}}
 }

@@ -43,6 +43,8 @@ const (
 	CompatibleAurorabootVersion     = "v0.19.3"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
+	// OCISpecSecretKey is the Secret data key for the OCI build definition.
+	OCISpecSecretKey = "ociSpec"
 )
 
 // OSArtifactReconciler reconciles a OSArtifact object
@@ -61,6 +63,7 @@ type OSArtifactReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;create;delete;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -77,6 +80,18 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if artifact.DeletionTimestamp != nil {
 		controllerutil.RemoveFinalizer(&artifact, FinalizerName)
 		return ctrl.Result{}, r.Update(ctx, &artifact)
+	}
+
+	// Skip reconciliation if the namespace is terminating; creating ConfigMaps etc. would be forbidden.
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: artifact.Namespace}, &ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{Requeue: true}, err
+	}
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
 	}
 
 	if !controllerutil.ContainsFinalizer(&artifact, FinalizerName) {
@@ -159,9 +174,9 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 }
 
 // checkSecretOwnership verifies that a Secret with the given name either does not exist
-// or is owned by the specified OSArtifact. This prevents name collision attacks where
-// a malicious user could create an OSArtifact to overwrite unrelated Secrets.
-// Returns an error if the Secret exists but is not owned by the artifact.
+// or is owned by the specified OSArtifact. Returns an error if the Secret exists and is
+// not owned by this OSArtifact (whether it has another owner or no owner), so we never
+// overwrite a user-created Secret that happens to match the rendered name.
 func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretName, namespace string, owner *buildv1alpha2.OSArtifact) error {
 	existingSecret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: namespace}, existingSecret)
@@ -169,115 +184,102 @@ func (r *OSArtifactReconciler) checkSecretOwnership(ctx context.Context, secretN
 		return fmt.Errorf("failed to check for existing Secret: %w", err)
 	}
 
-	// If Secret exists but is not owned by this OSArtifact, refuse to proceed
-	if err == nil && !metav1.IsControlledBy(existingSecret, owner) {
+	if err == nil {
+		if metav1.IsControlledBy(existingSecret, owner) {
+			return nil // already ours
+		}
 		return fmt.Errorf("secret %q already exists and is not owned by this OSArtifact (uid=%s); refusing to update to prevent collision", secretName, owner.UID)
 	}
-
 	return nil
 }
 
-// renderDockerfile fetches the Dockerfile from the referenced Secret, renders
-// it through the Go template engine, and creates a new Secret with the rendered
-// content. The in-memory artifact is updated to point to the rendered Secret so
-// that downstream pod creation uses the rendered version.
-// If BaseImageDockerfile is not set, this is a no-op.
-func (r *OSArtifactReconciler) renderDockerfile(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
-	if artifact.Spec.BaseImageDockerfile == nil {
-		return nil
+// fetchAndRenderUserOCISpec fetches the user-defined OCI build definition from the
+// referenced Secret and renders it with the provided template values (TemplateValuesFrom
+// and TemplateValues). Returns empty string when artifact has no OCISpec.Ref.
+func (r *OSArtifactReconciler) fetchAndRenderUserOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) (string, error) {
+	if artifact.Spec.Image.OCISpec == nil || artifact.Spec.Image.OCISpec.Ref == nil {
+		return "", nil
 	}
-
-	logger := log.FromContext(ctx)
-
-	// Fetch the original Secret containing the Dockerfile
+	ociRef := artifact.Spec.Image.OCISpec.Ref
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{
-		Name:      artifact.Spec.BaseImageDockerfile.Name,
-		Namespace: artifact.Namespace,
-	}, secret); err != nil {
-		return fmt.Errorf("failed to fetch Dockerfile secret %q: %w", artifact.Spec.BaseImageDockerfile.Name, err)
+	if err := r.Get(ctx, client.ObjectKey{Name: ociRef.Name, Namespace: artifact.Namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch OCI build definition secret %q: %w", ociRef.Name, err)
 	}
-
-	// Determine which key holds the Dockerfile content
-	key := artifact.Spec.BaseImageDockerfile.Key
+	key := ociRef.Key
 	if key == "" {
-		key = "Dockerfile"
+		key = OCISpecSecretKey
 	}
-
-	dockerfileContent, ok := secret.Data[key]
+	ociContent, ok := secret.Data[key]
 	if !ok {
-		return fmt.Errorf("key %q not found in secret %q", key, secret.Name)
+		return "", fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
-
-	// Collect template values. Secret values are loaded first, then inline
-	// values are merged on top so that inline takes precedence on conflicts.
 	values := map[string]string{}
-
-	if artifact.Spec.DockerfileTemplateValuesFrom != nil {
+	if artifact.Spec.Image.OCISpec.TemplateValuesFrom != nil {
 		valuesSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
-			Name:      artifact.Spec.DockerfileTemplateValuesFrom.Name,
+			Name:      artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name,
 			Namespace: artifact.Namespace,
 		}, valuesSecret); err != nil {
-			return fmt.Errorf("failed to fetch template values Secret %q: %w",
-				artifact.Spec.DockerfileTemplateValuesFrom.Name, err)
+			return "", fmt.Errorf("failed to fetch template values Secret %q: %w", artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name, err)
 		}
 		for k, v := range valuesSecret.Data {
 			values[k] = string(v)
 		}
 	}
-
-	for k, v := range artifact.Spec.DockerfileTemplateValues {
+	for k, v := range artifact.Spec.Image.OCISpec.TemplateValues {
 		values[k] = v
 	}
-
-	rendered, err := renderDockerfileTemplate(string(dockerfileContent), values)
+	rendered, err := renderOCIBuildTemplate(string(ociContent), values)
 	if err != nil {
-		return fmt.Errorf("failed to render Dockerfile template: %w", err)
+		return "", fmt.Errorf("failed to render OCI build template: %w", err)
 	}
+	return rendered, nil
+}
 
-	logger.Info("Rendered Dockerfile template", "artifact", artifact.Name)
-
-	// Create or update the Secret with the rendered Dockerfile.
-	// Using CreateOrUpdate ensures that if the user changes their Dockerfile
-	// or template values, the rendered Secret is refreshed on re-reconciliation.
-	renderedSecretName := artifact.Name + "-rendered-dockerfile"
-	renderedSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      renderedSecretName,
-			Namespace: artifact.Namespace,
-		},
+// resolveFinalOCISpec builds the final OCI build definition and writes it to a Secret.
+// When buildOptions is set: final = baseImageSection + userOciSpecContent (if any) + kairosInitSection.
+// When only ociSpec: final = user's content (fetched and optionally template-rendered).
+// The in-memory artifact.Spec.Image.OCISpec.Ref is set to the rendered Secret so the build pod uses it.
+// No-op when image.ref is set (no build). Must be called when building (ref empty, buildOptions or ociSpec set).
+func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.Image.Ref != "" {
+		return nil
 	}
+	hasBuildOptions := artifact.Spec.Image.BuildOptions != nil
 
-	// Verify ownership to prevent name collision attacks
-	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+	middleContent, err := r.fetchAndRenderUserOCISpec(ctx, artifact)
+	if err != nil {
 		return err
 	}
 
+	final := AssembleFinalOCISpec(hasBuildOptions, middleContent)
+
+	// Ensure OCISpec and Ref exist in-memory so volume mount and kaniko use the rendered secret.
+	if artifact.Spec.Image.OCISpec == nil {
+		artifact.Spec.Image.OCISpec = &buildv1alpha2.OCISpec{}
+	}
+	renderedSecretName := artifact.Name + "-rendered-ocispec"
+	artifact.Spec.Image.OCISpec.Ref = &buildv1alpha2.SecretKeySelector{
+		Name: renderedSecretName,
+		Key:  OCISpecSecretKey,
+	}
+
+	if err := r.checkSecretOwnership(ctx, renderedSecretName, artifact.Namespace, artifact); err != nil {
+		return err
+	}
+	renderedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: renderedSecretName, Namespace: artifact.Namespace},
+	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, renderedSecret, func() error {
-		// Merge labels instead of overwriting to preserve labels set by other tooling
 		if renderedSecret.Labels == nil {
 			renderedSecret.Labels = make(map[string]string)
 		}
 		renderedSecret.Labels[artifactLabel] = artifact.Name
-		// The rendered Dockerfile is always stored under the "Dockerfile" key
-		// because kaniko expects the file to be named "Dockerfile" in the
-		// mounted volume (--dockerfile dockerfile/Dockerfile).
-		renderedSecret.StringData = map[string]string{
-			"Dockerfile": rendered,
-		}
+		renderedSecret.StringData = map[string]string{OCISpecSecretKey: final}
 		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("failed to create or update rendered Dockerfile secret: %w", err)
+		return fmt.Errorf("failed to create or update rendered OCI build definition secret: %w", err)
 	}
-
-	// Update the in-memory reference so the pod mounts the rendered Secret.
-	// This does NOT persist to the API server — it only affects the current
-	// reconciliation pass. Key is set to "Dockerfile" because that's what
-	// kaniko expects in the mounted volume.
-	artifact.Spec.BaseImageDockerfile.Name = renderedSecretName
-	artifact.Spec.BaseImageDockerfile.Key = "Dockerfile"
-
 	return nil
 }
 
@@ -287,8 +289,8 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
 	}
 
-	// Render Dockerfile template if applicable
-	if err := r.renderDockerfile(ctx, artifact); err != nil {
+	// Resolve final OCI build definition (single path: assemble sections when buildOptions set, else user content only).
+	if err := r.resolveFinalOCISpec(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err
 	}
 
@@ -307,6 +309,10 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 		return ctrl.Result{Requeue: true}, err
 	}
 
+	// Refetch so we have the latest resourceVersion before status update (avoids 409 if the object was updated elsewhere).
+	if err := r.Get(ctx, client.ObjectKeyFromObject(artifact), artifact); err != nil {
+		return ctrl.Result{Requeue: true}, err
+	}
 	artifact.Status.Phase = buildv1alpha2.Building
 	if err := r.Status().Update(ctx, artifact); err != nil {
 		return ctrl.Result{Requeue: true}, err
@@ -399,6 +405,10 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 				},
 				Spec: artifact.Spec.Exporters[i],
 			}
+			// Default BackoffLimit to 0 so a failed export job does not retry (fail fast, report once).
+			if job.Spec.BackoffLimit == nil {
+				job.Spec.BackoffLimit = ptr(int32(0))
+			}
 
 			// Clean up template metadata to remove server-managed fields that shouldn't be in JobSpec.Template
 			job.Spec.Template.ObjectMeta = metav1.ObjectMeta{
@@ -427,13 +437,21 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 		} else if job.Spec.Completions == nil || *job.Spec.Completions == 1 {
 			if job.Status.Succeeded > 0 {
 				succeeded++
+			} else if exportJobFailed(job) {
+				artifact.Status.Phase = buildv1alpha2.Error
+				artifact.Status.Message = exportJobFailureMessage(job)
+				if err := r.Status().Update(ctx, artifact); err != nil {
+					return ctrl.Result{Requeue: true}, err
+				}
+				return ctrl.Result{}, nil
 			}
 		} else if *job.Spec.BackoffLimit <= job.Status.Failed {
 			artifact.Status.Phase = buildv1alpha2.Error
+			artifact.Status.Message = exportJobFailureMessage(job)
 			if err := r.Status().Update(ctx, artifact); err != nil {
 				return ctrl.Result{Requeue: true}, err
 			}
-			break
+			return ctrl.Result{}, nil
 		}
 	}
 
@@ -445,6 +463,32 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// exportJobFailed returns true when the Job has permanently failed (e.g. backoffLimit exceeded).
+func exportJobFailed(job *batchv1.Job) bool {
+	for _, c := range job.Status.Conditions {
+		if c.Status == corev1.ConditionTrue && (c.Type == batchv1.JobFailed || c.Type == batchv1.JobFailureTarget) {
+			return true
+		}
+	}
+	return false
+}
+
+// exportJobFailureMessage returns a short message for the Job failure (reason and/or message from status).
+func exportJobFailureMessage(job *batchv1.Job) string {
+	for _, c := range job.Status.Conditions {
+		if c.Status == corev1.ConditionTrue && (c.Type == batchv1.JobFailed || c.Type == batchv1.JobFailureTarget) {
+			if c.Message != "" {
+				return fmt.Sprintf("export job %s failed: %s", job.Name, c.Message)
+			}
+			if c.Reason != "" {
+				return fmt.Sprintf("export job %s failed: %s", job.Name, c.Reason)
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("export job %s failed", job.Name)
 }
 
 // SetupWithManager sets up the controller with the Manager.
