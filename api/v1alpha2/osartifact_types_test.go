@@ -324,8 +324,8 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 		It("returns nil when imageCredentialsSecretRef is set (used for pull and push)", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
-					BuildImage:                 &v1alpha2.BuildImage{Registry: "r.io", Repository: "ns/img", Tag: "latest"},
-					OCISpec:                    &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
+					BuildImage:                &v1alpha2.BuildImage{Registry: "r.io", Repository: "ns/img", Tag: "latest"},
+					OCISpec:                   &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"}},
 					ImageCredentialsSecretRef: &v1alpha2.SecretKeySelector{Name: "registry-creds"},
 				},
 			}

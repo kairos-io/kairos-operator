@@ -670,12 +670,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(unpack).ToNot(BeNil())
 				var hasCredsMount bool
 				for _, vm := range unpack.VolumeMounts {
-					if vm.Name == "image-credentials" && vm.MountPath == "/root/.docker" {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" {
 						hasCredsMount = true
 						break
 					}
 				}
-				Expect(hasCredsMount).To(BeTrue(), "unpack container must mount image-credentials so AuroraBoot can pull private image.ref")
+				Expect(hasCredsMount).To(BeTrue(), "unpack container must mount "+imageCredentialsVolumeName+" so AuroraBoot can pull private image.ref")
 				var hasDockerConfig bool
 				for _, e := range unpack.Env {
 					if e.Name == "DOCKER_CONFIG" && e.Value == "/root/.docker" {
@@ -919,7 +919,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				var hasCredsVol bool
 				for _, v := range pod.Spec.Volumes {
-					if v.Name == "image-credentials" {
+					if v.Name == imageCredentialsVolumeName {
 						hasCredsVol = true
 						break
 					}
@@ -930,7 +930,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(kaniko).ToNot(BeNil())
 				var hasCredsMount bool
 				for _, vm := range kaniko.VolumeMounts {
-					if vm.Name == "image-credentials" && vm.MountPath == "/kaniko/.docker" {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/kaniko/.docker" {
 						hasCredsMount = true
 						break
 					}
