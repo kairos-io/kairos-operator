@@ -444,6 +444,49 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
+		Describe("image.buildEnv (Kaniko build container env)", func() {
+			BeforeEach(func() {
+				secretName := artifact.Name + "-ocispec"
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
+						StringData: map[string]string{OCISpecSecretKey: "FROM ubuntu"},
+						Type:       corev1.SecretTypeOpaque,
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
+					},
+					BuildEnv: []corev1.EnvVar{
+						{Name: "HTTP_PROXY", Value: "http://proxy.example.com:3128"},
+						{Name: "HTTPS_PROXY", Value: "http://proxy.example.com:3128"},
+						{Name: "NO_PROXY", Value: "localhost,127.0.0.1,.cluster.local,quay.io"},
+					},
+				}
+			})
+
+			It("sets buildEnv on the kaniko-build container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				kaniko := findContainerInPod(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+
+				envNames := make(map[string]string)
+				for _, e := range kaniko.Env {
+					envNames[e.Name] = e.Value
+				}
+				Expect(envNames).To(HaveKeyWithValue("HTTP_PROXY", "http://proxy.example.com:3128"))
+				Expect(envNames).To(HaveKeyWithValue("HTTPS_PROXY", "http://proxy.example.com:3128"))
+				Expect(envNames).To(HaveKeyWithValue("NO_PROXY", "localhost,127.0.0.1,.cluster.local,quay.io"))
+			})
+		})
+
 		Describe("overlay bindings on build-iso (artifacts.overlayISOVolume / overlayRootfsVolume)", func() {
 			BeforeEach(func() {
 				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}

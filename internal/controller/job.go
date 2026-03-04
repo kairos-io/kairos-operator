@@ -718,6 +718,9 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 		})
 		kanikoEnv = append(kanikoEnv, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/kaniko/.docker"})
 	}
+	if len(artifact.Spec.Image.BuildEnv) > 0 {
+		kanikoEnv = append(kanikoEnv, artifact.Spec.Image.BuildEnv...)
+	}
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
