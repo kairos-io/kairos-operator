@@ -4126,6 +4126,15 @@ spec:
                     type: object
                   caCertificatesVolume:
                     type: string
+                  imageCredentialsSecretRef:
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
                   ociSpec:
                     properties:
                       buildContextVolume:
@@ -4155,15 +4164,6 @@ spec:
                     type: object
                   push:
                     type: boolean
-                  pushCredentialsSecretRef:
-                    properties:
-                      key:
-                        type: string
-                      name:
-                        type: string
-                    required:
-                    - name
-                    type: object
                   ref:
                     type: string
                 type: object

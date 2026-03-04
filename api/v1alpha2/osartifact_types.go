@@ -84,9 +84,9 @@ type ImageSpec struct {
 	// +optional
 	Push bool `json:"push,omitempty"`
 
-	// PushCredentialsSecretRef references a Secret with registry auth for push (e.g. .dockerconfigjson). Only used when Push is true. When key is empty, the whole Secret is used.
+	// ImageCredentialsSecretRef references a Secret with registry auth for pull and push (e.g. .dockerconfigjson). Used when pulling image.ref, when building (Kaniko pulls base image), and when pushing the built image. When key is empty, the whole Secret is used.
 	// +optional
-	PushCredentialsSecretRef *SecretKeySelector `json:"pushCredentialsSecretRef,omitempty"`
+	ImageCredentialsSecretRef *SecretKeySelector `json:"imageCredentialsSecretRef,omitempty"`
 
 	// BuildEnv are environment variables for the Kaniko build container. Use for proxy settings (e.g. HTTP_PROXY, HTTPS_PROXY, NO_PROXY) or any other build-time env.
 	// Only used when building (Ref empty); ignored when using a pre-built image.

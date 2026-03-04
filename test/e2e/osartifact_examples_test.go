@@ -238,7 +238,7 @@ spec:
       repository: %s
       tag: latest
     push: true
-    pushCredentialsSecretRef:
+    imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecSecretName, registryHost, repo, credsSecretName)
 	return artifactFromYAML(y)

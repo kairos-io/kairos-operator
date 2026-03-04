@@ -54,6 +54,8 @@ func unpackContainer(id, containerImage, pullImage, arch string) corev1.Containe
 
 // unpackAndPackToArtifactsContainer unpacks image.ref to /rootfs and writes the packed tarball to /artifacts.
 // Stage 1 for ref: one container puts the image tarball in the artifacts volume.
+// AuroraBoot uses go-containerregistry's DefaultKeychain, which reads from DOCKER_CONFIG (not Kubernetes ImagePullSecrets).
+// When ImageCredentialsSecretRef is set, we mount the credentials and set DOCKER_CONFIG so private image.ref can be pulled.
 func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolImage string) corev1.Container {
 	arch, _ := artifact.Spec.ArchSanitized()
 	unpackCmd := aurorabootUnpackCmd
@@ -73,16 +75,27 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 		"%s && tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
 		unpackCmd, packCmd, artifact.Name, artifact.Name,
 	)
+	volMounts := []corev1.VolumeMount{
+		{Name: "rootfs", MountPath: "/rootfs"},
+		{Name: "artifacts", MountPath: "/artifacts"},
+	}
+	env := []corev1.EnvVar{}
+	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name:      imageCredentialsVolumeName,
+			MountPath: "/root/.docker",
+			ReadOnly:  true,
+		})
+		env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/root/.docker"})
+	}
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "pull-image-baseimage",
 		Image:           toolImage,
 		Command:         []string{"/bin/bash", "-cxe"},
 		Args:            []string{script},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "rootfs", MountPath: "/rootfs"},
-			{Name: "artifacts", MountPath: "/artifacts"},
-		},
+		Env:             env,
+		VolumeMounts:    volMounts,
 	}
 }
 
@@ -183,7 +196,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 
 	volumes := builderPodBaseVolumes(pvcName, artifact)
 	volumes = appendOCISpecVolume(volumes, artifact)
-	volumes = appendPushCredentialsVolume(volumes, artifact)
+	volumes = appendImageCredentialsVolume(volumes, artifact)
 	volumes = appendCloudConfigVolume(volumes, artifacts)
 	volumes = append(volumes, artifact.Spec.Volumes...)
 
@@ -263,7 +276,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 		AutomountServiceAccountToken: ptr(false),
 		RestartPolicy:                corev1.RestartPolicyNever,
 		Volumes:                      volumes,
-		ImagePullSecrets:             artifact.Spec.ImagePullSecrets,
+		ImagePullSecrets:             builderImagePullSecrets(artifact),
 		InitContainers:               inits,
 		Containers:                   mains,
 	}
@@ -613,19 +626,28 @@ func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArti
 	return volumes
 }
 
-const pushCredentialsVolumeName = "push-credentials"
+const imageCredentialsVolumeName = "image-credentials"
 
-func appendPushCredentialsVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
-	if !artifact.Spec.Image.Push || artifact.Spec.Image.PushCredentialsSecretRef == nil {
+// builderImagePullSecrets returns ImagePullSecrets for the builder pod: spec.imagePullSecrets plus the image credentials secret when set (used for pulling image.ref and tool images from private registries).
+func builderImagePullSecrets(artifact *buildv1alpha2.OSArtifact) []corev1.LocalObjectReference {
+	secrets := append([]corev1.LocalObjectReference{}, artifact.Spec.ImagePullSecrets...)
+	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
+		secrets = append(secrets, corev1.LocalObjectReference{Name: artifact.Spec.Image.ImageCredentialsSecretRef.Name})
+	}
+	return secrets
+}
+
+func appendImageCredentialsVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
+	if artifact.Spec.Image.ImageCredentialsSecretRef == nil {
 		return volumes
 	}
-	ref := artifact.Spec.Image.PushCredentialsSecretRef
+	ref := artifact.Spec.Image.ImageCredentialsSecretRef
 	key := ref.Key
 	if key == "" {
 		key = corev1.DockerConfigJsonKey
 	}
 	volumes = append(volumes, corev1.Volume{
-		Name: pushCredentialsVolumeName,
+		Name: imageCredentialsVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
 				SecretName: ref.Name,
@@ -715,11 +737,11 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 		kanikoArgs = append(kanikoArgs, "--customPlatform=linux/"+arch)
 	}
 
-	// When pushing with credentials, mount the secret so kaniko can authenticate.
+	// When image credentials are set, mount the secret so Kaniko can pull the base image and optionally push the built image.
 	kanikoEnv := []corev1.EnvVar{}
-	if doPush && artifact.Spec.Image.PushCredentialsSecretRef != nil {
+	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
 		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name:      pushCredentialsVolumeName,
+			Name:      imageCredentialsVolumeName,
 			MountPath: "/kaniko/.docker",
 			ReadOnly:  true,
 		})

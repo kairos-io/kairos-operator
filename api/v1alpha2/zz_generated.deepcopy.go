@@ -88,8 +88,8 @@ func (in *ImageSpec) DeepCopyInto(out *ImageSpec) {
 		*out = new(BuildImage)
 		**out = **in
 	}
-	if in.PushCredentialsSecretRef != nil {
-		in, out := &in.PushCredentialsSecretRef, &out.PushCredentialsSecretRef
+	if in.ImageCredentialsSecretRef != nil {
+		in, out := &in.ImageCredentialsSecretRef, &out.ImageCredentialsSecretRef
 		*out = new(SecretKeySelector)
 		**out = **in
 	}
