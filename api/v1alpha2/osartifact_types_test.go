@@ -231,6 +231,34 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
+		It("returns error when image.caCertificatesVolume references missing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					OCISpec: &v1alpha2.OCISpec{
+						Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
+					},
+					CACertificatesVolume: "missing-ca-vol",
+				},
+				Volumes: []corev1.Volume{{Name: "other"}},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("caCertificatesVolume"))
+		})
+
+		It("returns nil when image.caCertificatesVolume references existing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					OCISpec: &v1alpha2.OCISpec{
+						Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
+					},
+					CACertificatesVolume: "my-ca-certs",
+				},
+				Volumes: []corev1.Volume{{Name: "my-ca-certs"}},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
 		It("returns nil when buildImage set and building (ref empty)", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{

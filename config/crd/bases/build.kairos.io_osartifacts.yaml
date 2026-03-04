@@ -4124,6 +4124,8 @@ spec:
                     required:
                     - version
                     type: object
+                  caCertificatesVolume:
+                    type: string
                   ociSpec:
                     properties:
                       buildContextVolume:

@@ -92,6 +92,10 @@ type ImageSpec struct {
 	// Only used when building (Ref empty); ignored when using a pre-built image.
 	// +optional
 	BuildEnv []corev1.EnvVar `json:"buildEnv,omitempty"`
+
+	// CACertificatesVolume names a volume (from spec.volumes) to mount at /kaniko/ssl/certs on the Kaniko build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
+	// +optional
+	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 }
 
 // BuildOptions holds options for building with the default OCI build definition (Stage 1).
@@ -357,6 +361,11 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 	if hasOCISpec && img.OCISpec.BuildContextVolume != "" {
 		if !volumeNames[img.OCISpec.BuildContextVolume] {
 			return fmt.Errorf("spec.image.ociSpec.buildContextVolume references volume %q which is not defined in spec.volumes", img.OCISpec.BuildContextVolume)
+		}
+	}
+	if img.CACertificatesVolume != "" {
+		if !volumeNames[img.CACertificatesVolume] {
+			return fmt.Errorf("spec.image.caCertificatesVolume references volume %q which is not defined in spec.volumes", img.CACertificatesVolume)
 		}
 	}
 

@@ -487,6 +487,57 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
+		Describe("image.caCertificatesVolume (Kaniko build container CA certs)", func() {
+			BeforeEach(func() {
+				secretName := artifact.Name + "-ocispec"
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: namespace},
+						StringData: map[string]string{OCISpecSecretKey: "FROM ubuntu"},
+						Type:       corev1.SecretTypeOpaque,
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				_, err = clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: "custom-ca", Namespace: namespace},
+						Data:       map[string][]byte{"ca.crt": []byte("-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n")},
+						Type:       corev1.SecretTypeOpaque,
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
+					},
+					CACertificatesVolume: "my-ca-certs",
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "my-ca-certs", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "custom-ca"}}},
+				}
+			})
+
+			It("mounts caCertificatesVolume at /kaniko/ssl/certs on the kaniko-build container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				kaniko := findContainerInPod(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+
+				var hasCACertsMount bool
+				for _, vm := range kaniko.VolumeMounts {
+					if vm.Name == "my-ca-certs" && vm.MountPath == "/kaniko/ssl/certs" && vm.ReadOnly {
+						hasCACertsMount = true
+						break
+					}
+				}
+				Expect(hasCACertsMount).To(BeTrue(), "kaniko should have my-ca-certs mounted at /kaniko/ssl/certs read-only")
+			})
+		})
+
 		Describe("overlay bindings on build-iso (artifacts.overlayISOVolume / overlayRootfsVolume)", func() {
 			BeforeEach(func() {
 				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}

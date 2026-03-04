@@ -683,6 +683,13 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 			Name: buildContextVolume, MountPath: "/workspace",
 		})
 	}
+	if artifact.Spec.Image.CACertificatesVolume != "" {
+		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
+			Name:      artifact.Spec.Image.CACertificatesVolume,
+			MountPath: "/kaniko/ssl/certs",
+			ReadOnly:  true,
+		})
+	}
 	tarPath := "/artifacts/" + artifact.Name + ".tar"
 
 	doPush := artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil
