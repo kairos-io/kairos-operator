@@ -683,6 +683,13 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 			Name: buildContextVolume, MountPath: "/workspace",
 		})
 	}
+	if artifact.Spec.Image.CACertificatesVolume != "" {
+		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
+			Name:      artifact.Spec.Image.CACertificatesVolume,
+			MountPath: "/kaniko/ssl/certs",
+			ReadOnly:  true,
+		})
+	}
 	tarPath := "/artifacts/" + artifact.Name + ".tar"
 
 	doPush := artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil
@@ -717,6 +724,9 @@ func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume
 			ReadOnly:  true,
 		})
 		kanikoEnv = append(kanikoEnv, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/kaniko/.docker"})
+	}
+	if len(artifact.Spec.Image.BuildEnv) > 0 {
+		kanikoEnv = append(kanikoEnv, artifact.Spec.Image.BuildEnv...)
 	}
 
 	return corev1.Container{

@@ -15,7 +15,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
 )
 
@@ -690,6 +692,83 @@ spec:
 			verifyScript := verifyFilesInSquashfs(map[string]string{"etc/kairos-build-info.txt": "Built with importers at e2e"})
 			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "build-ctx-", verifyScript)
 			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("image.buildEnv (Kaniko build container)", func() {
+		It("sets HTTP_PROXY, HTTPS_PROXY and NO_PROXY on the kaniko-build container and build completes", func() {
+			ociSpecSecret := createOCISpecSecret("buildenv-ocispec-", HadronPreKairosified, "/etc/buildenv-marker.txt", "buildenv-marker")
+			defer func() {
+				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecSecret.Name, metav1.DeleteOptions{})
+			}()
+
+			// NO_PROXY excludes registry (quay.io) and in-cluster so image pull bypasses the fake proxy and the build can complete.
+			artifact := artifactFromYAML(fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: buildenv-test
+  namespace: default
+spec:
+  image:
+    ociSpec:
+      ref:
+        name: %s
+        key: ociSpec
+    buildEnv:
+      - name: HTTP_PROXY
+        value: "http://proxy.example.com:3128"
+      - name: HTTPS_PROXY
+        value: "http://proxy.example.com:3128"
+      - name: NO_PROXY
+        value: "localhost,127.0.0.1,.cluster.local,.svc,quay.io"
+  artifacts:
+    arch: amd64
+    iso: true
+`, ociSpecSecret.Name))
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "buildenv-", verifyISOExists())
+			defer tc.Cleanup(artifactName, artifactLabelSelector)
+
+			By("waiting for builder pod and verifying kaniko-build has buildEnv")
+			var listObj runtime.Object
+			Eventually(func(g Gomega) {
+				var err error
+				listObj, err = tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
+				g.Expect(err).ToNot(HaveOccurred())
+				list := listObj.(*unstructured.UnstructuredList)
+				g.Expect(list.Items).ToNot(BeEmpty(), "builder pod should be created")
+			}).WithTimeout(5 * time.Minute).Should(Succeed())
+
+			podList := listObj.(*unstructured.UnstructuredList)
+			initContainers, _, _ := unstructured.NestedSlice(podList.Items[0].Object, "spec", "initContainers")
+			var kanikoEnv []interface{}
+			for _, c := range initContainers {
+				cont, _ := c.(map[string]interface{})
+				if cont == nil {
+					continue
+				}
+				if name, _, _ := unstructured.NestedString(cont, "name"); name == "kaniko-build" {
+					kanikoEnv, _, _ = unstructured.NestedSlice(cont, "env")
+					break
+				}
+			}
+			Expect(kanikoEnv).ToNot(BeEmpty(), "kaniko-build container should have env")
+			envMap := make(map[string]string)
+			for _, e := range kanikoEnv {
+				ev, _ := e.(map[string]interface{})
+				if ev != nil {
+					if n, _, _ := unstructured.NestedString(ev, "name"); n != "" {
+						if v, _, _ := unstructured.NestedString(ev, "value"); v != "" {
+							envMap[n] = v
+						}
+					}
+				}
+			}
+			Expect(envMap).To(HaveKeyWithValue("HTTP_PROXY", "http://proxy.example.com:3128"))
+			Expect(envMap).To(HaveKeyWithValue("HTTPS_PROXY", "http://proxy.example.com:3128"))
+			Expect(envMap).To(HaveKeyWithValue("NO_PROXY", "localhost,127.0.0.1,.cluster.local,.svc,quay.io"))
+
+			tc.WaitForBuildCompletion(artifactName, artifactLabelSelector)
 		})
 	})
 
