@@ -695,7 +695,7 @@ spec:
 		})
 	})
 
-	FDescribe("image.buildEnv (Kaniko build container)", func() {
+	Describe("image.buildEnv (Kaniko build container)", func() {
 		It("sets HTTP_PROXY, HTTPS_PROXY and NO_PROXY on the kaniko-build container and build completes", func() {
 			ociSpecSecret := createOCISpecSecret("buildenv-ocispec-", HadronPreKairosified, "/etc/buildenv-marker.txt", "buildenv-marker")
 			defer func() {
