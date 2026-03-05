@@ -654,6 +654,38 @@ var _ = Describe("OSArtifactReconciler", func() {
 				}
 			})
 
+			It("adds image credentials for unpack container (AuroraBoot uses DOCKER_CONFIG, not ImagePullSecrets)", func() {
+				artifact.Spec.Image.ImageCredentialsSecretRef = &buildv1alpha2.SecretKeySelector{Name: "my-registry-creds"}
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				// ImagePullSecrets help kubelet pull the pod's container images; also include creds secret for consistency.
+				Expect(pod.Spec.ImagePullSecrets).To(ContainElement(corev1.LocalObjectReference{Name: "my-registry-creds"}))
+
+				// AuroraBoot unpack uses go-containerregistry DefaultKeychain → DOCKER_CONFIG. So we must mount credentials and set DOCKER_CONFIG on the unpack container.
+				unpack := findInitContainerByName(pod, "pull-image-baseimage")
+				Expect(unpack).ToNot(BeNil())
+				var hasCredsMount bool
+				for _, vm := range unpack.VolumeMounts {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" {
+						hasCredsMount = true
+						break
+					}
+				}
+				Expect(hasCredsMount).To(BeTrue(), "unpack container must mount "+imageCredentialsVolumeName+" so AuroraBoot can pull private image.ref")
+				var hasDockerConfig bool
+				for _, e := range unpack.Env {
+					if e.Name == "DOCKER_CONFIG" && e.Value == "/root/.docker" {
+						hasDockerConfig = true
+						break
+					}
+				}
+				Expect(hasDockerConfig).To(BeTrue(), "unpack container must set DOCKER_CONFIG for AuroraBoot/DefaultKeychain")
+			})
+
 			It("uses image.ref for unpack and does not run kaniko", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
@@ -872,6 +904,46 @@ var _ = Describe("OSArtifactReconciler", func() {
 					}
 				}
 				Expect(hasCtx).To(BeTrue(), "kaniko should have build-ctx mounted at /workspace")
+			})
+
+			It("adds image credentials volume and Kaniko mount for pull when credentials ref set without push", func() {
+				artifact.Spec.Image.ImageCredentialsSecretRef = &buildv1alpha2.SecretKeySelector{Name: "registry-creds"}
+				// Push false: we only need credentials for pulling base image
+				artifact.Spec.Image.Push = false
+
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				var hasCredsVol bool
+				for _, v := range pod.Spec.Volumes {
+					if v.Name == imageCredentialsVolumeName {
+						hasCredsVol = true
+						break
+					}
+				}
+				Expect(hasCredsVol).To(BeTrue(), "credentials volume should be present for Kaniko to pull base image")
+
+				kaniko := findInitContainerByName(pod, "kaniko-build")
+				Expect(kaniko).ToNot(BeNil())
+				var hasCredsMount bool
+				for _, vm := range kaniko.VolumeMounts {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/kaniko/.docker" {
+						hasCredsMount = true
+						break
+					}
+				}
+				Expect(hasCredsMount).To(BeTrue(), "kaniko should mount credentials for pull")
+				var hasDockerConfig bool
+				for _, e := range kaniko.Env {
+					if e.Name == "DOCKER_CONFIG" && e.Value == "/kaniko/.docker" {
+						hasDockerConfig = true
+						break
+					}
+				}
+				Expect(hasDockerConfig).To(BeTrue(), "kaniko should have DOCKER_CONFIG for pull")
 			})
 		})
 

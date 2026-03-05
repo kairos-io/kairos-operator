@@ -238,7 +238,7 @@ spec:
       repository: %s
       tag: latest
     push: true
-    pushCredentialsSecretRef:
+    imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecSecretName, registryHost, repo, credsSecretName)
 	return artifactFromYAML(y)
@@ -585,6 +585,55 @@ spec:
 
 			imageRef := RegistryNoAuthHost + "/" + repo + ":latest"
 			verifyPullSucceedsWithoutCredentials(imageRef, "etc/e2e-push-noauth-marker.txt", "e2e-push-noauth-marker")
+		})
+
+		It("Kaniko pulls private base image using imageCredentialsSecretRef", func() {
+			// Prove that credentials mounted in the Kaniko container are used for pulling the base image.
+			// 1) Push a small image to the auth registry (private base).
+			// 2) Build an OSArtifact whose Dockerfile is FROM that private image, with imageCredentialsSecretRef.
+			//    If the build completes, Kaniko successfully pulled the base using the mounted credentials.
+			suffix := uniqueTestSuffix()
+			baseRepo := "e2e/kaniko-pull-base-" + suffix
+			baseMarkerPath := "/etc/kaniko-pull-base-marker.txt"
+			baseMarkerContent := "kaniko-pull-base"
+
+			ociSpecSecretForPush := createOCISpecSecret("kaniko-pull-base-ocispec-", HadronPreKairosified, baseMarkerPath, baseMarkerContent)
+			defer func() {
+				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecSecretForPush.Name, metav1.DeleteOptions{})
+			}()
+
+			registryCredsSecret := createRegistryCredentialsSecret(RegistryHost, RegistryUser, RegistryPassword)
+			defer func() {
+				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), registryCredsSecret.Name, metav1.DeleteOptions{})
+			}()
+
+			pushArtifact := ociPushArtifactWithCredentials("kaniko-pull-base-"+suffix, ociSpecSecretForPush.Name, RegistryHost, baseRepo, registryCredsSecret.Name)
+			runBuildAndPushOnly(tc, pushArtifact, "kaniko-pull-base-push-"+suffix+"-")
+
+			privateBaseRef := RegistryHost + "/" + baseRepo + ":latest"
+			ociSpecForPull := createOCISpecSecret("kaniko-pull-build-ocispec-", privateBaseRef, "/etc/kaniko-pull-ok.txt", "kaniko-pull-ok")
+			defer func() {
+				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecForPull.Name, metav1.DeleteOptions{})
+			}()
+
+			// Build from the private base; no push. imageCredentialsSecretRef supplies credentials for Kaniko to pull the base.
+			buildArtifact := artifactFromYAML(fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: kaniko-pull-build-%s
+  namespace: default
+spec:
+  image:
+    ociSpec:
+      ref:
+        name: %s
+        key: ociSpec
+    push: false
+    imageCredentialsSecretRef:
+      name: %s
+`, suffix, ociSpecForPull.Name, registryCredsSecret.Name))
+			runBuildAndPushOnly(tc, buildArtifact, "kaniko-pull-build-"+suffix+"-")
 		})
 	})
 
