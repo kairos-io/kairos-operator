@@ -364,10 +364,10 @@ func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overl
 		fmt.Fprintf(&cmd, " --arch %s", arch)
 	}
 	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
-	cmd.WriteString(" dir:/rootfs")
 	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
 		cmd.WriteString(" --cloud-config /cloud-config.yaml")
 	}
+	cmd.WriteString(" dir:/rootfs")
 	return cmd.String()
 }
 
@@ -401,10 +401,10 @@ func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) stri
 	fmt.Fprintf(&cmd, " --sb-key %s/db.key", ukiKeysMountPath)
 	fmt.Fprintf(&cmd, " --sb-cert %s/db.pem", ukiKeysMountPath)
 	// Note: auroraboot build-uki does not support --arch; arch is not passed.
-	fmt.Fprintf(&cmd, " %s", "dir:/rootfs")
 	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
 		fmt.Fprintf(&cmd, " --cloud-config %s", "/cloud-config.yaml")
 	}
+	fmt.Fprintf(&cmd, " %s", "dir:/rootfs")
 	return cmd.String()
 }
 
