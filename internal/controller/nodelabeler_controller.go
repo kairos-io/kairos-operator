@@ -10,10 +10,13 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/kairos-io/kairos-operator/internal/utils"
 )
@@ -257,7 +260,28 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		os.Exit(1)
 	}
 
+	// Define selector for nodes that should be ignored
+	nodeSelector, err := labels.Parse("kairos.io/managed notin (false)")
+	if err != nil {
+		setupLog.Error(err, "Failed to parse label selector for nodes")
+		os.Exit(1)
+	}
+
+	log := logf.FromContext(context.TODO())
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Node{}).
+		For(
+			&corev1.Node{},
+			// Filter out ignored nodes
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				node := obj.(*corev1.Node)
+
+				matches := nodeSelector.Matches(labels.Set(node.ObjectMeta.Labels))
+				if !matches {
+					log.V(1).Info("Ignoring explicitly labeled node", "node", node.ObjectMeta.Name)
+				}
+
+				return matches
+			})),
+		).
 		Complete(r)
 }
