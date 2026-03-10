@@ -28,14 +28,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 FROM alpine:latest
 ARG TARGETARCH
 WORKDIR /
+# Create a non-root user with numeric UID
+RUN adduser -D -u 65532 -s /bin/sh manager
 # Install kubectl and other necessary tools
 RUN apk add --no-cache curl ca-certificates && \
     curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
     chmod +x kubectl && \
     mv kubectl /usr/local/bin/
 COPY --from=builder /workspace/manager .
-# Create a non-root user with numeric UID
-RUN adduser -D -u 65532 -s /bin/sh manager
-USER 65532:65532
 
+USER 65532:65532
 ENTRYPOINT ["/manager"]
