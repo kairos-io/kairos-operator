@@ -248,11 +248,12 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	setupLog := logf.Log.WithName("setup")
+
 	// Ensure RBAC resources are created when the controller starts
 	namespace := r.getOperatorNamespace()
 	if err := r.ensureServiceAccount(context.Background(), namespace); err != nil {
-		log := logf.Log.WithName("setup")
-		log.Error(err, "Failed to ensure service account and RBAC")
+		setupLog.Error(err, "Failed to ensure service account and RBAC")
 		os.Exit(1)
 	}
 
