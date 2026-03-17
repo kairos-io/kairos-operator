@@ -3,8 +3,8 @@
 #   kubectl apply -k config/nginx -n default
 # (If nginx is in another namespace, set env NGINX_URL in the exporter to
 #  http://kairos-operator-nginx.<namespace>.svc.cluster.local)
-# Then apply this manifest:
-#   kubectl apply -f examples/osartifact-arch-unpack-test.yaml
+# Create a build:
+#   kubectl create -f examples/osartifact-arch-unpack-test.yaml
 #
 # This uses a Kairos image and sets arch so the pull-image init container
 # runs "auroraboot unpack --arch <arch> <image> /rootfs". After the build,
@@ -15,15 +15,17 @@ metadata:
   name: arch-unpack-test
   namespace: default
 spec:
-  imageName: quay.io/kairos/opensuse:leap-15.6-core-arm64-generic-v3.6.0
-  arch: arm64
-  iso: true
+  image:
+    ref: quay.io/kairos/opensuse:leap-15.6-core-arm64-generic-v3.6.0
+  artifacts:
+    arch: arm64
+    iso: true
   exporters:
   - template:
       spec:
         restartPolicy: Never
         containers:
-        # Requires nginx to be deployed (`kubectly apply -k config/nginx`)
+        # Requires nginx to be deployed (`kubectl apply -k config/nginx`)
         - name: upload-to-nginx
           image: curlimages/curl
           command: ["sh", "-ec"]
