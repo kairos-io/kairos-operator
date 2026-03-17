@@ -78,8 +78,9 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if artifact.DeletionTimestamp != nil {
+		original := artifact.DeepCopy()
 		controllerutil.RemoveFinalizer(&artifact, FinalizerName)
-		return ctrl.Result{}, r.Update(ctx, &artifact)
+		return ctrl.Result{}, r.Patch(ctx, &artifact, client.MergeFrom(original))
 	}
 
 	// Skip reconciliation if the namespace is terminating; creating ConfigMaps etc. would be forbidden.
@@ -95,8 +96,9 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !controllerutil.ContainsFinalizer(&artifact, FinalizerName) {
+		original := artifact.DeepCopy()
 		controllerutil.AddFinalizer(&artifact, FinalizerName)
-		if err := r.Update(ctx, &artifact); err != nil {
+		if err := r.Patch(ctx, &artifact, client.MergeFrom(original)); err != nil {
 			return ctrl.Result{Requeue: true}, err
 		}
 	}
