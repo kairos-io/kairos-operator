@@ -1,8 +1,8 @@
-# Sample OSArtifact demonstrating importers and volume bindings.
+# Sample OSArtifact demonstrating importers and overlay volumes.
 #
 # Importers are init containers that run before the build phase. They populate
-# user-defined volumes which are then bound to overlay roles via volumeBindings.
-# Here we create two overlays:
+# user-defined volumes which are then bound to overlay roles via artifacts.overlayISOVolume
+# and artifacts.overlayRootfsVolume. Here we create two overlays:
 #   - overlayISO:    files placed at the root of the ISO filesystem
 #                    (accessible at /run/initramfs/live/ during live boot)
 #   - overlayRootfs: files merged into the OS rootfs (squashfs),
@@ -11,20 +11,24 @@
 # Prereqs: deploy nginx so the exporter can upload the ISO:
 #   kubectl apply -k config/nginx -n default
 #
-# Then apply this manifest:
-#   kubectl apply -f examples/osartifact-importers.yaml
+# Create a build (each run creates a new OSArtifact with a unique name):
+#   kubectl create -f examples/osartifact-importers.yaml
 #
-# Once the artifact reaches Ready, port-forward and download:
+# Reuse this manifest as often as you like: kubectl create -f ... each time
+# starts a new build. Use generateName so you do not set metadata.name.
+#
+# Once the artifact reaches Ready, port-forward and download (use the actual
+# resource name from kubectl get osartifacts -n default):
 #   kubectl port-forward svc/kairos-operator-nginx 8080:80 -n default
-#   curl -O http://localhost:8080/importers-demo.iso
+#   curl -O http://localhost:8080/<artifact-name>.iso
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
 metadata:
-  name: importers-demo
+  generateName: importers-demo-
   namespace: default
 spec:
-  imageName: "quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2"
-  iso: true
+  image:
+    ref: "quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2"
 
   # User-defined volumes shared between importers and the build pod.
   # Names must not collide with reserved names (artifacts, rootfs, config,
@@ -63,10 +67,10 @@ spec:
         - name: rootfs-overlay
           mountPath: /overlay
 
-  # Map the populated volumes to their build roles.
-  volumeBindings:
-    overlayISO: iso-overlay
-    overlayRootfs: rootfs-overlay
+  artifacts:
+    iso: true
+    overlayISOVolume: iso-overlay
+    overlayRootfsVolume: rootfs-overlay
 
   exporters:
     - template:

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -175,6 +176,44 @@ func createRandomNamespace(clientset *kubernetes.Clientset) string {
 	return name
 }
 
+// namespaceRemainingResources returns a string describing resources still in the namespace (for debugging stuck namespace deletion).
+func namespaceRemainingResources(clientset *kubernetes.Clientset, namespace string) string {
+	ctx := context.Background()
+	var b string
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Sprintf("failed to get namespace: %v", err)
+	}
+	b = fmt.Sprintf("namespace %q: deletionTimestamp=%v, finalizers=%v\n", namespace, ns.DeletionTimestamp, ns.Spec.Finalizers)
+
+	pods, _ := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	for _, p := range pods.Items {
+		b += fmt.Sprintf("  Pod %s: deletionTimestamp=%v, finalizers=%v\n", p.Name, p.DeletionTimestamp, p.Finalizers)
+	}
+	pvcs, _ := clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
+	for _, pvc := range pvcs.Items {
+		b += fmt.Sprintf("  PVC %s: deletionTimestamp=%v, finalizers=%v\n", pvc.Name, pvc.DeletionTimestamp, pvc.Finalizers)
+	}
+	jobs, _ := clientset.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+	for _, j := range jobs.Items {
+		b += fmt.Sprintf("  Job %s: deletionTimestamp=%v, finalizers=%v\n", j.Name, j.DeletionTimestamp, j.Finalizers)
+	}
+	secrets, _ := clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{})
+	for _, s := range secrets.Items {
+		b += fmt.Sprintf("  Secret %s: deletionTimestamp=%v, finalizers=%v\n", s.Name, s.DeletionTimestamp, s.Finalizers)
+	}
+
+	var artifacts buildv1alpha2.OSArtifactList
+	if err := k8sClient.List(ctx, &artifacts, client.InNamespace(namespace)); err == nil {
+		for _, a := range artifacts.Items {
+			b += fmt.Sprintf("  OSArtifact %s: deletionTimestamp=%v, finalizers=%v\n", a.Name, a.DeletionTimestamp, a.Finalizers)
+		}
+	} else {
+		b += fmt.Sprintf("  OSArtifacts: list error: %v\n", err)
+	}
+	return b
+}
+
 // deleteNamespace deletes a namespace and waits for it to be fully deleted
 func deleteNamespace(clientset *kubernetes.Clientset, name string) {
 	err := clientset.CoreV1().Namespaces().Delete(context.Background(), name, metav1.DeleteOptions{})
@@ -184,7 +223,9 @@ func deleteNamespace(clientset *kubernetes.Clientset, name string) {
 	Eventually(func() bool {
 		_, err := clientset.CoreV1().Namespaces().Get(context.Background(), name, metav1.GetOptions{})
 		return apierrors.IsNotFound(err)
-	}, 2*time.Minute, 1*time.Second).Should(BeTrue(), "namespace should be deleted")
+	}, 2*time.Minute, 1*time.Second).Should(BeTrue(), func() string {
+		return "namespace should be deleted.\n" + namespaceRemainingResources(clientset, name)
+	})
 }
 
 // Helper function to mark a job as failed with proper conditions
