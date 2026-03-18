@@ -90,6 +90,7 @@ type NodeOpUpgradeStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="self.spec == oldSelf.spec",message="spec is immutable"
 
 // NodeOpUpgrade is the Schema for the nodeopupgrades API.
 type NodeOpUpgrade struct {
