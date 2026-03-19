@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	testImageName     = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
-	ukiKeysVolumeName = "uki-keys" // volume name used in UKI tests
+	testImageName       = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName   = "uki-keys"  // volume name used in UKI tests
+	artifactsVolumeName = "artifacts" // internal builder/exporter volume name (matches controller)
 )
 
 var _ = Describe("OSArtifactReconciler", func() {
@@ -363,12 +364,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 					var artifactsVol *corev1.Volume
 					for i := range pod.Spec.Volumes {
-						if pod.Spec.Volumes[i].Name == "artifacts" {
+						if pod.Spec.Volumes[i].Name == artifactsVolumeName {
 							artifactsVol = &pod.Spec.Volumes[i]
 							break
 						}
 					}
-					Expect(artifactsVol).ToNot(BeNil(), "pod should have a volume named 'artifacts'")
+					Expect(artifactsVol).ToNot(BeNil(), "pod should have a volume named %q", artifactsVolumeName)
 					Expect(artifactsVol.EmptyDir).ToNot(BeNil(), "artifacts volume should be the user's EmptyDir (my-artifacts)")
 				})
 
@@ -380,7 +381,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					var hasArtifactsMount bool
 					for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 						for _, vm := range c.VolumeMounts {
-							if vm.Name == "artifacts" && vm.MountPath == "/artifacts" {
+							if vm.Name == artifactsVolumeName && vm.MountPath == "/artifacts" {
 								hasArtifactsMount = true
 								break
 							}
@@ -403,7 +404,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				var artifactsVol *corev1.Volume
 				for i := range pod.Spec.Volumes {
-					if pod.Spec.Volumes[i].Name == "artifacts" {
+					if pod.Spec.Volumes[i].Name == artifactsVolumeName {
 						artifactsVol = &pod.Spec.Volumes[i]
 						break
 					}
