@@ -93,7 +93,7 @@ var _ = Describe("OSArtifact Format Tests", func() {
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
 				Image: buildv1alpha2.ImageSpec{
-					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+					Ref: HadronPreKairosified,
 				},
 				Artifacts: &buildv1alpha2.ArtifactSpec{CloudImage: true},
 			}
@@ -120,7 +120,7 @@ var _ = Describe("OSArtifact Format Tests", func() {
 				},
 				Spec: buildv1alpha2.OSArtifactSpec{
 					Image: buildv1alpha2.ImageSpec{
-						Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+						Ref: HadronPreKairosified,
 					},
 					Artifacts: &buildv1alpha2.ArtifactSpec{
 						ISO:        true,
@@ -235,7 +235,7 @@ var _ = Describe("OSArtifact Format Tests", func() {
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
 				Image: buildv1alpha2.ImageSpec{
-					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+					Ref: HadronPreKairosified,
 				},
 				Artifacts: &buildv1alpha2.ArtifactSpec{AzureImage: true},
 			}
@@ -287,7 +287,7 @@ var _ = Describe("OSArtifact Format Tests", func() {
 			`
 			spec := buildv1alpha2.OSArtifactSpec{
 				Image: buildv1alpha2.ImageSpec{
-					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+					Ref: HadronPreKairosified,
 				},
 				Artifacts: &buildv1alpha2.ArtifactSpec{GCEImage: true},
 			}

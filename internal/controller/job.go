@@ -178,7 +178,7 @@ func (r *OSArtifactReconciler) newArtifactPVC(artifact *buildv1alpha2.OSArtifact
 	return pvc
 }
 
-func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string, artifact *buildv1alpha2.OSArtifact) *corev1.Pod {
+func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) *corev1.Pod {
 	logger := log.FromContext(ctx)
 	arch, err := artifact.Spec.ArchSanitized()
 	if err != nil {
@@ -194,7 +194,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, pvcName string
 	buildAzureCloudImageContainer := makeAzureCloudImageContainer(r.ToolImage, artifact, arch, volumeMounts, artifacts)
 	buildGCECloudImageContainer := makeGCECloudImageContainer(r.ToolImage, artifact, arch, volumeMounts, artifacts)
 
-	volumes := builderPodBaseVolumes(pvcName, artifact)
+	volumes := builderPodBaseVolumes(artifact, pvc)
 	volumes = appendOCISpecVolume(volumes, artifact)
 	volumes = appendImageCredentialsVolume(volumes, artifact)
 	volumes = appendCloudConfigVolume(volumes, artifacts)
@@ -559,22 +559,39 @@ func makeGCECloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArti
 	}
 }
 
-func builderPodBaseVolumes(pvcName string, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
-	return []corev1.Volume{
-		{
+// builderPodBaseVolumes returns the base volumes for the builder pod (artifacts, rootfs, config).
+// If spec.artifacts.volume is set, the artifacts volume is taken from spec.volumes; otherwise it is backed by the operator-created pvc.
+func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) []corev1.Volume {
+	var artifactsVol corev1.Volume
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.Volume != "" {
+		for i := range artifact.Spec.Volumes {
+			if artifact.Spec.Volumes[i].Name == artifact.Spec.Artifacts.Volume {
+				artifactsVol = corev1.Volume{
+					Name:         "artifacts",
+					VolumeSource: artifact.Spec.Volumes[i].VolumeSource,
+				}
+				break
+			}
+		}
+	} else {
+		// spec.artifacts.volume unset: use the operator-created PVC. startBuild always creates and passes a non-nil pvc here.
+		artifactsVol = corev1.Volume{
 			Name: "artifacts",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: pvcName,
+					ClaimName: pvc.Name,
 					ReadOnly:  false,
 				},
 			},
-		},
-		{
+		}
+	}
+
+	return append([]corev1.Volume{artifactsVol},
+		corev1.Volume{
 			Name:         "rootfs",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
-		{
+		corev1.Volume{
 			Name: "config",
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -582,7 +599,35 @@ func builderPodBaseVolumes(pvcName string, artifact *buildv1alpha2.OSArtifact) [
 				},
 			},
 		},
+	)
+}
+
+// volumeForExportArtifacts returns the volume to inject into exporter job pods for the artifacts mount.
+// If spec.artifacts.volume is set, returns that volume from spec.volumes (named "artifacts"); otherwise returns a volume backed by the PVC (read-only).
+func volumeForExportArtifacts(artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) (corev1.Volume, error) {
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.Volume != "" {
+		for i := range artifact.Spec.Volumes {
+			if artifact.Spec.Volumes[i].Name == artifact.Spec.Artifacts.Volume {
+				return corev1.Volume{
+					Name:         "artifacts",
+					VolumeSource: artifact.Spec.Volumes[i].VolumeSource,
+				}, nil
+			}
+		}
+		return corev1.Volume{}, fmt.Errorf("spec.artifacts.volume references volume %q which is not defined in spec.volumes", artifact.Spec.Artifacts.Volume)
 	}
+	if pvc == nil {
+		return corev1.Volume{}, fmt.Errorf("no artifacts pvc and spec.artifacts.volume not set")
+	}
+	return corev1.Volume{
+		Name: "artifacts",
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: pvc.Name,
+				ReadOnly:  true,
+			},
+		},
+	}, nil
 }
 
 // kanikoBuildArgs returns kaniko --build-arg KEY=VALUE strings from BuildOptions (default OCI build definition ARGs).

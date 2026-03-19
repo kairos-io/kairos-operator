@@ -362,6 +362,31 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
+		Describe("artifacts.volume", func() {
+			It("returns error when artifacts.volume references missing volume", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.Volume = "missing-artifacts-vol"
+				spec.Volumes = []corev1.Volume{{Name: "other"}}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("artifacts.volume"))
+				Expect(err.Error()).To(ContainSubstring("missing-artifacts-vol"))
+			})
+
+			It("returns nil when artifacts.volume references existing volume", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.Volume = "my-artifacts"
+				spec.Volumes = []corev1.Volume{{Name: "my-artifacts", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+
+			It("returns nil when artifacts.volume is empty (default behavior)", func() {
+				spec := validImageRef("img")
+				Expect(spec.Artifacts.Volume).To(BeEmpty())
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+		})
+
 		Describe("uki", func() {
 			It("returns error when uki.iso is true but keysVolume is empty", func() {
 				spec := validImageRef("img")

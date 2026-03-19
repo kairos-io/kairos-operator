@@ -23,7 +23,8 @@ import (
 
 // Hadron images used by example e2e tests (fast, small).
 const (
-	HadronPreKairosified = "quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2"
+	// HadronPreKairosified is the default pre-built Hadron image for image.ref and OCI FROM bases in e2e.
+	HadronPreKairosified = "quay.io/kairos/hadron:v0.0.4-core-amd64-generic-v4.0.1"
 	HadronBase           = "ghcr.io/kairos-io/hadron:v0.0.1"
 )
 
