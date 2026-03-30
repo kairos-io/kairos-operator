@@ -176,7 +176,7 @@ type ArtifactSpec struct {
 	// +optional
 	UKI *UKISpec `json:"uki,omitempty"`
 
-	// Volume names a volume (from spec.volumes) to use for build outputs (ISO, cloud images, etc.) instead of the operator-created PVC. When set, the operator does not create a PVC; the builder pod and exporter jobs use this volume (mounted at /artifacts). When empty, the operator creates a PVC as usual. Useful for mounting a host directory (e.g. hostPath) so artifacts land directly on the node. Only relevant when at least one artifact type is enabled.
+	// Volume names a volume (from spec.volumes) to use for build outputs (ISO, cloud images, etc.) instead of the operator-created PVC. When set, the operator does not create a PVC; the builder pod and exporter jobs use this volume (mounted at /artifacts). When empty, the operator creates a PVC. Useful for mounting a host directory (e.g. hostPath) so artifacts land directly on the node. Only relevant when at least one artifact type is enabled.
 	// +optional
 	Volume string `json:"volume,omitempty"`
 }
