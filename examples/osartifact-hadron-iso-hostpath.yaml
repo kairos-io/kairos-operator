@@ -27,6 +27,6 @@ spec:
   volumes:
     - name: host-artifacts
       hostPath:
-        path: /home/dimitris/tmp2/artifacts
+        path: /var/lib/kairos-artifacts
         type: DirectoryOrCreate
   exporters: []

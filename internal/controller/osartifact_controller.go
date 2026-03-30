@@ -377,15 +377,17 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 
 	var pvcs corev1.PersistentVolumeClaimList
 	var pvc *corev1.PersistentVolumeClaim
-	if err := r.List(ctx, &pvcs, &client.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
-	}); err != nil {
-		return ctrl.Result{Requeue: true}, err
-	}
+	if artifact.Spec.Artifacts == nil || artifact.Spec.Artifacts.Volume == "" {
+		if err := r.List(ctx, &pvcs, &client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+		}); err != nil {
+			return ctrl.Result{Requeue: true}, err
+		}
 
-	for _, item := range pvcs.Items {
-		pvc = &item
-		break
+		for _, item := range pvcs.Items {
+			pvc = &item
+			break
+		}
 	}
 
 	exportVol, err := volumeForExportArtifacts(artifact, pvc)

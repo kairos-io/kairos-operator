@@ -608,9 +608,17 @@ func volumeForExportArtifacts(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Pe
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.Volume != "" {
 		for i := range artifact.Spec.Volumes {
 			if artifact.Spec.Volumes[i].Name == artifact.Spec.Artifacts.Volume {
+				// Copy the referenced volume source so we can safely enforce read-only for PVC-backed volumes.
+				src := artifact.Spec.Volumes[i].VolumeSource
+				if src.PersistentVolumeClaim != nil {
+					src.PersistentVolumeClaim = &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: src.PersistentVolumeClaim.ClaimName,
+						ReadOnly:  true,
+					}
+				}
 				return corev1.Volume{
 					Name:         "artifacts",
-					VolumeSource: artifact.Spec.Volumes[i].VolumeSource,
+					VolumeSource: src,
 				}, nil
 			}
 		}
