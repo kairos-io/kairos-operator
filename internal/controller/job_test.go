@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"strings"
 
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
@@ -8,6 +9,8 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 var _ = Describe("buildISOCommand", func() {
@@ -109,7 +112,7 @@ var _ = Describe("buildUKICommand", func() {
 })
 
 var _ = Describe("volumeForExportArtifacts", func() {
-	When("artifacts.volume is set and pvc is nil", func() {
+	When("artifacts.volume is set and no PVC exists", func() {
 		It("returns volume named artifacts with source from spec.volumes", func() {
 			artifact := &buildv1alpha2.OSArtifact{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact"},
@@ -120,23 +123,29 @@ var _ = Describe("volumeForExportArtifacts", func() {
 					},
 				},
 			}
-			vol, err := volumeForExportArtifacts(artifact, nil)
+			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+			vol, err := volumeForExportArtifacts(context.Background(), cl, artifact)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(vol.Name).To(Equal("artifacts"))
 			Expect(vol.EmptyDir).ToNot(BeNil())
 		})
 	})
 
-	When("artifacts.volume is empty and pvc is set", func() {
+	When("artifacts.volume is empty and a labeled PVC exists", func() {
 		It("returns volume named artifacts backed by the PVC (read-only)", func() {
 			artifact := &buildv1alpha2.OSArtifact{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact"},
+				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact", Namespace: "default"},
 				Spec:       buildv1alpha2.OSArtifactSpec{Artifacts: &buildv1alpha2.ArtifactSpec{}},
 			}
 			pvc := &corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact-artifacts", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-artifact-artifacts",
+					Namespace: "default",
+					Labels:    map[string]string{artifactLabel: "my-artifact"},
+				},
 			}
-			vol, err := volumeForExportArtifacts(artifact, pvc)
+			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(pvc).Build()
+			vol, err := volumeForExportArtifacts(context.Background(), cl, artifact)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(vol.Name).To(Equal("artifacts"))
 			Expect(vol.PersistentVolumeClaim).ToNot(BeNil())
@@ -154,19 +163,21 @@ var _ = Describe("volumeForExportArtifacts", func() {
 					Volumes:   []corev1.Volume{},
 				},
 			}
-			_, err := volumeForExportArtifacts(artifact, nil)
+			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+			_, err := volumeForExportArtifacts(context.Background(), cl, artifact)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("missing-vol"))
 		})
 	})
 
-	When("artifacts is nil and pvc is nil", func() {
+	When("artifacts is nil and no PVC exists", func() {
 		It("returns error", func() {
 			artifact := &buildv1alpha2.OSArtifact{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact"},
+				ObjectMeta: metav1.ObjectMeta{Name: "my-artifact", Namespace: "default"},
 				Spec:       buildv1alpha2.OSArtifactSpec{},
 			}
-			_, err := volumeForExportArtifacts(artifact, nil)
+			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+			_, err := volumeForExportArtifacts(context.Background(), cl, artifact)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("artifacts.volume"))
 		})

@@ -25,6 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -602,9 +604,25 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 	)
 }
 
+// lookupArtifactsPVC finds the PVC associated with the given artifact by label within the artifact's namespace.
+// Returns nil, nil if no PVC is found.
+func lookupArtifactsPVC(ctx context.Context, cl client.Client, artifact *buildv1alpha2.OSArtifact) (*corev1.PersistentVolumeClaim, error) {
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := cl.List(ctx, &pvcs, &client.ListOptions{
+		Namespace:     artifact.Namespace,
+		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+	}); err != nil {
+		return nil, err
+	}
+	for i := range pvcs.Items {
+		return &pvcs.Items[i], nil
+	}
+	return nil, nil
+}
+
 // volumeForExportArtifacts returns the volume to inject into exporter job pods for the artifacts mount.
-// If spec.artifacts.volume is set, returns that volume from spec.volumes (named "artifacts"); otherwise returns a volume backed by the PVC (read-only).
-func volumeForExportArtifacts(artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) (corev1.Volume, error) {
+// If spec.artifacts.volume is set, returns that volume from spec.volumes (named "artifacts"); otherwise discovers and returns a volume backed by the labeled PVC (read-only).
+func volumeForExportArtifacts(ctx context.Context, cl client.Client, artifact *buildv1alpha2.OSArtifact) (corev1.Volume, error) {
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.Volume != "" {
 		for i := range artifact.Spec.Volumes {
 			if artifact.Spec.Volumes[i].Name == artifact.Spec.Artifacts.Volume {
@@ -623,6 +641,10 @@ func volumeForExportArtifacts(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Pe
 			}
 		}
 		return corev1.Volume{}, fmt.Errorf("spec.artifacts.volume references volume %q which is not defined in spec.volumes", artifact.Spec.Artifacts.Volume)
+	}
+	pvc, err := lookupArtifactsPVC(ctx, cl, artifact)
+	if err != nil {
+		return corev1.Volume{}, err
 	}
 	if pvc == nil {
 		return corev1.Volume{}, fmt.Errorf("no artifacts pvc and spec.artifacts.volume not set")
