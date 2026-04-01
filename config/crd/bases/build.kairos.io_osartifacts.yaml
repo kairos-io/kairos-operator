@@ -18,6 +18,10 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - description: Age
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha2
     schema:
       openAPIV3Schema:
