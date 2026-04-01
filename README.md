@@ -6,6 +6,8 @@ This is the Kubernetes operator of [Kairos](https://kairos.io), for day-2 operat
 
 For user documentation (installation, usage, examples), see the [Kairos Operator docs](https://kairos.io/docs/operator/).
 
+For one-shot semantics and reusing manifests (`generateName`, `kubectl create`), see the **One-off** sections in the [OSArtifact](https://kairos.io/operator-docs/osartifact/), [NodeOp](https://kairos.io/operator-docs/nodeop/), and [NodeOpUpgrade](https://kairos.io/operator-docs/nodeop-upgrade/) pages under the operator documentation.
+
 ## Development notes
 
 This project is managed with [kubebuilder](https://book.kubebuilder.io).

@@ -6,6 +6,9 @@
 # Create a build:
 #   kubectl create -f examples/osartifact-arch-unpack-test.yaml
 #
+# This manifest uses a fixed metadata.name; for repeated runs use generateName
+# instead (see Kairos operator-docs/osartifact).
+#
 # This uses a Kairos image and sets arch so the pull-image init container
 # runs "auroraboot unpack --arch <arch> <image> /rootfs". After the build,
 # the exporter uploads artifacts to the nginx service via HTTP PUT.

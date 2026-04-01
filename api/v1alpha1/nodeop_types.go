@@ -167,7 +167,6 @@ type NodeStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:validation:XValidation:rule="self.spec == oldSelf.spec",message="spec is immutable"
 
 // NodeOp is the Schema for the nodeops API.
 type NodeOp struct {

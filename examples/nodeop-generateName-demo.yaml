@@ -1,0 +1,19 @@
+# Minimal NodeOp example.
+#
+# NodeOp is a one-shot operation: the controller runs it once for that object.
+# To run another operation, create a new NodeOp (same manifest is fine).
+#
+# Recommended: use generateName so each create gets a unique name:
+#   kubectl create -f examples/nodeop-generateName-demo.yaml
+#
+# You can run that command as many times as you like; each invocation creates
+# a new NodeOp. Using kubectl apply with a fixed metadata.name would update
+# the same object; changing spec after creation is not a supported way to
+# "re-run" the operation—create a new resource instead.
+apiVersion: operator.kairos.io/v1alpha1
+kind: NodeOp
+metadata:
+  generateName: nodeop-demo-
+  namespace: default
+spec:
+  command: ["sh", "-c", "echo done && exit 0"]

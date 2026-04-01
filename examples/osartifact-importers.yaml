@@ -16,6 +16,7 @@
 #
 # Reuse this manifest as often as you like: kubectl create -f ... each time
 # starts a new build. Use generateName so you do not set metadata.name.
+# See Kairos docs: operator-docs/osartifact (one-off builds and generateName).
 #
 # Once the artifact reaches Ready, port-forward and download (use the actual
 # resource name from kubectl get osartifacts -n default):

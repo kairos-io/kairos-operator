@@ -849,11 +849,10 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 		}
 	}
 
-	// Add finalizer to NodeOp if not present (Patch to avoid triggering spec immutability validation)
+	// Add finalizer to NodeOp if not present
 	if !controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
-		original := nodeOp.DeepCopy()
 		controllerutil.AddFinalizer(nodeOp, clusterRoleBindingFinalizer)
-		if err := r.Patch(ctx, nodeOp, client.MergeFrom(original)); err != nil {
+		if err := r.Update(ctx, nodeOp); err != nil {
 			log.Error(err, "Failed to add finalizer to NodeOp")
 			return err
 		}
@@ -1083,10 +1082,9 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 			}
 		}
 
-		// Remove finalizer (Patch to avoid triggering spec immutability validation)
-		original := nodeOp.DeepCopy()
+		// Remove finalizer
 		controllerutil.RemoveFinalizer(nodeOp, clusterRoleBindingFinalizer)
-		if err := r.Patch(ctx, nodeOp, client.MergeFrom(original)); err != nil {
+		if err := r.Update(ctx, nodeOp); err != nil {
 			log.Error(err, "Failed to remove finalizer from NodeOp")
 			return false, err
 		}
