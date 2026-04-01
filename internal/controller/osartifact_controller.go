@@ -78,8 +78,11 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if artifact.DeletionTimestamp != nil {
-		controllerutil.RemoveFinalizer(&artifact, FinalizerName)
-		return ctrl.Result{}, r.Update(ctx, &artifact)
+		if controllerutil.ContainsFinalizer(&artifact, FinalizerName) {
+			controllerutil.RemoveFinalizer(&artifact, FinalizerName)
+			return ctrl.Result{}, r.Update(ctx, &artifact)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Skip reconciliation if the namespace is terminating; creating ConfigMaps etc. would be forbidden.
