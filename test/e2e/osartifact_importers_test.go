@@ -160,7 +160,7 @@ var _ = Describe("OSArtifact Importers", func() {
 				Namespace:    "default",
 			},
 			StringData: map[string]string{
-				"ociSpec": "FROM quay.io/kairos/hadron:v0.0.1-core-amd64-generic-v3.7.2\nCOPY build-context-marker.txt /etc/build-context-marker.txt\n",
+				"ociSpec": fmt.Sprintf("FROM %s\nCOPY build-context-marker.txt /etc/build-context-marker.txt\n", HadronPreKairosified),
 			},
 			Type: corev1.SecretTypeOpaque,
 		}, metav1.CreateOptions{})

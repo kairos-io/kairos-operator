@@ -27,7 +27,7 @@ var _ = Describe("OSArtifact ISO build test", func() {
 			},
 			Spec: buildv1alpha2.OSArtifactSpec{
 				Image: buildv1alpha2.ImageSpec{
-					Ref: "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0",
+					Ref: HadronPreKairosified,
 				},
 				Artifacts: &buildv1alpha2.ArtifactSpec{
 					ISO:      true,

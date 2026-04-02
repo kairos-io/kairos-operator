@@ -1,0 +1,32 @@
+# Example use of configurable artifacts volume (spec.artifacts.volume + hostPath).
+#
+# Prerequisites:
+# - Operator from branch configurable-artifacts-volume (CRD with artifacts.volume).
+# - Pick a hostPath directory that exists on the node(s) where the builder pod can run;
+#   change `path` below. With DirectoryOrCreate, the first write creates the dir.
+# - For kind/minikube, the path is on the node container/VM; docker-desktop maps differently.
+# - Optional: add nodeSelector / affinity so the pod lands on a node that has your path.
+#
+# Apply:
+#   kubectl apply -f examples/osartifact-hadron-iso-hostpath.yaml
+#
+# After status.phase is Ready, the ISO should be under the hostPath on the node that
+# ran the build (e.g. ls /var/lib/kairos-artifacts on that node).
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: hadron-iso-hostpath-qa
+  namespace: default
+spec:
+  image:
+    ref: quay.io/kairos/hadron:v0.0.4-core-amd64-generic-v4.0.1
+  artifacts:
+    arch: amd64
+    iso: true
+    volume: host-artifacts
+  volumes:
+    - name: host-artifacts
+      hostPath:
+        path: /var/lib/kairos-artifacts
+        type: DirectoryOrCreate
+  exporters: []

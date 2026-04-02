@@ -96,6 +96,8 @@ spec:
                         or efi is true
                       rule: '!( (self.iso || self.container || self.efi) && (!has(self.keysVolume)
                         || self.keysVolume == "") )'
+                  volume:
+                    type: string
                 type: object
               exporters:
                 items:

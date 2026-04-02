@@ -160,7 +160,7 @@ func (r *OSArtifactReconciler) createPVC(ctx context.Context,
 
 func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *buildv1alpha2.OSArtifact,
 	pvc *corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
-	pod := r.newBuilderPod(ctx, pvc.Name, artifact)
+	pod := r.newBuilderPod(ctx, artifact, pvc)
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
@@ -302,9 +302,13 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 		return ctrl.Result{Requeue: true}, err
 	}
 
-	pvc, err := r.createPVC(ctx, artifact)
-	if err != nil {
-		return ctrl.Result{Requeue: true}, err
+	var pvc *corev1.PersistentVolumeClaim
+	if artifact.Spec.Artifacts == nil || artifact.Spec.Artifacts.Volume == "" {
+		var createErr error
+		pvc, createErr = r.createPVC(ctx, artifact)
+		if createErr != nil {
+			return ctrl.Result{Requeue: true}, createErr
+		}
 	}
 
 	_, err = r.createBuilderPod(ctx, artifact, pvc)
@@ -371,22 +375,10 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 		}
 	}
 
-	var pvcs corev1.PersistentVolumeClaimList
-	var pvc *corev1.PersistentVolumeClaim
-	if err := r.List(ctx, &pvcs, &client.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
-	}); err != nil {
-		return ctrl.Result{Requeue: true}, err
-	}
-
-	for _, item := range pvcs.Items {
-		pvc = &item
-		break
-	}
-
-	if pvc == nil {
-		log.FromContext(ctx).Error(nil, "failed to locate pvc for artifact, this should not happen")
-		return ctrl.Result{}, fmt.Errorf("failed to locate artifact pvc")
+	exportVol, err := volumeForExportArtifacts(ctx, r.Client, artifact)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to resolve artifacts volume for export")
+		return ctrl.Result{}, err
 	}
 
 	var succeeded int
@@ -419,15 +411,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 				Annotations: job.Spec.Template.Annotations,
 			}
 
-			job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, corev1.Volume{
-				Name: "artifacts",
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: pvc.Name,
-						ReadOnly:  true,
-					},
-				},
-			})
+			job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, exportVol)
 
 			if err := controllerutil.SetOwnerReference(artifact, job, r.Scheme); err != nil {
 				return ctrl.Result{Requeue: true}, err

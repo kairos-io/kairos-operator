@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	testImageName     = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
-	ukiKeysVolumeName = "uki-keys" // volume name used in UKI tests
+	testImageName       = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName   = "uki-keys"  // volume name used in UKI tests
+	artifactsVolumeName = "artifacts" // internal builder/exporter volume name (matches controller)
 )
 
 var _ = Describe("OSArtifactReconciler", func() {
@@ -345,6 +346,73 @@ var _ = Describe("OSArtifactReconciler", func() {
 	Describe("Volume Bindings", func() {
 		BeforeEach(func() {
 			artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+		})
+
+		Describe("artifacts.volume binding (spec.artifacts.volume)", func() {
+			BeforeEach(func() {
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true, Volume: "my-artifacts"}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: "my-artifacts", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+			})
+
+			When("artifacts.volume is set", func() {
+				It("does not require a PVC and builder pod uses artifacts volume from spec.volumes", func() {
+					// When artifacts.volume is set, caller passes nil for pvc; operator must not create PVC and must use the named volume as "artifacts".
+					pod, err := r.createBuilderPod(context.TODO(), artifact, nil)
+					Expect(err).ToNot(HaveOccurred())
+
+					var artifactsVol *corev1.Volume
+					for i := range pod.Spec.Volumes {
+						if pod.Spec.Volumes[i].Name == artifactsVolumeName {
+							artifactsVol = &pod.Spec.Volumes[i]
+							break
+						}
+					}
+					Expect(artifactsVol).ToNot(BeNil(), "pod should have a volume named %q", artifactsVolumeName)
+					Expect(artifactsVol.EmptyDir).ToNot(BeNil(), "artifacts volume should be the user's EmptyDir (my-artifacts)")
+				})
+
+				It("mounts artifacts at /artifacts in builder containers", func() {
+					pod, err := r.createBuilderPod(context.TODO(), artifact, nil)
+					Expect(err).ToNot(HaveOccurred())
+
+					// At least one container should mount "artifacts" at /artifacts (e.g. pull-image-baseimage or build-iso).
+					var hasArtifactsMount bool
+					for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+						for _, vm := range c.VolumeMounts {
+							if vm.Name == artifactsVolumeName && vm.MountPath == "/artifacts" {
+								hasArtifactsMount = true
+								break
+							}
+						}
+					}
+					Expect(hasArtifactsMount).To(BeTrue(), "at least one container should mount 'artifacts' at /artifacts")
+				})
+			})
+		})
+
+		Describe("artifacts.volume empty (default: operator-created PVC)", func() {
+			It("builder pod uses PVC for artifacts volume when artifacts.volume is not set", func() {
+				Expect(artifact.Spec.Artifacts).ToNot(BeNil())
+				Expect(artifact.Spec.Artifacts.Volume).To(BeEmpty())
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				var artifactsVol *corev1.Volume
+				for i := range pod.Spec.Volumes {
+					if pod.Spec.Volumes[i].Name == artifactsVolumeName {
+						artifactsVol = &pod.Spec.Volumes[i]
+						break
+					}
+				}
+				Expect(artifactsVol).ToNot(BeNil())
+				Expect(artifactsVol.PersistentVolumeClaim).ToNot(BeNil())
+				Expect(artifactsVol.PersistentVolumeClaim.ClaimName).To(Equal(pvc.Name))
+			})
 		})
 
 		Describe("buildContext binding (image.ociSpec.buildContextVolume)", func() {
