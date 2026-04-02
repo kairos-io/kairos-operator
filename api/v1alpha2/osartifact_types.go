@@ -250,6 +250,7 @@ type OSArtifactStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Age"
 // +kubebuilder:validation:XValidation:rule="self.spec == oldSelf.spec",message="spec is immutable"
 
 // OSArtifact is the Schema for the osartifacts API
