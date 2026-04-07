@@ -34,9 +34,8 @@ type NodeOpSpec struct {
 	HostMountPath string `json:"hostMountPath,omitempty"`
 
 	// Image is the container image to use for running the command.
-	// Defaults to "busybox:latest"
+	// Defaults to "busybox:latest" if not specified and NODEOP_DEFAULT_IMAGE env var is not set.
 	// +optional
-	// +kubebuilder:default="busybox:latest"
 	Image string `json:"image,omitempty"`
 
 	// ImagePullSecrets is an optional list of references to secrets in the same namespace

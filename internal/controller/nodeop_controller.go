@@ -323,6 +323,30 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 	return nil
 }
 
+// getNodeOpImage returns the image to use for NodeOp containers.
+// Priority: NodeOp Spec.Image > NODEOP_DEFAULT_IMAGE env var > "busybox:latest".
+func getNodeOpImage(nodeOp *kairosiov1alpha1.NodeOp) string {
+	if nodeOp.Spec.Image != "" {
+		return nodeOp.Spec.Image
+	}
+	if img := os.Getenv("NODEOP_DEFAULT_IMAGE"); img != "" {
+		return img
+	}
+	return "busybox:latest"
+}
+
+// getSentinelImage returns the image for the sentinel creator container.
+// Priority: SENTINEL_IMAGE env var > NodeOp Spec.Image > "busybox:latest".
+func getSentinelImage(nodeOp *kairosiov1alpha1.NodeOp) string {
+	if img := os.Getenv("SENTINEL_IMAGE"); img != "" {
+		return img
+	}
+	if nodeOp.Spec.Image != "" {
+		return nodeOp.Spec.Image
+	}
+	return "busybox:latest"
+}
+
 // createRebootJobSpec creates a JobSpec for nodes that will reboot after job completion
 func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, backoffLimit int32) batchv1.JobSpec {
 	return batchv1.JobSpec{
@@ -334,7 +358,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 				InitContainers: []corev1.Container{
 					{
 						Name:    "nodeop",
-						Image:   nodeOp.Spec.Image,
+						Image:   getNodeOpImage(nodeOp),
 						Command: nodeOp.Spec.Command,
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
@@ -350,7 +374,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 				Containers: []corev1.Container{
 					{
 						Name:  "sentinel-creator",
-						Image: "busybox:latest",
+						Image: getSentinelImage(nodeOp),
 						Command: []string{
 							"/bin/sh",
 							"-c",
@@ -410,7 +434,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 				Containers: []corev1.Container{
 					{
 						Name:    "nodeop",
-						Image:   nodeOp.Spec.Image,
+						Image:   getNodeOpImage(nodeOp),
 						Command: nodeOp.Spec.Command,
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
