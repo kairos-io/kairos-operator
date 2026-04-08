@@ -31,8 +31,8 @@ var _ = Describe("getNodeOpImage", func() {
 	})
 
 	It("should return the value of NODEOP_DEFAULT_IMAGE when it is set and Spec.Image is empty", func() {
-		os.Setenv("NODEOP_DEFAULT_IMAGE", "nodeop-env-image")
-		defer os.Unsetenv("NODEOP_DEFAULT_IMAGE")
+		Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "nodeop-env-image")).To(Succeed())
+		defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 		Expect(getNodeOpImage(nodeOp)).To(Equal("nodeop-env-image"))
 	})
 
@@ -45,8 +45,8 @@ var _ = Describe("getSentinelImage", func() {
 	var nodeOp = &kairosiov1alpha1.NodeOp{}
 
 	It("should return the value of SENTINEL_IMAGE when it is set", func() {
-		os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")
-		defer os.Unsetenv("SENTINEL_IMAGE")
+		Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
+		defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
 		Expect(getSentinelImage(nodeOp)).To(Equal("sentinel-env-image"))
 	})
 
@@ -185,8 +185,8 @@ var _ = Describe("NodeOp Controller", func() {
 		}
 
 		It("should use Spec.Image for NodeOp container, taking precedence over NODEOP_DEFAULT_IMAGE", func() {
-			os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")
-			defer os.Unsetenv("NODEOP_DEFAULT_IMAGE")
+			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command: []string{"echo", "test"},
@@ -196,8 +196,8 @@ var _ = Describe("NodeOp Controller", func() {
 		})
 
 		It("should use NODEOP_DEFAULT_IMAGE for NodeOp container when Spec.Image is empty", func() {
-			os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")
-			defer os.Unsetenv("NODEOP_DEFAULT_IMAGE")
+			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command: []string{"echo", "test"},
@@ -213,8 +213,8 @@ var _ = Describe("NodeOp Controller", func() {
 		})
 
 		It("should use value of SENTINEL_IMAGE for sentinel container when it is set", func() {
-			os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")
-			defer os.Unsetenv("SENTINEL_IMAGE")
+			Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command:         []string{"echo", "test"},
