@@ -48,7 +48,7 @@ patches:
   patch: |-
     - op: replace
       path: /spec/template/spec/containers/0/image
-      value: quay.io/kairos/operator:v0.1.0-beta3
+      value: quay.io/kairos/operator:v0.1.0-beta4
 
 # Patch to update the node-labeler image
 - target:
@@ -59,7 +59,7 @@ patches:
       path: /spec/template/spec/containers/0/env/-
       value:
         name: NODE_LABELER_IMAGE
-        value: quay.io/kairos/operator-node-labeler:v0.1.0-beta3
+        value: quay.io/kairos/operator-node-labeler:v0.1.0-beta4
 
 # Patch to update the sentinel image
 - target:
