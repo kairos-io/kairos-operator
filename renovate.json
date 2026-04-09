@@ -1,6 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "packageRules": [
+    {
+      "matchFileNames": ["examples/**", "config/samples/**", "config/crd/bases/**", "example.yaml"],
+      "enabled": false
+    }
   ]
 }
