@@ -21,6 +21,46 @@ import (
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 )
 
+var _ = Describe("getNodeOpImage", func() {
+	var nodeOp = &kairosiov1alpha1.NodeOp{}
+
+	It("should return Spec.Image when set", func() {
+		nodeOp.Spec.Image = "spec-image"
+		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
+		Expect(getNodeOpImage(nodeOp)).To(Equal("spec-image"))
+	})
+
+	It("should return the value of NODEOP_DEFAULT_IMAGE when it is set and Spec.Image is empty", func() {
+		Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "nodeop-env-image")).To(Succeed())
+		defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
+		Expect(getNodeOpImage(nodeOp)).To(Equal("nodeop-env-image"))
+	})
+
+	It("should return busybox:latest when Spec.Image and NODEOP_DEFAULT_IMAGE are empty", func() {
+		Expect(getNodeOpImage(nodeOp)).To(Equal("busybox:latest"))
+	})
+})
+
+var _ = Describe("getSentinelImage", func() {
+	var nodeOp = &kairosiov1alpha1.NodeOp{}
+
+	It("should return the value of SENTINEL_IMAGE when it is set", func() {
+		Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
+		defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
+		Expect(getSentinelImage(nodeOp)).To(Equal("sentinel-env-image"))
+	})
+
+	It("should return Spec.Image when SENTINEL_IMAGE is empty", func() {
+		nodeOp.Spec.Image = "spec-image"
+		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
+		Expect(getSentinelImage(nodeOp)).To(Equal("spec-image"))
+	})
+
+	It("should return busybox:latest when Spec.Image and SENTINEL_IMAGE are empty", func() {
+		Expect(getSentinelImage(nodeOp)).To(Equal("busybox:latest"))
+	})
+})
+
 var _ = Describe("NodeOp Controller", func() {
 	const (
 		NodeOpNamespace = "default"
@@ -69,8 +109,136 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Let's make sure our NodeOp has the correct spec
 			Expect(createdNodeOp.Spec.Command).Should(Equal([]string{"echo", "test"}))
-			Expect(createdNodeOp.Spec.HostMountPath).Should(Equal("/host"))  // Default value
-			Expect(createdNodeOp.Spec.Image).Should(Equal("busybox:latest")) // Default value
+			Expect(createdNodeOp.Spec.HostMountPath).Should(Equal("/host")) // Default value
+			Expect(createdNodeOp.Spec.Image).Should(BeEmpty())              // Default applied at controller level via getNodeOpImage()
+		})
+	})
+
+	Context("When resolving NodeOp and sentinel container images", func() {
+		var (
+			node *corev1.Node
+			ctx  context.Context
+		)
+
+		BeforeEach(func() {
+			NodeOpName = fmt.Sprintf("test-nodeop-%d", time.Now().UnixNano())
+			ctx = context.Background()
+
+			node = &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: fmt.Sprintf("test-node-%d", time.Now().UnixNano()),
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			// Clean up NodeOps
+			nodeOpList := &kairosiov1alpha1.NodeOpList{}
+			_ = k8sClient.List(ctx, nodeOpList, client.InNamespace(NodeOpNamespace))
+			for _, nodeOp := range nodeOpList.Items {
+				_ = k8sClient.Delete(ctx, &nodeOp)
+			}
+
+			// Clean up Jobs
+			jobList := &batchv1.JobList{}
+			_ = k8sClient.List(ctx, jobList, client.InNamespace(NodeOpNamespace))
+			for _, job := range jobList.Items {
+				propagationPolicy := metav1.DeletePropagationBackground
+				_ = k8sClient.Delete(ctx, &job, &client.DeleteOptions{
+					PropagationPolicy: &propagationPolicy,
+				})
+			}
+
+			_ = k8sClient.Delete(ctx, node)
+		})
+
+		// reconcileAndGetMainContainerImage creates a NodeOp with the given spec,
+		// reconciles it, and returns the first job's main container image.
+		reconcileAndGetMainContainerImage := func(spec kairosiov1alpha1.NodeOpSpec) string {
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      NodeOpName,
+					Namespace: NodeOpNamespace,
+				},
+				Spec: spec,
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).Should(Succeed())
+
+			_, err := (&NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}).Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      NodeOpName,
+					Namespace: NodeOpNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace(NodeOpNamespace),
+				client.MatchingLabels{"kairos.io/nodeop": NodeOpName})).Should(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			return jobList.Items[0].Spec.Template.Spec.Containers[0].Image
+		}
+
+		It("should use Spec.Image for NodeOp container, taking precedence over NODEOP_DEFAULT_IMAGE", func() {
+			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
+
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{"echo", "test"},
+				Image:   "spec-image",
+			})
+			Expect(image).To(Equal("spec-image"))
+		})
+
+		It("should use NODEOP_DEFAULT_IMAGE for NodeOp container when Spec.Image is empty", func() {
+			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
+
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{"echo", "test"},
+			})
+			Expect(image).To(Equal("env-image"))
+		})
+
+		It("should use busybox:latest for NodeOp container when neither NODEOP_DEFAULT_IMAGE nor Spec.Image are set", func() {
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{"echo", "test"},
+			})
+			Expect(image).To(Equal("busybox:latest"))
+		})
+
+		It("should use value of SENTINEL_IMAGE for sentinel container when it is set", func() {
+			Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
+			defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
+
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command:         []string{"echo", "test"},
+				Image:           "nodeop-spec-image",
+				RebootOnSuccess: asBool(true),
+			})
+			Expect(image).To(Equal("sentinel-env-image"))
+		})
+
+		It("should use Spec.Image for sentinel container when SENTINEL_IMAGE is not set", func() {
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command:         []string{"echo", "test"},
+				Image:           "nodeop-spec-image",
+				RebootOnSuccess: asBool(true),
+			})
+			Expect(image).To(Equal("nodeop-spec-image"))
+		})
+
+		It("should use busybox:latest for sentinel container when neither SENTINEL_IMAGE nor Spec.Image are set", func() {
+			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
+				Command:         []string{"echo", "test"},
+				RebootOnSuccess: asBool(true),
+			})
+			Expect(image).To(Equal("busybox:latest"))
 		})
 	})
 

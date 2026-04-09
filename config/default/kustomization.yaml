@@ -61,6 +61,28 @@ patches:
         name: NODE_LABELER_IMAGE
         value: quay.io/kairos/operator-node-labeler:v0.1.0-beta3
 
+# Patch to update the sentinel image
+- target:
+    kind: Deployment
+    name: kairos-operator
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: SENTINEL_IMAGE
+        value: ""
+
+# Patch to update the default NodeOp image
+- target:
+    kind: Deployment
+    name: kairos-operator
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: NODEOP_DEFAULT_IMAGE
+        value: busybox:latest
+
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
 # This patch will protect the metrics with certManager self-signed certs.
