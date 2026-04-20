@@ -68,7 +68,7 @@ func main() {
 
 func checkKairosNode() (bool, error) {
 	// Check if kairos-release exists and has content
-	if content, err := os.ReadFile("/etc/kairos-release"); err == nil {
+	if content, err := os.ReadFile("/host/etc/kairos-release"); err == nil {
 		// Only consider it a Kairos node if the file has content
 		if len(content) > 0 {
 			fmt.Println("Kairos release file found with content")
@@ -77,7 +77,7 @@ func checkKairosNode() (bool, error) {
 	}
 
 	// Check os-release for Kairos
-	osRelease, err := os.ReadFile("/etc/os-release")
+	osRelease, err := os.ReadFile("/host/etc/os-release")
 	if err != nil {
 		return false, fmt.Errorf("error reading os-release: %v", err)
 	}
