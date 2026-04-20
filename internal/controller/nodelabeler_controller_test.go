@@ -106,6 +106,9 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(container.Image).To(Equal("quay.io/kairos/operator-node-labeler:v0.0.1"))
 			Expect(container.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 
+			// Verify one-off mode: no --every flag means the labeler runs once and exits
+			Expect(container.Args).To(BeEmpty())
+
 			// Verify security context
 			Expect(container.SecurityContext).NotTo(BeNil())
 			Expect(*container.SecurityContext.RunAsNonRoot).To(BeTrue())
