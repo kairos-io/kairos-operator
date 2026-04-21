@@ -54,11 +54,22 @@ func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 // ensureDaemonSetOnStartup is called from SetupWithManager before the cache is
-// started, so it must not read through the cache. It blindly attempts Create
-// and treats AlreadyExists as success.
+// started, so it must not read through the cache. On first install it creates
+// the DaemonSet; on subsequent operator startups (e.g. upgrades) it patches the
+// spec so that a new NODE_LABELER_IMAGE is rolled out without manual intervention.
 func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, namespace string) error {
-	if err := r.Create(ctx, r.buildDaemonSet(namespace)); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	desired := r.buildDaemonSet(namespace)
+	if err := r.Create(ctx, desired); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &appsv1.DaemonSet{}
+		if err := r.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: namespace}, existing); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Spec = desired.Spec
+		return r.Patch(ctx, existing, patch)
 	}
 	return nil
 }

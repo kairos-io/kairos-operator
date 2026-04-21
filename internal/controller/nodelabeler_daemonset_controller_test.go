@@ -118,6 +118,26 @@ var _ = Describe("NodeLabelerDaemonSet Controller", func() {
 		Expect(dsList.Items).To(HaveLen(1))
 	})
 
+	It("should update the DaemonSet image when the operator restarts with a new image", func() {
+		r := &NodeLabelerDaemonSetReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		By("simulating the first operator startup with v0.0.1")
+		Expect(os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.1")).To(Succeed())
+		Expect(r.ensureDaemonSetOnStartup(ctx, namespace)).To(Succeed())
+
+		By("simulating an operator upgrade: restart with v0.0.2")
+		Expect(os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.2")).To(Succeed())
+		Expect(r.ensureDaemonSetOnStartup(ctx, namespace)).To(Succeed())
+
+		By("verifying the DaemonSet now uses the new image")
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: namespace}, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/kairos/operator-node-labeler:v0.0.2"))
+	})
+
 	It("should recreate the DaemonSet if it is deleted", func() {
 		By("creating the DaemonSet via reconciliation")
 		Expect(reconcileOnce(ctx)).To(Succeed())
