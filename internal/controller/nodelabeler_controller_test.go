@@ -112,14 +112,15 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(*container.SecurityContext.RunAsUser).To(Equal(int64(1000)))
 
 			// Verify volume mounts
-			Expect(container.VolumeMounts).To(HaveLen(2))
-			Expect(container.VolumeMounts[0].Name).To(Equal("kairos-release"))
-			Expect(container.VolumeMounts[1].Name).To(Equal("os-release"))
+			Expect(container.VolumeMounts).To(HaveLen(1))
+			Expect(container.VolumeMounts[0].Name).To(Equal("host-etc"))
+			Expect(container.VolumeMounts[0].MountPath).To(Equal("/host/etc"))
+			Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
 
 			// Verify volumes
-			Expect(foundJob.Spec.Template.Spec.Volumes).To(HaveLen(2))
-			Expect(foundJob.Spec.Template.Spec.Volumes[0].Name).To(Equal("kairos-release"))
-			Expect(foundJob.Spec.Template.Spec.Volumes[1].Name).To(Equal("os-release"))
+			Expect(foundJob.Spec.Template.Spec.Volumes).To(HaveLen(1))
+			Expect(foundJob.Spec.Template.Spec.Volumes[0].Name).To(Equal("host-etc"))
+			Expect(foundJob.Spec.Template.Spec.Volumes[0].HostPath.Path).To(Equal("/etc"))
 		})
 
 		It("should not create a new job if one already exists", func() {

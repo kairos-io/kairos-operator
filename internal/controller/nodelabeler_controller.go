@@ -111,16 +111,15 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 										},
 									},
 								},
+								{
+									Name:  "HOST_ETC_PATH",
+									Value: "/host/etc",
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "kairos-release",
-									MountPath: "/etc/kairos-release",
-									ReadOnly:  true,
-								},
-								{
-									Name:      "os-release",
-									MountPath: "/etc/os-release",
+									Name:      "host-etc",
+									MountPath: "/host/etc",
 									ReadOnly:  true,
 								},
 							},
@@ -128,18 +127,10 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 					},
 					Volumes: []corev1.Volume{
 						{
-							Name: "kairos-release",
+							Name: "host-etc",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
-									Path: "/etc/kairos-release",
-								},
-							},
-						},
-						{
-							Name: "os-release",
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: "/etc/os-release",
+									Path: "/etc",
 								},
 							},
 						},

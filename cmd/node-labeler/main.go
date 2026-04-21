@@ -66,9 +66,17 @@ func main() {
 	}
 }
 
+func hostEtcPath() string {
+	if p := os.Getenv("HOST_ETC_PATH"); p != "" {
+		return p
+	}
+	return "/host/etc"
+}
+
 func checkKairosNode() (bool, error) {
+	etcPath := hostEtcPath()
 	// Check if kairos-release exists and has content
-	if content, err := os.ReadFile("/etc/kairos-release"); err == nil {
+	if content, err := os.ReadFile(etcPath + "/kairos-release"); err == nil {
 		// Only consider it a Kairos node if the file has content
 		if len(content) > 0 {
 			fmt.Println("Kairos release file found with content")
@@ -77,8 +85,11 @@ func checkKairosNode() (bool, error) {
 	}
 
 	// Check os-release for Kairos
-	osRelease, err := os.ReadFile("/etc/os-release")
+	osRelease, err := os.ReadFile(etcPath + "/os-release")
 	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("error reading os-release: %v", err)
 	}
 
