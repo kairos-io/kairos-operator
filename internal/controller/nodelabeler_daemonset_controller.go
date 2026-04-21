@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 
@@ -178,8 +179,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	namespace := getOperatorNamespace()
 	if err := r.ensureDaemonSetOnStartup(context.Background(), namespace); err != nil {
-		log := logf.Log.WithName("setup")
-		log.Error(err, "Failed to ensure node-labeler DaemonSet")
+		return fmt.Errorf("ensuring node-labeler DaemonSet: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.DaemonSet{}).
