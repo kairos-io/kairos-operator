@@ -22,7 +22,22 @@ const (
 )
 
 // NodeLabelerDaemonSetReconciler ensures a DaemonSet runs the node-labeler in
-// loop mode on every Kairos node, keeping labels in sync after upgrades.
+// loop mode on every already-managed Kairos node, keeping labels and annotations
+// in sync across upgrades.
+//
+// Labeling lifecycle:
+//  1. NodeLabelerReconciler watches Node objects and creates a one-shot Job for
+//     each new node. That Job runs the node-labeler binary without --every,
+//     which sets kairos.io/managed=true (plus all other metadata labels).
+//  2. This DaemonSet — which selects on kairos.io/managed=true — then schedules
+//     a pod on that node and re-syncs labels on the configured interval.
+//
+// There is intentionally no chicken-and-egg problem: the DaemonSet only needs
+// to reach nodes that are already labeled, so it is correct and by design that
+// it won't run on a unlabeled node. The purpose of the Job is to identify Kairos
+// nodes once. The purpose of the DaemonSet is to keep a Pod running on each Kairos
+// node (and only Kairos nodes) to keep the labels and annotations in sync.
+// This way, we avoid running a "permanent" Pod on non-Kairos Nodes.
 type NodeLabelerDaemonSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
