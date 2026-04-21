@@ -31,29 +31,41 @@ type NodeLabelerDaemonSetReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	namespace := getOperatorNamespace()
 	if req.Name != kairosNodeLabelerDaemonSetName || req.Namespace != namespace {
 		return ctrl.Result{}, nil
 	}
+	return ctrl.Result{}, r.ensureDaemonSet(ctx, namespace)
+}
 
+// ensureDaemonSetOnStartup is called from SetupWithManager before the cache is
+// started, so it must not read through the cache. It blindly attempts Create
+// and treats AlreadyExists as success.
+func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, namespace string) error {
+	if err := r.Create(ctx, r.buildDaemonSet(namespace)); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// ensureDaemonSet is safe to call from Reconcile (cache is running). It checks
+// first and only creates when the DaemonSet is genuinely absent.
+func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSet(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
 	existing := &appsv1.DaemonSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: namespace}, existing)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-		ds := r.buildDaemonSet(namespace)
-		if err := r.Create(ctx, ds); err != nil {
-			log.Error(err, "Failed to create node-labeler DaemonSet")
-			return ctrl.Result{}, err
-		}
-		log.Info("Created node-labeler DaemonSet")
-		return ctrl.Result{}, nil
+	if err == nil {
+		return nil
 	}
-
-	return ctrl.Result{}, nil
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := r.Create(ctx, r.buildDaemonSet(namespace)); err != nil {
+		log.Error(err, "Failed to create node-labeler DaemonSet")
+		return err
+	}
+	log.Info("Created node-labeler DaemonSet")
+	return nil
 }
 
 func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv1.DaemonSet {
@@ -138,6 +150,11 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 }
 
 func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	namespace := getOperatorNamespace()
+	if err := r.ensureDaemonSetOnStartup(context.Background(), namespace); err != nil {
+		log := logf.Log.WithName("setup")
+		log.Error(err, "Failed to ensure node-labeler DaemonSet")
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.DaemonSet{}).
 		Complete(r)

@@ -68,6 +68,55 @@ var _ = Describe("Node Labeler E2E", func() {
 		Expect(unlabeled).To(Equal(1))
 	})
 
+	It("should update node labels when /etc/kairos-release changes", func() {
+		By("getting the kairos node name")
+		out, err := exec.Command("docker", "exec", kairosNode, "hostname").CombinedOutput()
+		Expect(err).NotTo(HaveOccurred())
+		kairosNodeName := strings.TrimSpace(string(out))
+
+		By("waiting for the DaemonSet labeler pod to be running on the Kairos node")
+		Eventually(func() bool {
+			pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "app=kairos-node-labeler,mode=daemon",
+				FieldSelector: "spec.nodeName=" + kairosNodeName,
+			})
+			if err != nil || len(pods.Items) == 0 {
+				return false
+			}
+			return pods.Items[0].Status.Phase == corev1.PodRunning
+		}, 3*time.Minute, 5*time.Second).Should(BeTrue(), "DaemonSet pod should be running on the Kairos node")
+
+		By("writing a structured kairos-release with KAIROS_FLAVOR=ubuntu")
+		cmd := exec.Command("docker", "exec", kairosNode, "bash", "-c",
+			`printf 'KAIROS_FLAVOR="ubuntu"\nKAIROS_VARIANT="core"\nKAIROS_RELEASE="v4.0.3"\n' > /etc/kairos-release`)
+		out, err = cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+
+		By("waiting for kairos.io/flavor=ubuntu to appear on the node")
+		Eventually(func() string {
+			node, err := clientset.CoreV1().Nodes().Get(context.TODO(), kairosNodeName, metav1.GetOptions{})
+			if err != nil {
+				return ""
+			}
+			return node.Labels["kairos.io/flavor"]
+		}, 2*time.Minute, 5*time.Second).Should(Equal("ubuntu"))
+
+		By("changing KAIROS_FLAVOR to alpine in /etc/kairos-release")
+		cmd = exec.Command("docker", "exec", kairosNode, "sed", "-i",
+			`s/KAIROS_FLAVOR="ubuntu"/KAIROS_FLAVOR="alpine"/`, "/etc/kairos-release")
+		out, err = cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+
+		By("waiting for kairos.io/flavor to update to alpine")
+		Eventually(func() string {
+			node, err := clientset.CoreV1().Nodes().Get(context.TODO(), kairosNodeName, metav1.GetOptions{})
+			if err != nil {
+				return ""
+			}
+			return node.Labels["kairos.io/flavor"]
+		}, 2*time.Minute, 5*time.Second).Should(Equal("alpine"))
+	})
+
 	It("should create a DaemonSet that runs only on Kairos nodes", func() {
 		By("verifying the DaemonSet exists in the operator namespace")
 		Eventually(func() error {
