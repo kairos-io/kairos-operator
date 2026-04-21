@@ -67,8 +67,7 @@ var _ = Describe("Node Labeler", func() {
 				etcDir := writeKairosRelease(sampleKairosRelease)
 				cmdlinePath := writeCmdlineFile("BOOT_IMAGE=/boot/vmlinuz COS_ACTIVE root=LABEL=COS_ACTIVE")
 
-				labels, _, err := collectMetadata(etcDir, cmdlinePath)
-				Expect(err).NotTo(HaveOccurred())
+				labels, _ := collectMetadata(etcDir, cmdlinePath)
 				Expect(labels).To(HaveKeyWithValue("kairos.io/managed", "true"))
 				Expect(labels).To(HaveKeyWithValue("kairos.io/id", "kairos"))
 				Expect(labels).To(HaveKeyWithValue("kairos.io/family", "hadron"))
@@ -90,8 +89,7 @@ var _ = Describe("Node Labeler", func() {
 				etcDir := writeKairosRelease(sampleKairosRelease)
 				cmdlinePath := writeCmdlineFile("COS_ACTIVE")
 
-				_, annotations, err := collectMetadata(etcDir, cmdlinePath)
-				Expect(err).NotTo(HaveOccurred())
+				_, annotations := collectMetadata(etcDir, cmdlinePath)
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/name", "kairos-core-hadron-v0.0.4"))
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/id-like", "kairos-core-hadron-v0.0.4"))
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/init-version", "v0.8.4"))
@@ -107,8 +105,7 @@ var _ = Describe("Node Labeler", func() {
 				Expect(os.WriteFile(filepath.Join(dir, "os-release"), []byte("ID=kairos\nNAME=\"Kairos Legacy\"\n"), 0644)).To(Succeed())
 				cmdlinePath := writeCmdlineFile("COS_ACTIVE")
 
-				labels, annotations, err := collectMetadata(dir, cmdlinePath)
-				Expect(err).NotTo(HaveOccurred())
+				labels, annotations := collectMetadata(dir, cmdlinePath)
 				Expect(labels).To(HaveKeyWithValue("kairos.io/managed", "true"))
 				Expect(labels).To(HaveKeyWithValue("kairos.io/boot-state", "active"))
 				Expect(annotations).To(BeEmpty())
@@ -120,8 +117,7 @@ var _ = Describe("Node Labeler", func() {
 				etcDir := writeKairosRelease("")
 				cmdlinePath := writeCmdlineFile("root=/dev/sda1")
 
-				labels, annotations, err := collectMetadata(etcDir, cmdlinePath)
-				Expect(err).NotTo(HaveOccurred())
+				labels, annotations := collectMetadata(etcDir, cmdlinePath)
 				Expect(labels).To(BeEmpty())
 				Expect(annotations).To(BeEmpty())
 			})
@@ -132,8 +128,7 @@ var _ = Describe("Node Labeler", func() {
 				etcDir := writeKairosRelease(sampleKairosRelease)
 				cmdlinePath := writeCmdlineFile(cmdline)
 
-				labels, _, err := collectMetadata(etcDir, cmdlinePath)
-				Expect(err).NotTo(HaveOccurred())
+				labels, _ := collectMetadata(etcDir, cmdlinePath)
 				Expect(labels).To(HaveKeyWithValue("kairos.io/boot-state", expectedState))
 			},
 			Entry("active boot", "BOOT_IMAGE=/vmlinuz COS_ACTIVE root=LABEL=COS_ACTIVE", "active"),

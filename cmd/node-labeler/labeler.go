@@ -44,10 +44,7 @@ var annotationFields = map[string]string{
 // the resulting labels and annotations to the named node.
 // Returns nil without patching if the node is not a Kairos node.
 func syncLabels(ctx context.Context, clientset kubernetes.Interface, nodeName, etcPath, cmdlinePath string) error {
-	labels, annotations, err := collectMetadata(etcPath, cmdlinePath)
-	if err != nil {
-		return err
-	}
+	labels, annotations := collectMetadata(etcPath, cmdlinePath)
 
 	if len(labels) == 0 {
 		fmt.Printf("node %s is not a Kairos node, skipping\n", nodeName)
@@ -64,23 +61,23 @@ func syncLabels(ctx context.Context, clientset kubernetes.Interface, nodeName, e
 
 // collectMetadata parses kairos-release and /proc/cmdline and returns the labels
 // and annotations to apply. Returns empty maps (not an error) if not a Kairos node.
-func collectMetadata(etcPath, cmdlinePath string) (labels, annotations map[string]string, err error) {
+func collectMetadata(etcPath, cmdlinePath string) (labels, annotations map[string]string) {
 	release, err := parseEnvFile(etcPath + "/kairos-release")
 	if err != nil {
 		fmt.Printf("cannot read kairos-release, assuming non-Kairos node: %v\n", err)
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	if release == nil {
 		if !isKairosOSRelease(etcPath) {
-			return nil, nil, nil
+			return nil, nil
 		}
 		fmt.Println("Kairos ID found in os-release")
 		labels = map[string]string{"kairos.io/managed": "true"}
 		if bootState := detectBootState(cmdlinePath); bootState != "" {
 			labels["kairos.io/boot-state"] = bootState
 		}
-		return labels, map[string]string{}, nil
+		return labels, map[string]string{}
 	}
 
 	labels = map[string]string{"kairos.io/managed": "true"}
@@ -102,7 +99,7 @@ func collectMetadata(etcPath, cmdlinePath string) (labels, annotations map[strin
 		labels["kairos.io/boot-state"] = bootState
 	}
 
-	return labels, annotations, nil
+	return labels, annotations
 }
 
 // detectBootState reads cmdlinePath and returns the Kairos boot state label value
@@ -150,7 +147,7 @@ func parseEnvFile(path string) (map[string]string, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	result := make(map[string]string)
 	scanner := bufio.NewScanner(f)
@@ -190,7 +187,8 @@ type nodePatchMetadata struct {
 	Annotations map[string]*string `json:"annotations,omitempty"`
 }
 
-func patchNode(ctx context.Context, clientset kubernetes.Interface, nodeName string, labels, annotations map[string]string) error {
+func patchNode(ctx context.Context, clientset kubernetes.Interface, nodeName string,
+	labels, annotations map[string]string) error {
 	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("getting node %s: %w", nodeName, err)
