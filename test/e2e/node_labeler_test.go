@@ -160,6 +160,11 @@ var _ = Describe("Node Labeler E2E", func() {
 			return false
 		}, 3*time.Minute, 5*time.Second).Should(BeTrue(), "DaemonSet pod should be running on the Kairos node")
 
+		By("verifying the cluster has exactly 2 nodes so the pod-count check below is meaningful")
+		nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nodeList.Items).To(HaveLen(2), "test requires a 2-node cluster (1 Kairos, 1 non-Kairos)")
+
 		By("verifying the DaemonSet pod runs only on the Kairos node")
 		cmd := exec.Command("docker", "exec", kairosNode, "hostname")
 		out, err := cmd.CombinedOutput()
@@ -170,9 +175,7 @@ var _ = Describe("Node Labeler E2E", func() {
 			LabelSelector: "app=kairos-node-labeler,mode=daemon",
 		})
 		Expect(err).NotTo(HaveOccurred())
-		for _, pod := range pods.Items {
-			Expect(pod.Spec.NodeName).To(Equal(kairosNodeName),
-				"DaemonSet pods must only run on Kairos nodes")
-		}
+		Expect(pods.Items).To(HaveLen(1), "exactly one pod expected — one Kairos node out of two")
+		Expect(pods.Items[0].Spec.NodeName).To(Equal(kairosNodeName))
 	})
 })
