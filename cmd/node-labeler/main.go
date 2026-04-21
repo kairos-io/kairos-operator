@@ -33,6 +33,8 @@ func main() {
 	defer cancel()
 
 	if *every > 0 {
+		ticker := time.NewTicker(time.Duration(*every) * time.Second)
+		defer ticker.Stop()
 		for {
 			if err := syncLabels(ctx, clientset, nodeName, hostEtcPath(), "/proc/cmdline"); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "error syncing labels: %v\n", err)
@@ -40,7 +42,7 @@ func main() {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Duration(*every) * time.Second):
+			case <-ticker.C:
 			}
 		}
 	} else {
