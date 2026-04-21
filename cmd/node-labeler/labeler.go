@@ -173,7 +173,7 @@ func sanitizeLabelValue(s string) string {
 	s = invalidLabelChars.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-_.")
 	if len(s) > 63 {
-		s = s[:63]
+		s = strings.Trim(s[:63], "-_.")
 	}
 	return s
 }

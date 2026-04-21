@@ -237,6 +237,7 @@ KAIROS_FIPS="false"
 		Entry("trims leading dash", "-leading-dash", "leading-dash"),
 		Entry("trims trailing dot", "trailing-dot.", "trailing-dot"),
 		Entry("truncates to 63 characters", strings.Repeat("a", 70), strings.Repeat("a", 63)),
+		Entry("truncation does not leave trailing hyphen", strings.Repeat("a", 62)+"-a", strings.Repeat("a", 62)),
 		Entry("sanitizes all-invalid characters to empty string", strings.Repeat("+", 10), ""),
 	)
 })
