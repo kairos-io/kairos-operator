@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"os/exec"
 	"strings"
@@ -73,6 +74,15 @@ var _ = Describe("Node Labeler E2E", func() {
 		out, err := exec.Command("docker", "exec", kairosNode, "hostname").CombinedOutput()
 		Expect(err).NotTo(HaveOccurred())
 		kairosNodeName := strings.TrimSpace(string(out))
+
+		By("reading original /etc/kairos-release so we can restore it on cleanup")
+		original, err := exec.Command("docker", "exec", kairosNode, "cat", "/etc/kairos-release").CombinedOutput()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			cmd := exec.Command("docker", "exec", "-i", kairosNode, "tee", "/etc/kairos-release")
+			cmd.Stdin = bytes.NewReader(original)
+			Expect(cmd.Run()).To(Succeed())
+		})
 
 		By("waiting for the DaemonSet labeler pod to be running on the Kairos node")
 		Eventually(func() bool {
