@@ -87,6 +87,9 @@ func checkKairosNode() (bool, error) {
 	// Check os-release for Kairos
 	osRelease, err := os.ReadFile(etcPath + "/os-release")
 	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("error reading os-release: %v", err)
 	}
 
