@@ -544,23 +544,7 @@ func installOperator() {
 	out, err := cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), string(out))
 
-	// Wait for initial rollout to complete (in case deployment already existed)
-	By("waiting for initial deployment rollout to complete")
-	initialRolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
-		"deployment/operator-kairos-operator", "-n", namespace, "--timeout=2m")
-	initialRolloutOut, err := initialRolloutCmd.CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), string(initialRolloutOut))
-
-	// Patch the node-labeler image environment variable to use the locally built image
-	// The default kustomization adds this env var, but we need to update it to use our local image
-	By("patching node-labeler image environment variable")
-	patchCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "set", "env", "deployment",
-		"operator-kairos-operator", fmt.Sprintf("NODE_LABELER_IMAGE=%s", nodeLabelerImage), "-n", namespace)
-	patchOut, err := patchCmd.CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), string(patchOut))
-
-	// Wait for the rollout to complete after patching to ensure only one pod is running
-	By("waiting for deployment rollout to complete after patching")
+	By("waiting for deployment rollout to complete")
 	rolloutCmd := exec.Command("kubectl", "--kubeconfig", kubeconfig, "rollout", "status",
 		"deployment/operator-kairos-operator", "-n", namespace, "--timeout=2m")
 	rolloutOut, err := rolloutCmd.CombinedOutput()

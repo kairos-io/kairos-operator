@@ -12,6 +12,22 @@ patches:
   target:
     kind: Deployment
     name: kairos-operator
+- patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kairos-operator
+    spec:
+      template:
+        spec:
+          containers:
+          - name: manager
+            env:
+            - name: NODE_LABELER_IMAGE
+              value: controller-node-labeler:latest
+  target:
+    kind: Deployment
+    name: kairos-operator
 
 images:
 - name: controller
