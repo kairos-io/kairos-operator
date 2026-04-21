@@ -13,8 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -47,11 +49,7 @@ type NodeLabelerDaemonSetReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	namespace := getOperatorNamespace()
-	if req.Name != kairosNodeLabelerDaemonSetName || req.Namespace != namespace {
-		return ctrl.Result{}, nil
-	}
-	return ctrl.Result{}, r.ensureDaemonSet(ctx, namespace)
+	return ctrl.Result{}, r.ensureDaemonSet(ctx, req.Namespace)
 }
 
 // ensureDaemonSetOnStartup is called from SetupWithManager before the cache is
@@ -182,6 +180,8 @@ func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return fmt.Errorf("ensuring node-labeler DaemonSet: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&appsv1.DaemonSet{}).
+		For(&appsv1.DaemonSet{}, builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			return obj.GetName() == kairosNodeLabelerDaemonSetName && obj.GetNamespace() == namespace
+		}))).
 		Complete(r)
 }
