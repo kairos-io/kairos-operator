@@ -111,6 +111,10 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 										},
 									},
 								},
+								{
+									Name:  "HOST_ETC_PATH",
+									Value: "/host/etc",
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
