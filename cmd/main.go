@@ -210,6 +210,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.NodeLabelerDaemonSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NodeLabelerDaemonSet")
+		os.Exit(1)
+	}
+
 	if err = (&controller.NodeOpUpgradeReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

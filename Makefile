@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+NODE_LABELER_IMG ?= controller-node-labeler:latest
 CLUSTER_NAME ?= kairos-operator-e2e
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
@@ -112,6 +113,10 @@ run: manifests generate fmt vet ## Run a controller from your host.
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
 
+.PHONY: docker-build-node-labeler
+docker-build-node-labeler: ## Build docker image for the node-labeler.
+	$(CONTAINER_TOOL) build -t ${NODE_LABELER_IMG} -f Dockerfile.node-labeler .
+
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
@@ -184,8 +189,9 @@ kind-setup: ## Create a kind cluster for testing
 	$(MAKE) kind-setup-image
 
 .PHONY: kind-setup-image
-kind-setup-image: docker-build ## Load the controller image into the kind cluster
+kind-setup-image: docker-build docker-build-node-labeler ## Load the controller and node-labeler images into the kind cluster
 	$(KIND) load docker-image --name $(CLUSTER_NAME) $(IMG)
+	$(KIND) load docker-image --name $(CLUSTER_NAME) $(NODE_LABELER_IMG)
 
 .PHONY: kind-teardown
 kind-teardown: ## Delete the kind cluster

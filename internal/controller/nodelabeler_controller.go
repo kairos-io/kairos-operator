@@ -41,11 +41,9 @@ type NodeLabelerReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
-func (r *NodeLabelerReconciler) getOperatorNamespace() string {
-	// Get namespace from environment variable
+func getOperatorNamespace() string {
 	namespace := os.Getenv("CONTROLLER_POD_NAMESPACE")
 	if namespace == "" {
-		// Fallback to "system" if not set
 		return "system"
 	}
 	return namespace
@@ -215,7 +213,7 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Get the operator namespace
-	namespace := r.getOperatorNamespace()
+	namespace := getOperatorNamespace()
 
 	// Check if a labeler job already exists for this node
 	exists, err := r.jobExists(ctx, namespace, node.Name)
@@ -245,7 +243,7 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	setupLog := logf.Log.WithName("setup")
 
 	// Ensure RBAC resources are created when the controller starts
-	namespace := r.getOperatorNamespace()
+	namespace := getOperatorNamespace()
 	if err := r.ensureServiceAccount(context.Background(), namespace); err != nil {
 		setupLog.Error(err, "Failed to ensure service account and RBAC")
 		os.Exit(1)
