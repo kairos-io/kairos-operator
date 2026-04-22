@@ -760,7 +760,8 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	if certDir != "" {
 		fmt.Fprintf(&pushTar, " --cert-dir %s", certDir)
 	}
-	fmt.Fprintf(&pushTar, " %s oci-archive:%s", localTag, tarPath)
+	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
+	fmt.Fprintf(&pushTar, " %s docker-archive:%s", localTag, tarPath)
 
 	script := bud.String() + " && " + pushTar.String()
 

@@ -66,7 +66,7 @@ var _ = Describe("buildahBuildContainer", func() {
 		Expect(mountNames).To(ContainElements("rootfs", "ocispec", "artifacts"))
 	})
 
-	It("shell script runs buildah bud then buildah push to oci-archive", func() {
+	It("shell script runs buildah bud then buildah push to docker-archive", func() {
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 		Expect(c.Command).To(Equal([]string{"/bin/sh", "-c"}))
 		Expect(c.Args).To(HaveLen(1))
@@ -74,7 +74,7 @@ var _ = Describe("buildahBuildContainer", func() {
 		Expect(script).To(ContainSubstring("buildah bud"))
 		Expect(script).To(ContainSubstring("-t localhost/my-artifact:latest"))
 		Expect(script).To(ContainSubstring("buildah push"))
-		Expect(script).To(ContainSubstring("oci-archive:/artifacts/my-artifact.tar"))
+		Expect(script).To(ContainSubstring("docker-archive:/artifacts/my-artifact.tar"))
 		Expect(strings.Index(script, "buildah bud")).To(BeNumerically("<", strings.Index(script, "buildah push")))
 	})
 
@@ -86,7 +86,7 @@ var _ = Describe("buildahBuildContainer", func() {
 	It("does not push to registry when Push is false", func() {
 		artifact.Spec.Image.Push = false
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-		// Only two commands: bud and push to oci-archive; no docker:// transport.
+		// Only two commands: bud and push to docker-archive; no docker:// transport.
 		Expect(c.Args[0]).ToNot(ContainSubstring("docker://"))
 	})
 
@@ -232,7 +232,7 @@ var _ = Describe("buildahBuildContainer", func() {
 			Expect(script).To(ContainSubstring("docker://registry.example.com/my-ns/my-image:v1.0"))
 			// Three buildah commands total.
 			Expect(strings.Count(script, "buildah push")).To(Equal(2),
-				"should push to both oci-archive and the registry")
+				"should push to both docker-archive and the registry")
 		})
 	})
 

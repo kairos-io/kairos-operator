@@ -53,17 +53,17 @@ func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 // ensureDaemonSetOnStartup is called from SetupWithManager before the cache is
-// started, so it must not read through the cache. On first install it creates
-// the DaemonSet; on subsequent operator startups (e.g. upgrades) it patches the
-// spec so that a new NODE_LABELER_IMAGE is rolled out without manual intervention.
-func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, namespace string) error {
+// started, so reads must go through apiReader (mgr.GetAPIReader()), not the cached client.
+// On first install it creates the DaemonSet; on subsequent operator startups (e.g. upgrades)
+// it patches the spec so that a new NODE_LABELER_IMAGE is rolled out without manual intervention.
+func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, apiReader client.Reader, namespace string) error {
 	desired := r.buildDaemonSet(namespace)
 	if err := r.Create(ctx, desired); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 		existing := &appsv1.DaemonSet{}
-		if err := r.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: namespace}, existing); err != nil {
+		if err := apiReader.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: namespace}, existing); err != nil {
 			return err
 		}
 		patch := client.MergeFrom(existing.DeepCopy())
@@ -176,7 +176,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 
 func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	namespace := getOperatorNamespace()
-	if err := r.ensureDaemonSetOnStartup(context.Background(), namespace); err != nil {
+	if err := r.ensureDaemonSetOnStartup(context.Background(), mgr.GetAPIReader(), namespace); err != nil {
 		return fmt.Errorf("ensuring node-labeler DaemonSet: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
