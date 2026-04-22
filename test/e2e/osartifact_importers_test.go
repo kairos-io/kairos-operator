@@ -15,7 +15,7 @@ import (
 //   - checks the ISO filesystem root for the overlay-iso marker (isoMarker)
 //   - extracts the squashfs and checks for the overlay-rootfs marker (rootfsMarker)
 //   - checks the squashfs for a build-context marker that was COPY'd via the
-//     OCI build definition during the kaniko build (buildCtxMarker)
+//     OCI build definition during the Buildah build (buildCtxMarker)
 func verifyImportersInISO(isoMarker, rootfsMarker, buildCtxMarker string) string {
 	return fmt.Sprintf(`
 set -e
@@ -150,7 +150,7 @@ var _ = Describe("OSArtifact Importers", func() {
 	//  2. Three emptyDir volumes are created: ISO overlay, rootfs overlay, build context
 	//  3. Importer init containers populate each volume with a marker file
 	//  4. spec.image.ociSpec.buildContextVolume and spec.artifacts overlay fields wire the volumes
-	//  5. Kaniko builds the OCI spec, COPYing the build-context marker into the image
+	//  5. The OCI build step (Buildah) builds the OCI spec, COPYing the build-context marker into the image
 	//  6. build-iso receives --overlay-iso and --overlay-rootfs flags with the overlay mounts
 	//  7. The exporter extracts the ISO and squashfs to verify all three markers are present
 	It("populates overlay and build-context volumes via importers and bakes them into the ISO", func() {

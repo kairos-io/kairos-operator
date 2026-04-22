@@ -41,6 +41,7 @@ import (
 const (
 	FinalizerName                   = "build.kairos.io/osbuilder-finalizer"
 	CompatibleAurorabootVersion     = "v0.19.3"
+	CompatibleBuildahVersion        = "v1.43.1"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
 	// OCISpecSecretKey is the Secret data key for the OCI build definition.
@@ -53,6 +54,7 @@ type OSArtifactReconciler struct {
 	Scheme       *runtime.Scheme
 	ServingImage string
 	ToolImage    string
+	BuildahImage string
 	CopierImage  string
 }
 
@@ -257,7 +259,7 @@ func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact
 
 	final := AssembleFinalOCISpec(hasBuildOptions, middleContent)
 
-	// Ensure OCISpec and Ref exist in-memory so volume mount and kaniko use the rendered secret.
+	// Ensure OCISpec and Ref exist in-memory so the volume mount and build container use the rendered secret.
 	if artifact.Spec.Image.OCISpec == nil {
 		artifact.Spec.Image.OCISpec = &buildv1alpha2.OCISpec{}
 	}

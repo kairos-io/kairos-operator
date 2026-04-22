@@ -41,7 +41,7 @@ ARG FIPS=no-fips
 `
 
 // DefaultOCISpecKairosInitSection is the COPY + RUN that use the kairos-init stage (injected at the end when buildOptions is set).
-// We use COPY --from instead of RUN --mount=type=bind,from=kairos-init because Kaniko does not reliably support bind mounts from another stage (see examples/osartifact-dockerfile-byoi.yaml).
+// COPY --from is used instead of RUN --mount=type=bind,from=kairos-init for broad OCI builder compatibility.
 const DefaultOCISpecKairosInitSection = `# kairos init section
 COPY --from=kairos-init /kairos-init /kairos-init
 RUN if [ -n "${KUBERNETES_DISTRO}" ]; then \

@@ -32,6 +32,7 @@ import (
 
 const aurorabootUnpackCmd = "auroraboot unpack"
 
+
 func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
@@ -217,7 +218,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 	case artifact.Spec.Image.Ref != "":
 		inits = append(inits, unpackAndPackToArtifactsContainer(artifact, r.ToolImage))
 	case hasOCISpecRef:
-		inits = append(inits, kanikoBuildContainer(artifact, buildCtxVol, arch))
+		inits = append(inits, buildahBuildContainer(artifact, buildCtxVol, arch, r.BuildahImage))
 	default:
 		return &corev1.Pod{}
 	}
@@ -660,32 +661,141 @@ func volumeForExportArtifacts(ctx context.Context, cl client.Client, artifact *b
 	}, nil
 }
 
-// kanikoBuildArgs returns kaniko --build-arg KEY=VALUE strings from BuildOptions (default OCI build definition ARGs).
-// Only used when artifact.Spec.Image.BuildOptions is set.
-func kanikoBuildArgs(artifact *buildv1alpha2.OSArtifact) []string {
+// ociBuildArgPairs returns "KEY=VALUE" strings from BuildOptions for use with --build-arg.
+func ociBuildArgPairs(artifact *buildv1alpha2.OSArtifact) []string {
 	if artifact.Spec.Image.BuildOptions == nil {
 		return nil
 	}
 	opts := artifact.Spec.Image.BuildOptions
-	var args []string
-	addArg := func(key, value string) {
+	var pairs []string
+	addPair := func(key, value string) {
 		if value != "" {
-			args = append(args, "--build-arg", key+"="+value)
+			pairs = append(pairs, key+"="+value)
 		}
 	}
-	addArg("VERSION", opts.Version)
-	addArg("BASE_IMAGE", opts.BaseImage)
-	addArg("MODEL", opts.Model)
-	addArg("KUBERNETES_DISTRO", opts.KubernetesDistro)
-	addArg("KUBERNETES_VERSION", opts.KubernetesVersion)
+	addPair("VERSION", opts.Version)
+	addPair("BASE_IMAGE", opts.BaseImage)
+	addPair("MODEL", opts.Model)
+	addPair("KUBERNETES_DISTRO", opts.KubernetesDistro)
+	addPair("KUBERNETES_VERSION", opts.KubernetesVersion)
 	if opts.TrustedBoot {
-		addArg("TRUSTED_BOOT", "true")
+		addPair("TRUSTED_BOOT", "true")
 	}
 	if opts.FIPS {
-		addArg("FIPS", "fips")
+		addPair("FIPS", "fips")
 	}
-	return args
+	return pairs
 }
+
+// buildahBuildContainer returns the Buildah build container. The OCI image tarball is always written to /artifacts/<name>.tar.
+// Runs rootless using vfs storage + chroot isolation (no privileged required; needs SETUID+SETGID capabilities).
+func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, buildahImage string) corev1.Container {
+	volMounts := []corev1.VolumeMount{
+		{Name: "rootfs", MountPath: "/rootfs"},
+		{Name: "ocispec", MountPath: "/workspace/ocispec"},
+		{Name: "artifacts", MountPath: "/artifacts"},
+	}
+	if buildContextVolume != "" {
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name: buildContextVolume, MountPath: "/workspace",
+		})
+	}
+
+	var certDir string
+	if artifact.Spec.Image.CACertificatesVolume != "" {
+		certDir = "/etc/ssl/buildah/certs"
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name:      artifact.Spec.Image.CACertificatesVolume,
+			MountPath: certDir,
+			ReadOnly:  true,
+		})
+	}
+
+	var authfilePath string
+	env := []corev1.EnvVar{
+		{Name: "BUILDAH_ISOLATION", Value: "chroot"},
+		{Name: "STORAGE_DRIVER", Value: "vfs"},
+	}
+	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
+		credsMountPath := "/root/.docker"
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name:      imageCredentialsVolumeName,
+			MountPath: credsMountPath,
+			ReadOnly:  true,
+		})
+		authfilePath = credsMountPath + "/config.json"
+		env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: credsMountPath})
+	}
+	if len(artifact.Spec.Image.BuildEnv) > 0 {
+		env = append(env, artifact.Spec.Image.BuildEnv...)
+	}
+
+	localTag := fmt.Sprintf("localhost/%s:latest", artifact.Name)
+	tarPath := fmt.Sprintf("/artifacts/%s.tar", artifact.Name)
+
+	// Build the bud command.
+	var bud strings.Builder
+	bud.WriteString("buildah bud --layers=false")
+	fmt.Fprintf(&bud, " -f /workspace/ocispec/%s", OCISpecSecretKey)
+	if authfilePath != "" {
+		fmt.Fprintf(&bud, " --authfile %s", authfilePath)
+	}
+	if certDir != "" {
+		fmt.Fprintf(&bud, " --cert-dir %s", certDir)
+	}
+	if arch != "" {
+		fmt.Fprintf(&bud, " --arch %s", arch)
+	}
+	for _, pair := range ociBuildArgPairs(artifact) {
+		fmt.Fprintf(&bud, " --build-arg %s", pair)
+	}
+	fmt.Fprintf(&bud, " -t %s /workspace", localTag)
+
+	// Build the push-to-tarball command.
+	var pushTar strings.Builder
+	pushTar.WriteString("buildah push")
+	if authfilePath != "" {
+		fmt.Fprintf(&pushTar, " --authfile %s", authfilePath)
+	}
+	if certDir != "" {
+		fmt.Fprintf(&pushTar, " --cert-dir %s", certDir)
+	}
+	fmt.Fprintf(&pushTar, " %s oci-archive:%s", localTag, tarPath)
+
+	script := bud.String() + " && " + pushTar.String()
+
+	// Optional push to registry.
+	if artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil {
+		destination := artifact.Spec.Image.BuildImage.ImageRef()
+		var pushReg strings.Builder
+		pushReg.WriteString("buildah push")
+		if authfilePath != "" {
+			fmt.Fprintf(&pushReg, " --authfile %s", authfilePath)
+		}
+		if certDir != "" {
+			fmt.Fprintf(&pushReg, " --cert-dir %s", certDir)
+		}
+		fmt.Fprintf(&pushReg, " %s docker://%s", localTag, destination)
+		script += " && " + pushReg.String()
+	}
+
+	return corev1.Container{
+		ImagePullPolicy: corev1.PullAlways,
+		Name:            "buildah-build",
+		Image:           buildahImage,
+		Command:         []string{"/bin/sh", "-c"},
+		Args:            []string{script},
+		Env:             env,
+		VolumeMounts:    volMounts,
+		SecurityContext: &corev1.SecurityContext{
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"SETUID", "SETGID"},
+			},
+			AllowPrivilegeEscalation: ptr(true),
+		},
+	}
+}
+
 
 func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
 	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
@@ -748,7 +858,7 @@ func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.A
 	return volumes
 }
 
-// imageExtractorContainer unpacks the OCI tarball from /artifacts/<name>.tar (written by Kaniko) to /rootfs using AuroraBoot.
+// imageExtractorContainer unpacks the OCI tarball from /artifacts/<name>.tar (written by Buildah) to /rootfs using AuroraBoot.
 func imageExtractorContainer(toolImage, arch string, artifactName string) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
@@ -768,71 +878,3 @@ func imageExtractorContainer(toolImage, arch string, artifactName string) corev1
 	}
 }
 
-// kanikoBuildContainer returns the Kaniko build container. The image tarball is always written to /artifacts/<name>.tar.
-func kanikoBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string) corev1.Container {
-	kanikoVolumeMounts := []corev1.VolumeMount{
-		{Name: "rootfs", MountPath: "/rootfs"},
-		{Name: "ocispec", MountPath: "/workspace/ocispec"},
-		{Name: "artifacts", MountPath: "/artifacts"},
-	}
-	if buildContextVolume != "" {
-		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name: buildContextVolume, MountPath: "/workspace",
-		})
-	}
-	if artifact.Spec.Image.CACertificatesVolume != "" {
-		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name:      artifact.Spec.Image.CACertificatesVolume,
-			MountPath: "/kaniko/ssl/certs",
-			ReadOnly:  true,
-		})
-	}
-	tarPath := "/artifacts/" + artifact.Name + ".tar"
-
-	doPush := artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil
-	destination := "whatever"
-	if artifact.Spec.Image.BuildImage != nil && artifact.Spec.Image.BuildImage.ImageRef() != "" {
-		destination = artifact.Spec.Image.BuildImage.ImageRef()
-	}
-
-	// Use absolute path so Kaniko resolves the file correctly when both
-	// build-context (at /workspace) and ocispec (at /workspace/ocispec) are mounted.
-	kanikoArgs := []string{
-		"--dockerfile", "/workspace/ocispec/" + OCISpecSecretKey,
-		"--context", "dir:///workspace",
-		"--destination", destination,
-		"--tar-path", tarPath,
-		"--ignore-path=/product_uuid", // Mounted by kubelet, can't be deleted between stages
-	}
-	if !doPush {
-		kanikoArgs = append(kanikoArgs, "--no-push")
-	}
-	kanikoArgs = append(kanikoArgs, kanikoBuildArgs(artifact)...)
-	if arch != "" {
-		kanikoArgs = append(kanikoArgs, "--customPlatform=linux/"+arch)
-	}
-
-	// When image credentials are set, mount the secret so Kaniko can pull the base image and optionally push the built image.
-	kanikoEnv := []corev1.EnvVar{}
-	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
-		kanikoVolumeMounts = append(kanikoVolumeMounts, corev1.VolumeMount{
-			Name:      imageCredentialsVolumeName,
-			MountPath: "/kaniko/.docker",
-			ReadOnly:  true,
-		})
-		kanikoEnv = append(kanikoEnv, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/kaniko/.docker"})
-	}
-	if len(artifact.Spec.Image.BuildEnv) > 0 {
-		kanikoEnv = append(kanikoEnv, artifact.Spec.Image.BuildEnv...)
-	}
-
-	return corev1.Container{
-		ImagePullPolicy: corev1.PullAlways,
-		Name:            "kaniko-build",
-		Image:           "gcr.io/kaniko-project/executor:latest",
-		Args:            kanikoArgs,
-		Env:             kanikoEnv,
-		VolumeMounts:    kanikoVolumeMounts,
-		SecurityContext: &corev1.SecurityContext{Privileged: ptr(false)},
-	}
-}

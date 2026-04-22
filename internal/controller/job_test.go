@@ -13,6 +13,266 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const testBuildahImage = "quay.io/buildah/stable:" + CompatibleBuildahVersion
+
+var _ = Describe("buildahBuildContainer", func() {
+	var artifact *buildv1alpha2.OSArtifact
+
+	newArtifactWithOCISpec := func(name string) *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: "ocispec-secret", Key: OCISpecSecretKey},
+					},
+				},
+			},
+		}
+	}
+
+	BeforeEach(func() {
+		artifact = newArtifactWithOCISpec("my-artifact")
+	})
+
+	It("uses the correct container name and image", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		Expect(c.Name).To(Equal("buildah-build"))
+		Expect(c.Image).To(Equal(testBuildahImage))
+	})
+
+	It("always sets BUILDAH_ISOLATION=chroot and STORAGE_DRIVER=vfs in env", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		envMap := envToMap(c.Env)
+		Expect(envMap).To(HaveKeyWithValue("BUILDAH_ISOLATION", "chroot"))
+		Expect(envMap).To(HaveKeyWithValue("STORAGE_DRIVER", "vfs"))
+	})
+
+	It("sets security context with SETUID+SETGID capabilities and allowPrivilegeEscalation", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		Expect(c.SecurityContext).ToNot(BeNil())
+		Expect(c.SecurityContext.Capabilities).ToNot(BeNil())
+		Expect(c.SecurityContext.Capabilities.Add).To(ContainElements(
+			corev1.Capability("SETUID"),
+			corev1.Capability("SETGID"),
+		))
+		Expect(c.SecurityContext.AllowPrivilegeEscalation).ToNot(BeNil())
+		Expect(*c.SecurityContext.AllowPrivilegeEscalation).To(BeTrue())
+	})
+
+	It("always mounts rootfs, ocispec, and artifacts volumes", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		mountNames := volumeMountNames(c)
+		Expect(mountNames).To(ContainElements("rootfs", "ocispec", "artifacts"))
+	})
+
+	It("shell script runs buildah bud then buildah push to oci-archive", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		Expect(c.Command).To(Equal([]string{"/bin/sh", "-c"}))
+		Expect(c.Args).To(HaveLen(1))
+		script := c.Args[0]
+		Expect(script).To(ContainSubstring("buildah bud"))
+		Expect(script).To(ContainSubstring("-t localhost/my-artifact:latest"))
+		Expect(script).To(ContainSubstring("buildah push"))
+		Expect(script).To(ContainSubstring("oci-archive:/artifacts/my-artifact.tar"))
+		Expect(strings.Index(script, "buildah bud")).To(BeNumerically("<", strings.Index(script, "buildah push")))
+	})
+
+	It("references the ocispec file path in bud command", func() {
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		Expect(c.Args[0]).To(ContainSubstring("-f /workspace/ocispec/" + OCISpecSecretKey))
+	})
+
+	It("does not push to registry when Push is false", func() {
+		artifact.Spec.Image.Push = false
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+		// Only two commands: bud and push to oci-archive; no docker:// transport.
+		Expect(c.Args[0]).ToNot(ContainSubstring("docker://"))
+	})
+
+	When("arch is set", func() {
+		It("adds --arch to buildah bud", func() {
+			c := buildahBuildContainer(artifact, "", "amd64", testBuildahImage)
+			Expect(c.Args[0]).To(ContainSubstring("--arch amd64"))
+		})
+	})
+
+	When("BuildOptions is set", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.BuildOptions = &buildv1alpha2.BuildOptions{
+				Version:          "v3.6.0",
+				BaseImage:        "ubuntu:22.04",
+				Model:            "generic",
+				KubernetesDistro: "k3s",
+			}
+		})
+
+		It("adds --build-arg flags for each non-empty option", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			script := c.Args[0]
+			Expect(script).To(ContainSubstring("--build-arg VERSION=v3.6.0"))
+			Expect(script).To(ContainSubstring("--build-arg BASE_IMAGE=ubuntu:22.04"))
+			Expect(script).To(ContainSubstring("--build-arg MODEL=generic"))
+			Expect(script).To(ContainSubstring("--build-arg KUBERNETES_DISTRO=k3s"))
+		})
+
+		It("omits --build-arg for empty options", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(c.Args[0]).ToNot(ContainSubstring("KUBERNETES_VERSION"))
+		})
+	})
+
+	When("BuildOptions with FIPS=true", func() {
+		It("adds --build-arg FIPS=fips", func() {
+			artifact.Spec.Image.BuildOptions = &buildv1alpha2.BuildOptions{
+				Version: "v3.6.0", BaseImage: "ubuntu:22.04", FIPS: true,
+			}
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(c.Args[0]).To(ContainSubstring("--build-arg FIPS=fips"))
+		})
+	})
+
+	When("BuildOptions with TrustedBoot=true", func() {
+		It("adds --build-arg TRUSTED_BOOT=true", func() {
+			artifact.Spec.Image.BuildOptions = &buildv1alpha2.BuildOptions{
+				Version: "v3.6.0", BaseImage: "ubuntu:22.04", TrustedBoot: true,
+			}
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(c.Args[0]).To(ContainSubstring("--build-arg TRUSTED_BOOT=true"))
+		})
+	})
+
+	When("buildContextVolume is set", func() {
+		It("mounts it at /workspace", func() {
+			c := buildahBuildContainer(artifact, "my-context", "", testBuildahImage)
+			var hasMount bool
+			for _, vm := range c.VolumeMounts {
+				if vm.Name == "my-context" && vm.MountPath == "/workspace" {
+					hasMount = true
+				}
+			}
+			Expect(hasMount).To(BeTrue(), "build context volume should be mounted at /workspace")
+		})
+	})
+
+	When("buildContextVolume is not set", func() {
+		It("has exactly rootfs, ocispec, and artifacts volume mounts (no extra workspace mount)", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			names := volumeMountNames(c)
+			Expect(names).To(ConsistOf("rootfs", "ocispec", "artifacts"))
+		})
+	})
+
+	When("ImageCredentialsSecretRef is set", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.ImageCredentialsSecretRef = &buildv1alpha2.SecretKeySelector{Name: "registry-creds"}
+		})
+
+		It("mounts image-credentials at /root/.docker", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			var hasMount bool
+			for _, vm := range c.VolumeMounts {
+				if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" && vm.ReadOnly {
+					hasMount = true
+				}
+			}
+			Expect(hasMount).To(BeTrue(), "credentials volume should be mounted read-only at /root/.docker")
+		})
+
+		It("passes --authfile to both buildah bud and buildah push", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			script := c.Args[0]
+			Expect(strings.Count(script, "--authfile /root/.docker/config.json")).To(Equal(2),
+				"--authfile should appear in both bud and push commands")
+		})
+
+		It("sets DOCKER_CONFIG env var", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(envToMap(c.Env)).To(HaveKeyWithValue("DOCKER_CONFIG", "/root/.docker"))
+		})
+	})
+
+	When("CACertificatesVolume is set", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.CACertificatesVolume = "my-ca-certs"
+		})
+
+		It("mounts the CA certs volume at /etc/ssl/buildah/certs read-only", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			var hasMount bool
+			for _, vm := range c.VolumeMounts {
+				if vm.Name == "my-ca-certs" && vm.MountPath == "/etc/ssl/buildah/certs" && vm.ReadOnly {
+					hasMount = true
+				}
+			}
+			Expect(hasMount).To(BeTrue(), "CA certs volume should be mounted read-only at /etc/ssl/buildah/certs")
+		})
+
+		It("passes --cert-dir to both buildah bud and buildah push", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			script := c.Args[0]
+			Expect(strings.Count(script, "--cert-dir /etc/ssl/buildah/certs")).To(Equal(2),
+				"--cert-dir should appear in both bud and push commands")
+		})
+	})
+
+	When("Push is true and BuildImage is set", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.Push = true
+			artifact.Spec.Image.BuildImage = &buildv1alpha2.BuildImage{
+				Registry:   "registry.example.com",
+				Repository: "my-ns/my-image",
+				Tag:        "v1.0",
+			}
+		})
+
+		It("appends a third buildah push to the registry destination", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			script := c.Args[0]
+			Expect(script).To(ContainSubstring("docker://registry.example.com/my-ns/my-image:v1.0"))
+			// Three buildah commands total.
+			Expect(strings.Count(script, "buildah push")).To(Equal(2),
+				"should push to both oci-archive and the registry")
+		})
+	})
+
+	When("buildEnv is set", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.BuildEnv = []corev1.EnvVar{
+				{Name: "HTTP_PROXY", Value: "http://proxy.example.com:3128"},
+				{Name: "NO_PROXY", Value: "localhost,127.0.0.1"},
+			}
+		})
+
+		It("appends buildEnv vars after the Buildah-specific env vars", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			envMap := envToMap(c.Env)
+			Expect(envMap).To(HaveKeyWithValue("HTTP_PROXY", "http://proxy.example.com:3128"))
+			Expect(envMap).To(HaveKeyWithValue("NO_PROXY", "localhost,127.0.0.1"))
+			// Buildah-specific vars still present.
+			Expect(envMap).To(HaveKeyWithValue("BUILDAH_ISOLATION", "chroot"))
+		})
+	})
+})
+
+// envToMap converts a slice of EnvVar to a name→value map for convenient assertions.
+func envToMap(env []corev1.EnvVar) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		m[e.Name] = e.Value
+	}
+	return m
+}
+
+// volumeMountNames returns the names of all volume mounts in a container.
+func volumeMountNames(c corev1.Container) []string {
+	names := make([]string, 0, len(c.VolumeMounts))
+	for _, vm := range c.VolumeMounts {
+		names = append(names, vm.Name)
+	}
+	return names
+}
+
 var _ = Describe("buildISOCommand", func() {
 	// Tests for --cloud-config flag order
 	// See: https://github.com/kairos-io/kairos-operator/pull/73
