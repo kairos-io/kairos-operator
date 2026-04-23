@@ -32,7 +32,6 @@ import (
 
 const aurorabootUnpackCmd = "auroraboot unpack"
 
-
 func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
@@ -797,7 +796,6 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	}
 }
 
-
 func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
 	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
 		volumes = append(volumes, corev1.Volume{
@@ -878,4 +876,3 @@ func imageExtractorContainer(toolImage, arch string, artifactName string) corev1
 		},
 	}
 }
-

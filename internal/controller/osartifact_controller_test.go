@@ -25,9 +25,13 @@ import (
 )
 
 const (
-	testImageName       = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
-	ukiKeysVolumeName   = "uki-keys"  // volume name used in UKI tests
-	artifactsVolumeName = "artifacts" // internal builder/exporter volume name (matches controller)
+	testImageName         = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName     = "uki-keys"  // volume name used in UKI tests
+	artifactsVolumeName   = "artifacts" // internal builder/exporter volume name (matches controller)
+	buildahCertsMountPath = "/etc/ssl/buildah/certs"
+	dockerCredsMountPath  = "/root/.docker"
+	buildContextMountPath = "/workspace"
+	caCertsVolumeName     = "my-ca-certs"
 )
 
 var _ = Describe("OSArtifactReconciler", func() {
@@ -459,7 +463,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 					var hasContextMount bool
 					for _, vm := range buildah.VolumeMounts {
-						if vm.Name == "my-context" && vm.MountPath == "/workspace" {
+						if vm.Name == "my-context" && vm.MountPath == buildContextMountPath {
 							hasContextMount = true
 						}
 					}
@@ -579,10 +583,10 @@ var _ = Describe("OSArtifactReconciler", func() {
 					OCISpec: &buildv1alpha2.OCISpec{
 						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
 					},
-					CACertificatesVolume: "my-ca-certs",
+					CACertificatesVolume: caCertsVolumeName,
 				}
 				artifact.Spec.Volumes = []corev1.Volume{
-					{Name: "my-ca-certs", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "custom-ca"}}},
+					{Name: caCertsVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "custom-ca"}}},
 				}
 			})
 
@@ -598,7 +602,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				var hasCACertsMount bool
 				for _, vm := range buildah.VolumeMounts {
-					if vm.Name == "my-ca-certs" && vm.MountPath == "/etc/ssl/buildah/certs" && vm.ReadOnly {
+					if vm.Name == caCertsVolumeName && vm.MountPath == buildahCertsMountPath && vm.ReadOnly {
 						hasCACertsMount = true
 						break
 					}
@@ -739,7 +743,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(unpack).ToNot(BeNil())
 				var hasCredsMount bool
 				for _, vm := range unpack.VolumeMounts {
-					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == dockerCredsMountPath {
 						hasCredsMount = true
 						break
 					}
@@ -747,7 +751,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(hasCredsMount).To(BeTrue(), "unpack container must mount "+imageCredentialsVolumeName+" so AuroraBoot can pull private image.ref")
 				var hasDockerConfig bool
 				for _, e := range unpack.Env {
-					if e.Name == "DOCKER_CONFIG" && e.Value == "/root/.docker" {
+					if e.Name == "DOCKER_CONFIG" && e.Value == dockerCredsMountPath {
 						hasDockerConfig = true
 						break
 					}
@@ -967,7 +971,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(buildah).ToNot(BeNil())
 				var hasCtx bool
 				for _, vm := range buildah.VolumeMounts {
-					if vm.Name == "build-ctx" && vm.MountPath == "/workspace" {
+					if vm.Name == "build-ctx" && vm.MountPath == buildContextMountPath {
 						hasCtx = true
 						break
 					}
@@ -999,7 +1003,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(buildah).ToNot(BeNil())
 				var hasCredsMount bool
 				for _, vm := range buildah.VolumeMounts {
-					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == dockerCredsMountPath {
 						hasCredsMount = true
 						break
 					}
@@ -1007,7 +1011,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(hasCredsMount).To(BeTrue(), "buildah-build should mount credentials at /root/.docker for pull")
 				var hasDockerConfig bool
 				for _, e := range buildah.Env {
-					if e.Name == "DOCKER_CONFIG" && e.Value == "/root/.docker" {
+					if e.Name == "DOCKER_CONFIG" && e.Value == dockerCredsMountPath {
 						hasDockerConfig = true
 						break
 					}
