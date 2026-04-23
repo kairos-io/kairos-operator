@@ -240,15 +240,28 @@ var _ = Describe("buildahBuildContainer", func() {
 			Expect(c.Args[0]).ToNot(ContainSubstring("--tls-verify=false"))
 		})
 
-		When("InsecureRegistry is true", func() {
+		When("PushInsecureRegistry is true", func() {
 			BeforeEach(func() {
-				artifact.Spec.Image.BuildImage.InsecureRegistry = true
+				artifact.Spec.Image.PushInsecureRegistry = true
 			})
 
 			It("adds --tls-verify=false to the registry push", func() {
 				c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 				Expect(c.Args[0]).To(ContainSubstring("--tls-verify=false"))
 			})
+		})
+	})
+
+	When("PullInsecureRegistry is true", func() {
+		BeforeEach(func() {
+			artifact.Spec.Image.PullInsecureRegistry = true
+		})
+
+		It("adds --tls-verify=false to buildah bud", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			script := c.Args[0]
+			budPart := script[:strings.Index(script, " && buildah push")]
+			Expect(budPart).To(ContainSubstring("--tls-verify=false"))
 		})
 	})
 

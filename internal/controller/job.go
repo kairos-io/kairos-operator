@@ -742,6 +742,9 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	if certDir != "" {
 		fmt.Fprintf(&bud, " --cert-dir %s", certDir)
 	}
+	if artifact.Spec.Image.PullInsecureRegistry {
+		bud.WriteString(" --tls-verify=false")
+	}
 	if arch != "" {
 		fmt.Fprintf(&bud, " --arch %s", arch)
 	}
@@ -775,7 +778,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		if certDir != "" {
 			fmt.Fprintf(&pushReg, " --cert-dir %s", certDir)
 		}
-		if artifact.Spec.Image.BuildImage.InsecureRegistry {
+		if artifact.Spec.Image.PushInsecureRegistry {
 			pushReg.WriteString(" --tls-verify=false")
 		}
 		fmt.Fprintf(&pushReg, " %s docker://%s", localTag, destination)

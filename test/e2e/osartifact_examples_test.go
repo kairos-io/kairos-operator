@@ -241,8 +241,8 @@ spec:
       registry: %s
       repository: %s
       tag: latest
-      insecureRegistry: true
     push: true
+    pushInsecureRegistry: true
     imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecSecretName, registryHost, repo, credsSecretName)
@@ -267,8 +267,8 @@ spec:
       registry: %s
       repository: %s
       tag: latest
-      insecureRegistry: true
     push: true
+    pushInsecureRegistry: true
 `, suffix, ociSpecSecretName, registryHost, repo)
 	return artifactFromYAML(y)
 }
@@ -623,6 +623,7 @@ spec:
 			}()
 
 			// Build from the private base; no push. imageCredentialsSecretRef supplies credentials for Buildah to pull the base.
+			// insecureRegistry: true because the in-cluster test registry is HTTP-only (buildah bud needs --tls-verify=false to pull FROM it).
 			buildArtifact := artifactFromYAML(fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
@@ -636,6 +637,7 @@ spec:
         name: %s
         key: ociSpec
     push: false
+    pullInsecureRegistry: true
     imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecForPull.Name, registryCredsSecret.Name))

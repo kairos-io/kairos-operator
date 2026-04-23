@@ -43,9 +43,6 @@ type BuildImage struct {
 
 	// Tag is the image tag (e.g. v3.6.0).
 	Tag string `json:"tag"`
-
-	// InsecureRegistry disables TLS verification when pushing to the registry. Use for HTTP-only or self-signed-cert registries.
-	InsecureRegistry bool `json:"insecureRegistry,omitempty"`
 }
 
 // ImageRef returns the full image reference (registry/repository:tag).
@@ -99,6 +96,14 @@ type ImageSpec struct {
 	// CACertificatesVolume names a volume (from spec.volumes) to mount for the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
+
+	// PullInsecureRegistry disables TLS verification when pulling the base image during the OCI build step (buildah bud --tls-verify=false). Use for HTTP-only or self-signed-cert base image registries. Only used when building (Ref empty).
+	// +optional
+	PullInsecureRegistry bool `json:"pullInsecureRegistry,omitempty"`
+
+	// PushInsecureRegistry disables TLS verification when pushing the built image to the registry (buildah push --tls-verify=false). Use for HTTP-only or self-signed-cert destination registries. Only used when Push is true.
+	// +optional
+	PushInsecureRegistry bool `json:"pushInsecureRegistry,omitempty"`
 }
 
 // BuildOptions holds options for building with the default OCI build definition (Stage 1).
