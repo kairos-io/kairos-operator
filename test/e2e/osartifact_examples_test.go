@@ -86,9 +86,11 @@ func createArtifactNoExporters(tc *TestClients, artifact *buildv1alpha2.OSArtifa
 }
 
 // runArtifactTestBuildOnly waits for build completion then cleans up (no export phase). Use for OCI-only push tests.
+// DeferCleanup ensures cleanup runs even when WaitForBuildCompletion fails the spec, preventing artifact leaks
+// that would cause subsequent tests' cleanup to find unexpected artifacts.
 func runArtifactTestBuildOnly(tc *TestClients, artifactName string, artifactLabelSelector labels.Selector) {
+	DeferCleanup(func() { tc.Cleanup(artifactName, artifactLabelSelector) })
 	tc.WaitForBuildCompletion(artifactName, artifactLabelSelector)
-	tc.Cleanup(artifactName, artifactLabelSelector)
 }
 
 func verifyISOExists() string {
@@ -221,6 +223,7 @@ func createRegistryCredentialsSecret(registryHost, user, password string) *corev
 }
 
 // ociPushArtifactWithCredentials returns an OSArtifact (from YAML) that builds from ociSpec, pushes to registry with credentials.
+// insecureRegistry is set because the in-cluster test registry is HTTP-only.
 func ociPushArtifactWithCredentials(suffix, ociSpecSecretName, registryHost, repo, credsSecretName string) *buildv1alpha2.OSArtifact {
 	y := fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
@@ -238,6 +241,7 @@ spec:
       registry: %s
       repository: %s
       tag: latest
+      insecureRegistry: true
     push: true
     imageCredentialsSecretRef:
       name: %s

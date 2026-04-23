@@ -53,9 +53,9 @@ func createArtifactWithExporter(tc *TestClients, namePrefix string, spec buildv1
 
 // runArtifactTest is a helper that runs the standard artifact test pattern
 func runArtifactTest(tc *TestClients, artifactName string, artifactLabelSelector labels.Selector) {
+	DeferCleanup(func() { tc.Cleanup(artifactName, artifactLabelSelector) })
 	tc.WaitForBuildCompletion(artifactName, artifactLabelSelector)
 	tc.WaitForExportCompletion(artifactLabelSelector)
-	tc.Cleanup(artifactName, artifactLabelSelector)
 }
 
 var _ = Describe("OSArtifact Format Tests", func() {

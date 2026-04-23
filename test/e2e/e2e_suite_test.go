@@ -355,11 +355,10 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 	err := tc.Artifacts.Delete(context.TODO(), artifactName, metav1.DeleteOptions{})
 	Expect(err).ToNot(HaveOccurred())
 
-	Eventually(func(g Gomega) int {
-		res, err := tc.Artifacts.List(context.TODO(), metav1.ListOptions{})
-		g.Expect(err).ToNot(HaveOccurred())
-		return len(res.Items)
-	}).WithTimeout(cleanupTimeout).Should(Equal(0))
+	Eventually(func(g Gomega) {
+		_, err := tc.Artifacts.Get(context.TODO(), artifactName, metav1.GetOptions{})
+		g.Expect(err).To(MatchError(ContainSubstring("not found")))
+	}).WithTimeout(cleanupTimeout).Should(Succeed())
 	Eventually(func(g Gomega) int {
 		res, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())
