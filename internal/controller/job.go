@@ -690,7 +690,6 @@ func ociBuildArgPairs(artifact *buildv1alpha2.OSArtifact) []string {
 // Runs rootless using vfs storage + chroot isolation (no privileged required; needs SETUID+SETGID capabilities).
 func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, buildahImage string) corev1.Container {
 	volMounts := []corev1.VolumeMount{
-		{Name: "rootfs", MountPath: "/rootfs"},
 		{Name: "ocispec", MountPath: "/workspace/ocispec"},
 		{Name: "artifacts", MountPath: "/artifacts"},
 	}
