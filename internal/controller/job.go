@@ -748,7 +748,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		fmt.Fprintf(&bud, " --arch %s", arch)
 	}
 	for _, pair := range ociBuildArgPairs(artifact) {
-		fmt.Fprintf(&bud, " --build-arg %s", pair)
+		fmt.Fprintf(&bud, " --build-arg '%s'", pair)
 	}
 	fmt.Fprintf(&bud, " -t %s /workspace", localTag)
 

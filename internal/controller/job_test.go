@@ -60,15 +60,15 @@ var _ = Describe("buildahBuildContainer", func() {
 		Expect(*c.SecurityContext.AllowPrivilegeEscalation).To(BeTrue())
 	})
 
-	It("always mounts rootfs, ocispec, and artifacts volumes", func() {
+	It("always mounts ocispec and artifacts volumes", func() {
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 		mountNames := volumeMountNames(c)
-		Expect(mountNames).To(ContainElements("rootfs", "ocispec", "artifacts"))
+		Expect(mountNames).To(ContainElements("ocispec", "artifacts"))
 	})
 
 	It("shell script runs buildah bud then buildah push to docker-archive", func() {
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-		Expect(c.Command).To(Equal([]string{"/bin/sh", "-c"}))
+		Expect(c.Command).To(Equal([]string{"/bin/bash", "-cxe"}))
 		Expect(c.Args).To(HaveLen(1))
 		script := c.Args[0]
 		Expect(script).To(ContainSubstring("buildah bud"))
@@ -110,10 +110,10 @@ var _ = Describe("buildahBuildContainer", func() {
 		It("adds --build-arg flags for each non-empty option", func() {
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 			script := c.Args[0]
-			Expect(script).To(ContainSubstring("--build-arg VERSION=v3.6.0"))
-			Expect(script).To(ContainSubstring("--build-arg BASE_IMAGE=ubuntu:22.04"))
-			Expect(script).To(ContainSubstring("--build-arg MODEL=generic"))
-			Expect(script).To(ContainSubstring("--build-arg KUBERNETES_DISTRO=k3s"))
+			Expect(script).To(ContainSubstring("--build-arg 'VERSION=v3.6.0'"))
+			Expect(script).To(ContainSubstring("--build-arg 'BASE_IMAGE=ubuntu:22.04'"))
+			Expect(script).To(ContainSubstring("--build-arg 'MODEL=generic'"))
+			Expect(script).To(ContainSubstring("--build-arg 'KUBERNETES_DISTRO=k3s'"))
 		})
 
 		It("omits --build-arg for empty options", func() {
@@ -128,7 +128,7 @@ var _ = Describe("buildahBuildContainer", func() {
 				Version: "v3.6.0", BaseImage: "ubuntu:22.04", FIPS: true,
 			}
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-			Expect(c.Args[0]).To(ContainSubstring("--build-arg FIPS=fips"))
+			Expect(c.Args[0]).To(ContainSubstring("--build-arg 'FIPS=fips'"))
 		})
 	})
 
@@ -138,7 +138,7 @@ var _ = Describe("buildahBuildContainer", func() {
 				Version: "v3.6.0", BaseImage: "ubuntu:22.04", TrustedBoot: true,
 			}
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-			Expect(c.Args[0]).To(ContainSubstring("--build-arg TRUSTED_BOOT=true"))
+			Expect(c.Args[0]).To(ContainSubstring("--build-arg 'TRUSTED_BOOT=true'"))
 		})
 	})
 
@@ -156,10 +156,10 @@ var _ = Describe("buildahBuildContainer", func() {
 	})
 
 	When("buildContextVolume is not set", func() {
-		It("has exactly rootfs, ocispec, and artifacts volume mounts (no extra workspace mount)", func() {
+		It("has exactly ocispec and artifacts volume mounts (no extra workspace mount)", func() {
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 			names := volumeMountNames(c)
-			Expect(names).To(ConsistOf("rootfs", "ocispec", "artifacts"))
+			Expect(names).To(ConsistOf("ocispec", "artifacts"))
 		})
 	})
 
