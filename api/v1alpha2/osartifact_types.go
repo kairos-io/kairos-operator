@@ -93,7 +93,7 @@ type ImageSpec struct {
 	// +optional
 	BuildEnv []corev1.EnvVar `json:"buildEnv,omitempty"`
 
-	// CACertificatesVolume names a volume (from spec.volumes) to mount for the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
+	// CACertificatesVolume names a volume (from spec.volumes) to mount at /etc/ssl/buildah/certs on the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 
