@@ -796,6 +796,8 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 			Capabilities: &corev1.Capabilities{
 				Add: []corev1.Capability{"SETUID", "SETGID"},
 			},
+			// Buildah rootless relies on newuidmap/newgidmap to set up user namespace UID/GID mappings.
+			// Those are setuid binaries, so AllowPrivilegeEscalation must be true or the kernel ignores the setuid bit.
 			AllowPrivilegeEscalation: ptr(true),
 		},
 	}
