@@ -245,9 +245,39 @@ var _ = Describe("buildahBuildContainer", func() {
 				artifact.Spec.Image.PushInsecureRegistry = true
 			})
 
-			It("adds --tls-verify=false to the registry push", func() {
+			It("adds --tls-verify=false only to the registry push, not the tarball push", func() {
 				c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-				Expect(c.Args[0]).To(ContainSubstring("--tls-verify=false"))
+				script := c.Args[0]
+				lastAnd := strings.LastIndex(script, " && ")
+				registryPushPart := script[lastAnd:]
+				tarballPushPart := script[:lastAnd]
+				Expect(registryPushPart).To(ContainSubstring("docker://"))
+				Expect(tarballPushPart).To(ContainSubstring("docker-archive:"))
+				Expect(registryPushPart).To(ContainSubstring("--tls-verify=false"))
+				Expect(tarballPushPart).ToNot(ContainSubstring("--tls-verify=false"))
+			})
+		})
+
+		When("both PullInsecureRegistry and PushInsecureRegistry are true", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image.PullInsecureRegistry = true
+				artifact.Spec.Image.PushInsecureRegistry = true
+			})
+
+			It("adds --tls-verify=false to bud and registry push but not tarball push", func() {
+				c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+				script := c.Args[0]
+				firstAnd := strings.Index(script, " && ")
+				lastAnd := strings.LastIndex(script, " && ")
+				budPart := script[:firstAnd]
+				tarballPushPart := script[firstAnd:lastAnd]
+				registryPushPart := script[lastAnd:]
+				Expect(budPart).To(ContainSubstring("buildah bud"))
+				Expect(tarballPushPart).To(ContainSubstring("docker-archive:"))
+				Expect(registryPushPart).To(ContainSubstring("docker://"))
+				Expect(budPart).To(ContainSubstring("--tls-verify=false"))
+				Expect(tarballPushPart).ToNot(ContainSubstring("--tls-verify=false"))
+				Expect(registryPushPart).To(ContainSubstring("--tls-verify=false"))
 			})
 		})
 	})
