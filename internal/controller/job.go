@@ -788,7 +788,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "buildah-build",
 		Image:           buildahImage,
-		Command:         []string{"/bin/sh", "-c"},
+		Command:         []string{"/bin/bash", "-cxe"},
 		Args:            []string{script},
 		Env:             env,
 		VolumeMounts:    volMounts,
