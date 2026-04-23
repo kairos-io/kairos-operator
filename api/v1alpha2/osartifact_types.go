@@ -43,6 +43,9 @@ type BuildImage struct {
 
 	// Tag is the image tag (e.g. v3.6.0).
 	Tag string `json:"tag"`
+
+	// InsecureRegistry disables TLS verification when pushing to the registry. Use for HTTP-only or self-signed-cert registries.
+	InsecureRegistry bool `json:"insecureRegistry,omitempty"`
 }
 
 // ImageRef returns the full image reference (registry/repository:tag).

@@ -234,6 +234,22 @@ var _ = Describe("buildahBuildContainer", func() {
 			Expect(strings.Count(script, "buildah push")).To(Equal(2),
 				"should push to both docker-archive and the registry")
 		})
+
+		It("does not add --tls-verify=false by default", func() {
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(c.Args[0]).ToNot(ContainSubstring("--tls-verify=false"))
+		})
+
+		When("InsecureRegistry is true", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image.BuildImage.InsecureRegistry = true
+			})
+
+			It("adds --tls-verify=false to the registry push", func() {
+				c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+				Expect(c.Args[0]).To(ContainSubstring("--tls-verify=false"))
+			})
+		})
 	})
 
 	When("buildEnv is set", func() {

@@ -263,6 +263,7 @@ spec:
       registry: %s
       repository: %s
       tag: latest
+      insecureRegistry: true
     push: true
 `, suffix, ociSpecSecretName, registryHost, repo)
 	return artifactFromYAML(y)

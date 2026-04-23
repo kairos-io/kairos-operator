@@ -4100,6 +4100,8 @@ spec:
                     type: array
                   buildImage:
                     properties:
+                      insecureRegistry:
+                        type: boolean
                       registry:
                         type: string
                       repository:
