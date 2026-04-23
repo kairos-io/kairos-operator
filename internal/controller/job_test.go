@@ -72,7 +72,7 @@ var _ = Describe("buildahBuildContainer", func() {
 		Expect(c.Args).To(HaveLen(1))
 		script := c.Args[0]
 		Expect(script).To(ContainSubstring("buildah bud"))
-		Expect(script).To(ContainSubstring("-t localhost/my-artifact:latest"))
+		Expect(script).To(ContainSubstring("-t 'localhost/my-artifact:latest'"))
 		Expect(script).To(ContainSubstring("buildah push"))
 		Expect(script).To(ContainSubstring("docker-archive:/artifacts/my-artifact.tar"))
 		Expect(strings.Index(script, "buildah bud")).To(BeNumerically("<", strings.Index(script, "buildah push")))
@@ -93,7 +93,7 @@ var _ = Describe("buildahBuildContainer", func() {
 	When("arch is set", func() {
 		It("adds --arch to buildah bud", func() {
 			c := buildahBuildContainer(artifact, "", "amd64", testBuildahImage)
-			Expect(c.Args[0]).To(ContainSubstring("--arch amd64"))
+			Expect(c.Args[0]).To(ContainSubstring("--arch 'amd64'"))
 		})
 	})
 
@@ -229,7 +229,7 @@ var _ = Describe("buildahBuildContainer", func() {
 		It("appends a third buildah push to the registry destination", func() {
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 			script := c.Args[0]
-			Expect(script).To(ContainSubstring("docker://registry.example.com/my-ns/my-image:v1.0"))
+			Expect(script).To(ContainSubstring("'docker://registry.example.com/my-ns/my-image:v1.0'"))
 			// Three buildah commands total.
 			Expect(strings.Count(script, "buildah push")).To(Equal(2),
 				"should push to both docker-archive and the registry")

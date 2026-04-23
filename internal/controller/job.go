@@ -745,12 +745,12 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		bud.WriteString(" --tls-verify=false")
 	}
 	if arch != "" {
-		fmt.Fprintf(&bud, " --arch %s", arch)
+		fmt.Fprintf(&bud, " --arch '%s'", arch)
 	}
 	for _, pair := range ociBuildArgPairs(artifact) {
 		fmt.Fprintf(&bud, " --build-arg '%s'", pair)
 	}
-	fmt.Fprintf(&bud, " -t %s /workspace", localTag)
+	fmt.Fprintf(&bud, " -t '%s' /workspace", localTag)
 
 	// Build the push-to-tarball command.
 	var pushTar strings.Builder
@@ -762,7 +762,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		fmt.Fprintf(&pushTar, " --cert-dir %s", certDir)
 	}
 	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
-	fmt.Fprintf(&pushTar, " %s docker-archive:%s", localTag, tarPath)
+	fmt.Fprintf(&pushTar, " '%s' 'docker-archive:%s'", localTag, tarPath)
 
 	script := bud.String() + " && " + pushTar.String()
 
@@ -780,7 +780,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		if artifact.Spec.Image.PushInsecureRegistry {
 			pushReg.WriteString(" --tls-verify=false")
 		}
-		fmt.Fprintf(&pushReg, " %s docker://%s", localTag, destination)
+		fmt.Fprintf(&pushReg, " '%s' 'docker://%s'", localTag, destination)
 		script += " && " + pushReg.String()
 	}
 

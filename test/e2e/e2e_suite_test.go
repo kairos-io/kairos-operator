@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -357,7 +358,7 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 
 	Eventually(func(g Gomega) {
 		_, err := tc.Artifacts.Get(context.TODO(), artifactName, metav1.GetOptions{})
-		g.Expect(err).To(MatchError(ContainSubstring("not found")))
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	}).WithTimeout(cleanupTimeout).Should(Succeed())
 	Eventually(func(g Gomega) int {
 		res, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
