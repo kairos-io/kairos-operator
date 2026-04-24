@@ -267,12 +267,12 @@ var _ = Describe("buildahBuildContainer", func() {
 			It("adds --tls-verify=false to bud and registry push but not tarball push", func() {
 				c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 				script := c.Args[0]
-				firstAnd := strings.Index(script, " && ")
-				lastAnd := strings.LastIndex(script, " && ")
-				budPart := script[:firstAnd]
-				tarballPushPart := script[firstAnd:lastAnd]
-				registryPushPart := script[lastAnd:]
-				Expect(budPart).To(ContainSubstring("buildah bud"))
+				budStart := strings.Index(script, "buildah bud")
+				tarStart := strings.Index(script, "buildah push")
+				regStart := strings.LastIndex(script, "buildah push")
+				budPart := script[budStart:tarStart]
+				tarballPushPart := script[tarStart:regStart]
+				registryPushPart := script[regStart:]
 				Expect(tarballPushPart).To(ContainSubstring("docker-archive:"))
 				Expect(registryPushPart).To(ContainSubstring("docker://"))
 				Expect(budPart).To(ContainSubstring("--tls-verify=false"))

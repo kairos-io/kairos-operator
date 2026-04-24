@@ -507,12 +507,12 @@ var _ = Describe("OSArtifactReconciler", func() {
 					buildah := findContainerInPod(pod, "buildah-build")
 					Expect(buildah).ToNot(BeNil())
 
-					// buildah-build always has rootfs, ocispec, and artifacts. No extra workspace mount.
+					// buildah-build always has ocispec and artifacts. No extra workspace mount.
 					mountNames := make([]string, 0, len(buildah.VolumeMounts))
 					for _, vm := range buildah.VolumeMounts {
 						mountNames = append(mountNames, vm.Name)
 					}
-					Expect(mountNames).To(ConsistOf("rootfs", "ocispec", "artifacts"))
+					Expect(mountNames).To(ConsistOf("ocispec", "artifacts"))
 				})
 			})
 		})
@@ -1043,7 +1043,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				buildah := findInitContainerByName(&pods.Items[0], "buildah-build")
 				Expect(buildah).ToNot(BeNil())
 				// Build args are embedded in the shell script (Args[0]) for Buildah.
-				Expect(buildah.Args[0]).To(ContainSubstring("--build-arg VERSION=v3.6.0"))
+				Expect(buildah.Args[0]).To(ContainSubstring("--build-arg 'VERSION=v3.6.0'"))
 			})
 		})
 	})

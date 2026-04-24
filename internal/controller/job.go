@@ -764,7 +764,8 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
 	fmt.Fprintf(&pushTar, " '%s' 'docker-archive:%s'", localTag, tarPath)
 
-	script := bud.String() + " && " + pushTar.String()
+	// /workspace may not be mounted (when no buildContextVolume is set); ensure it exists as an empty context directory.
+	script := "mkdir -p /workspace && " + bud.String() + " && " + pushTar.String()
 
 	// Optional push to registry.
 	if artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil {
