@@ -80,7 +80,7 @@ var _ = Describe("buildahBuildContainer", func() {
 
 	It("references the ocispec file path in bud command", func() {
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
-		Expect(c.Args[0]).To(ContainSubstring("-f /workspace/ocispec/" + OCISpecSecretKey))
+		Expect(c.Args[0]).To(ContainSubstring("-f /ocispec/" + OCISpecSecretKey))
 	})
 
 	It("does not push to registry when Push is false", func() {

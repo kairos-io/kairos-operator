@@ -470,7 +470,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					Expect(hasContextMount).To(BeTrue(), "buildah-build should have my-context mounted at /workspace")
 				})
 
-				It("preserves the ocispec mount at /workspace/ocispec", func() {
+				It("preserves the ocispec mount at /ocispec", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
@@ -482,11 +482,11 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 					var hasOCISpecMount bool
 					for _, vm := range buildah.VolumeMounts {
-						if vm.Name == "ocispec" && vm.MountPath == "/workspace/ocispec" {
+						if vm.Name == "ocispec" && vm.MountPath == "/ocispec" {
 							hasOCISpecMount = true
 						}
 					}
-					Expect(hasOCISpecMount).To(BeTrue(), "buildah-build should still have ocispec mounted at /workspace/ocispec")
+					Expect(hasOCISpecMount).To(BeTrue(), "buildah-build should still have ocispec mounted at /ocispec")
 				})
 			})
 

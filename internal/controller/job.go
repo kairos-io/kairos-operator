@@ -690,7 +690,7 @@ func ociBuildArgPairs(artifact *buildv1alpha2.OSArtifact) []string {
 // Runs rootless using vfs storage + chroot isolation (no privileged required; needs SETUID+SETGID capabilities).
 func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, buildahImage string) corev1.Container {
 	volMounts := []corev1.VolumeMount{
-		{Name: "ocispec", MountPath: "/workspace/ocispec", ReadOnly: true},
+		{Name: "ocispec", MountPath: "/ocispec", ReadOnly: true},
 		{Name: "artifacts", MountPath: "/artifacts"},
 	}
 	if buildContextVolume != "" {
@@ -734,7 +734,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	// Build the bud command.
 	var bud strings.Builder
 	bud.WriteString("buildah bud --layers=false")
-	fmt.Fprintf(&bud, " -f /workspace/ocispec/%s", OCISpecSecretKey)
+	fmt.Fprintf(&bud, " -f /ocispec/%s", OCISpecSecretKey)
 	if authfilePath != "" {
 		fmt.Fprintf(&bud, " --authfile %s", authfilePath)
 	}
