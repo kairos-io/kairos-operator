@@ -1043,7 +1043,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				buildah := findInitContainerByName(&pods.Items[0], "buildah-build")
 				Expect(buildah).ToNot(BeNil())
 				// Build args are embedded in the shell script (Args[0]) for Buildah.
-				Expect(buildah.Args[0]).To(ContainSubstring("--build-arg 'VERSION=v3.6.0'"))
+				Expect(buildah.Args[0]).To(ContainSubstring("--build-arg VERSION=v3.6.0"))
 			})
 		})
 	})
