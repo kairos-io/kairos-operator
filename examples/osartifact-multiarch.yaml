@@ -1,0 +1,46 @@
+# Two OSArtifact resources building the same Kairos image for amd64 and arm64 natively.
+#
+# Each build is pinned to a node of the matching architecture via nodeSelector so the
+# build tools run natively instead of under emulation.  Adjust the base image tags and
+# the nodeSelector labels to match your cluster.
+#
+# Apply both:
+#   kubectl apply -f examples/osartifact-multiarch.yaml
+#
+# Watch progress:
+#   kubectl get osartifact -w
+#
+# The two builds are independent — they run in parallel when nodes of both
+# architectures are available.
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-artifact-amd64
+  namespace: default
+spec:
+  image:
+    ref: quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0
+  artifacts:
+    arch: amd64
+    iso: true
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  podLabels:
+    build-arch: amd64
+---
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: my-artifact-arm64
+  namespace: default
+spec:
+  image:
+    ref: quay.io/kairos/opensuse:leap-15.6-core-arm64-generic-v3.6.0
+  artifacts:
+    arch: arm64
+    iso: true
+  nodeSelector:
+    kubernetes.io/arch: arm64
+  podLabels:
+    build-arch: arm64
