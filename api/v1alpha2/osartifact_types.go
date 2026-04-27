@@ -228,6 +228,14 @@ type OSArtifactSpec struct {
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
+	// PodLabels are additional labels to set on the builder Pod metadata.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// PodAnnotations are additional annotations to set on the builder Pod metadata.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
 	// +optional

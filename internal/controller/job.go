@@ -290,6 +290,8 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: artifact.Name + "-",
 			Namespace:    artifact.Namespace,
+			Labels:       artifact.Spec.PodLabels,
+			Annotations:  artifact.Spec.PodAnnotations,
 		},
 		Spec: podSpec,
 	}

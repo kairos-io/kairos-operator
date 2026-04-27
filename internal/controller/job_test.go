@@ -178,6 +178,23 @@ var _ = Describe("newBuilderPod scheduling", func() {
 			Expect(pod.Spec.Affinity).To(BeNil())
 		})
 	})
+
+	When("pod labels are set", func() {
+		It("propagates labels to the pod metadata", func() {
+			artifact.Spec.PodLabels = map[string]string{"team": "platform", "env": "prod"}
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Labels).To(HaveKeyWithValue("team", "platform"))
+			Expect(pod.Labels).To(HaveKeyWithValue("env", "prod"))
+		})
+	})
+
+	When("pod annotations are set", func() {
+		It("propagates annotations to the pod metadata", func() {
+			artifact.Spec.PodAnnotations = map[string]string{"prometheus.io/scrape": "false"}
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "false"))
+		})
+	})
 })
 
 var _ = Describe("volumeForExportArtifacts", func() {
