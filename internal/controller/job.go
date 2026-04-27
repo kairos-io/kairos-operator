@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"al.essio.dev/pkg/shellescape"
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -732,58 +733,56 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	tarPath := fmt.Sprintf("/artifacts/%s.tar", artifact.Name)
 
 	// Build the bud command.
-	var bud strings.Builder
-	bud.WriteString("buildah bud --layers=false")
-	fmt.Fprintf(&bud, " -f /ocispec/%s", OCISpecSecretKey)
+	budArgs := []string{"buildah", "bud", "--layers=false", "-f", "/ocispec/" + OCISpecSecretKey}
 	if authfilePath != "" {
-		fmt.Fprintf(&bud, " --authfile %s", authfilePath)
+		budArgs = append(budArgs, "--authfile", authfilePath)
 	}
 	if certDir != "" {
-		fmt.Fprintf(&bud, " --cert-dir %s", certDir)
+		budArgs = append(budArgs, "--cert-dir", certDir)
 	}
 	if artifact.Spec.Image.PullInsecureRegistry {
-		bud.WriteString(" --tls-verify=false")
+		budArgs = append(budArgs, "--tls-verify=false")
 	}
 	if arch != "" {
-		fmt.Fprintf(&bud, " --arch '%s'", arch)
+		budArgs = append(budArgs, "--arch", arch)
 	}
 	for _, pair := range ociBuildArgPairs(artifact) {
-		fmt.Fprintf(&bud, " --build-arg '%s'", pair)
+		budArgs = append(budArgs, "--build-arg", pair)
 	}
-	fmt.Fprintf(&bud, " -t '%s' /workspace", localTag)
+	budArgs = append(budArgs, "-t", localTag, "/workspace")
 
 	// Build the push-to-tarball command.
-	var pushTar strings.Builder
-	pushTar.WriteString("buildah push")
+	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
+	pushTarArgs := []string{"buildah", "push"}
 	if authfilePath != "" {
-		fmt.Fprintf(&pushTar, " --authfile %s", authfilePath)
+		pushTarArgs = append(pushTarArgs, "--authfile", authfilePath)
 	}
 	if certDir != "" {
-		fmt.Fprintf(&pushTar, " --cert-dir %s", certDir)
+		pushTarArgs = append(pushTarArgs, "--cert-dir", certDir)
 	}
-	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
-	fmt.Fprintf(&pushTar, " '%s' 'docker-archive:%s'", localTag, tarPath)
+	pushTarArgs = append(pushTarArgs, localTag, "docker-archive:"+tarPath)
 
 	// /workspace may not be mounted (when no buildContextVolume is set); ensure it exists as an empty context directory.
-	script := "mkdir -p /workspace && " + bud.String() + " && " + pushTar.String()
+	cmds := []string{"mkdir -p /workspace", shellescape.QuoteCommand(budArgs), shellescape.QuoteCommand(pushTarArgs)}
 
 	// Optional push to registry.
 	if artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil {
 		destination := artifact.Spec.Image.BuildImage.ImageRef()
-		var pushReg strings.Builder
-		pushReg.WriteString("buildah push")
+		pushRegArgs := []string{"buildah", "push"}
 		if authfilePath != "" {
-			fmt.Fprintf(&pushReg, " --authfile %s", authfilePath)
+			pushRegArgs = append(pushRegArgs, "--authfile", authfilePath)
 		}
 		if certDir != "" {
-			fmt.Fprintf(&pushReg, " --cert-dir %s", certDir)
+			pushRegArgs = append(pushRegArgs, "--cert-dir", certDir)
 		}
 		if artifact.Spec.Image.PushInsecureRegistry {
-			pushReg.WriteString(" --tls-verify=false")
+			pushRegArgs = append(pushRegArgs, "--tls-verify=false")
 		}
-		fmt.Fprintf(&pushReg, " '%s' 'docker://%s'", localTag, destination)
-		script += " && " + pushReg.String()
+		pushRegArgs = append(pushRegArgs, localTag, "docker://"+destination)
+		cmds = append(cmds, shellescape.QuoteCommand(pushRegArgs))
 	}
+
+	script := strings.Join(cmds, " && ")
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
