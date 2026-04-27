@@ -111,6 +111,75 @@ var _ = Describe("buildUKICommand", func() {
 	})
 })
 
+var _ = Describe("newBuilderPod scheduling", func() {
+	var r *OSArtifactReconciler
+	var artifact *buildv1alpha2.OSArtifact
+	var pvc *corev1.PersistentVolumeClaim
+
+	BeforeEach(func() {
+		r = &OSArtifactReconciler{ToolImage: "tool-image"}
+		artifact = &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image:     buildv1alpha2.ImageSpec{Ref: "myimage:latest"},
+				Artifacts: &buildv1alpha2.ArtifactSpec{ISO: true},
+			},
+		}
+		pvc = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pvc"},
+		}
+	})
+
+	When("nodeSelector is set", func() {
+		It("propagates nodeSelector to the pod spec", func() {
+			artifact.Spec.NodeSelector = map[string]string{"kubernetes.io/arch": "arm64"}
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.NodeSelector).To(Equal(map[string]string{"kubernetes.io/arch": "arm64"}))
+		})
+	})
+
+	When("tolerations are set", func() {
+		It("propagates tolerations to the pod spec", func() {
+			artifact.Spec.Tolerations = []corev1.Toleration{
+				{Key: "arm", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
+			}
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.Tolerations).To(ContainElement(
+				corev1.Toleration{Key: "arm", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
+			))
+		})
+	})
+
+	When("affinity is set", func() {
+		It("propagates affinity to the pod spec", func() {
+			artifact.Spec.Affinity = &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+							MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key:      "kubernetes.io/arch",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"arm64"},
+							}},
+						}},
+					},
+				},
+			}
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.Affinity).To(Equal(artifact.Spec.Affinity))
+		})
+	})
+
+	When("no scheduling fields are set", func() {
+		It("leaves nodeSelector, tolerations, and affinity unset", func() {
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.NodeSelector).To(BeNil())
+			Expect(pod.Spec.Tolerations).To(BeNil())
+			Expect(pod.Spec.Affinity).To(BeNil())
+		})
+	})
+})
+
 var _ = Describe("volumeForExportArtifacts", func() {
 	When("artifacts.volume is set and no PVC exists", func() {
 		It("returns volume named artifacts with source from spec.volumes", func() {

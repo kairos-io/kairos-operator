@@ -281,6 +281,9 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		ImagePullSecrets:             builderImagePullSecrets(artifact),
 		InitContainers:               inits,
 		Containers:                   mains,
+		NodeSelector:                 artifact.Spec.NodeSelector,
+		Tolerations:                  artifact.Spec.Tolerations,
+		Affinity:                     artifact.Spec.Affinity,
 	}
 
 	return &corev1.Pod{
