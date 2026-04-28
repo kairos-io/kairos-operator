@@ -224,6 +224,26 @@ type OSArtifactSpec struct {
 	Exporters        []batchv1.JobSpec                 `json:"exporters,omitempty"`
 	Volume           *corev1.PersistentVolumeClaimSpec `json:"volume,omitempty"`
 
+	// NodeSelector constrains the builder Pod to nodes matching all the specified labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allow the builder Pod to be scheduled onto nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity constrains the builder Pod using node/pod affinity rules.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// PodLabels are additional labels to set on the builder Pod metadata.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// PodAnnotations are additional annotations to set on the builder Pod metadata.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
 	// +optional
