@@ -126,11 +126,11 @@ var _ = Describe("NodeLabelerDaemonSet Controller", func() {
 
 		By("simulating the first operator startup with v0.0.1")
 		Expect(os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.1")).To(Succeed())
-		Expect(r.ensureDaemonSetOnStartup(ctx, namespace)).To(Succeed())
+		Expect(r.ensureDaemonSetOnStartup(ctx, k8sClient, namespace)).To(Succeed())
 
 		By("simulating an operator upgrade: restart with v0.0.2")
 		Expect(os.Setenv("NODE_LABELER_IMAGE", "quay.io/kairos/operator-node-labeler:v0.0.2")).To(Succeed())
-		Expect(r.ensureDaemonSetOnStartup(ctx, namespace)).To(Succeed())
+		Expect(r.ensureDaemonSetOnStartup(ctx, k8sClient, namespace)).To(Succeed())
 
 		By("verifying the DaemonSet now uses the new image")
 		ds := &appsv1.DaemonSet{}

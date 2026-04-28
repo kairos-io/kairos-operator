@@ -86,9 +86,11 @@ func createArtifactNoExporters(tc *TestClients, artifact *buildv1alpha2.OSArtifa
 }
 
 // runArtifactTestBuildOnly waits for build completion then cleans up (no export phase). Use for OCI-only push tests.
+// DeferCleanup ensures cleanup runs even when WaitForBuildCompletion fails the spec, preventing artifact leaks
+// that would cause subsequent tests' cleanup to find unexpected artifacts.
 func runArtifactTestBuildOnly(tc *TestClients, artifactName string, artifactLabelSelector labels.Selector) {
+	DeferCleanup(func() { tc.Cleanup(artifactName, artifactLabelSelector) })
 	tc.WaitForBuildCompletion(artifactName, artifactLabelSelector)
-	tc.Cleanup(artifactName, artifactLabelSelector)
 }
 
 func verifyISOExists() string {
@@ -221,6 +223,7 @@ func createRegistryCredentialsSecret(registryHost, user, password string) *corev
 }
 
 // ociPushArtifactWithCredentials returns an OSArtifact (from YAML) that builds from ociSpec, pushes to registry with credentials.
+// insecureRegistry is set because the in-cluster test registry is HTTP-only.
 func ociPushArtifactWithCredentials(suffix, ociSpecSecretName, registryHost, repo, credsSecretName string) *buildv1alpha2.OSArtifact {
 	y := fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
@@ -239,6 +242,7 @@ spec:
       repository: %s
       tag: latest
     push: true
+    pushInsecureRegistry: true
     imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecSecretName, registryHost, repo, credsSecretName)
@@ -264,6 +268,7 @@ spec:
       repository: %s
       tag: latest
     push: true
+    pushInsecureRegistry: true
 `, suffix, ociSpecSecretName, registryHost, repo)
 	return artifactFromYAML(y)
 }
@@ -525,7 +530,7 @@ spec:
 
 	Describe("OCI-only build (no Stage 2)", func() {
 		It("builds OCI image only (no ISO/artifacts) and produces packed tarball in /artifacts", func() {
-			// No spec.artifacts: OCI-only build; Kaniko always writes the image tarball to /artifacts/<name>.tar for exporters.
+			// No spec.artifacts: OCI-only build; Buildah always writes the image tarball to /artifacts/<name>.tar for exporters.
 			y := fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
@@ -588,17 +593,17 @@ spec:
 			verifyPullSucceedsWithoutCredentials(imageRef, "etc/e2e-push-noauth-marker.txt", "e2e-push-noauth-marker")
 		})
 
-		It("Kaniko pulls private base image using imageCredentialsSecretRef", func() {
-			// Prove that credentials mounted in the Kaniko container are used for pulling the base image.
+		It("OCI build container pulls private base image using imageCredentialsSecretRef", func() {
+			// Prove that credentials mounted in the OCI build container (buildah-build) are used for pulling the base image.
 			// 1) Push a small image to the auth registry (private base).
 			// 2) Build an OSArtifact whose Dockerfile is FROM that private image, with imageCredentialsSecretRef.
-			//    If the build completes, Kaniko successfully pulled the base using the mounted credentials.
+			//    If the build completes, Buildah successfully pulled the base using the mounted credentials.
 			suffix := uniqueTestSuffix()
-			baseRepo := "e2e/kaniko-pull-base-" + suffix
-			baseMarkerPath := "/etc/kaniko-pull-base-marker.txt"
-			baseMarkerContent := "kaniko-pull-base"
+			baseRepo := "e2e/buildah-pull-base-" + suffix
+			baseMarkerPath := "/etc/buildah-pull-base-marker.txt"
+			baseMarkerContent := "buildah-pull-base"
 
-			ociSpecSecretForPush := createOCISpecSecret("kaniko-pull-base-ocispec-", HadronPreKairosified, baseMarkerPath, baseMarkerContent)
+			ociSpecSecretForPush := createOCISpecSecret("buildah-pull-base-ocispec-", HadronPreKairosified, baseMarkerPath, baseMarkerContent)
 			defer func() {
 				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecSecretForPush.Name, metav1.DeleteOptions{})
 			}()
@@ -608,21 +613,22 @@ spec:
 				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), registryCredsSecret.Name, metav1.DeleteOptions{})
 			}()
 
-			pushArtifact := ociPushArtifactWithCredentials("kaniko-pull-base-"+suffix, ociSpecSecretForPush.Name, RegistryHost, baseRepo, registryCredsSecret.Name)
-			runBuildAndPushOnly(tc, pushArtifact, "kaniko-pull-base-push-"+suffix+"-")
+			pushArtifact := ociPushArtifactWithCredentials("buildah-pull-base-"+suffix, ociSpecSecretForPush.Name, RegistryHost, baseRepo, registryCredsSecret.Name)
+			runBuildAndPushOnly(tc, pushArtifact, "buildah-pull-base-push-"+suffix+"-")
 
 			privateBaseRef := RegistryHost + "/" + baseRepo + ":latest"
-			ociSpecForPull := createOCISpecSecret("kaniko-pull-build-ocispec-", privateBaseRef, "/etc/kaniko-pull-ok.txt", "kaniko-pull-ok")
+			ociSpecForPull := createOCISpecSecret("buildah-pull-build-ocispec-", privateBaseRef, "/etc/buildah-pull-ok.txt", "buildah-pull-ok")
 			defer func() {
 				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecForPull.Name, metav1.DeleteOptions{})
 			}()
 
-			// Build from the private base; no push. imageCredentialsSecretRef supplies credentials for Kaniko to pull the base.
+			// Build from the private base; no push. imageCredentialsSecretRef supplies credentials for Buildah to pull the base.
+			// insecureRegistry: true because the in-cluster test registry is HTTP-only (buildah bud needs --tls-verify=false to pull FROM it).
 			buildArtifact := artifactFromYAML(fmt.Sprintf(`
 apiVersion: build.kairos.io/v1alpha2
 kind: OSArtifact
 metadata:
-  name: kaniko-pull-build-%s
+  name: buildah-pull-build-%s
   namespace: default
 spec:
   image:
@@ -631,10 +637,11 @@ spec:
         name: %s
         key: ociSpec
     push: false
+    pullInsecureRegistry: true
     imageCredentialsSecretRef:
       name: %s
 `, suffix, ociSpecForPull.Name, registryCredsSecret.Name))
-			runBuildAndPushOnly(tc, buildArtifact, "kaniko-pull-build-"+suffix+"-")
+			runBuildAndPushOnly(tc, buildArtifact, "buildah-pull-build-"+suffix+"-")
 		})
 	})
 
@@ -745,8 +752,8 @@ spec:
 		})
 	})
 
-	Describe("image.buildEnv (Kaniko build container)", func() {
-		It("sets HTTP_PROXY, HTTPS_PROXY and NO_PROXY on the kaniko-build container and build completes", func() {
+	Describe("image.buildEnv (OCI build container)", func() {
+		It("sets HTTP_PROXY, HTTPS_PROXY and NO_PROXY on the buildah-build container and build completes", func() {
 			ociSpecSecret := createOCISpecSecret("buildenv-ocispec-", HadronPreKairosified, "/etc/buildenv-marker.txt", "buildenv-marker")
 			defer func() {
 				_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecSecret.Name, metav1.DeleteOptions{})
@@ -779,7 +786,7 @@ spec:
 			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "buildenv-", verifyISOExists())
 			defer tc.Cleanup(artifactName, artifactLabelSelector)
 
-			By("waiting for builder pod and verifying kaniko-build has buildEnv")
+			By("waiting for builder pod and verifying buildah-build has buildEnv")
 			var listObj runtime.Object
 			Eventually(func(g Gomega) {
 				var err error
@@ -791,20 +798,20 @@ spec:
 
 			podList := listObj.(*unstructured.UnstructuredList)
 			initContainers, _, _ := unstructured.NestedSlice(podList.Items[0].Object, "spec", "initContainers")
-			var kanikoEnv []interface{}
+			var buildahEnv []interface{}
 			for _, c := range initContainers {
 				cont, _ := c.(map[string]interface{})
 				if cont == nil {
 					continue
 				}
-				if name, _, _ := unstructured.NestedString(cont, "name"); name == "kaniko-build" {
-					kanikoEnv, _, _ = unstructured.NestedSlice(cont, "env")
+				if name, _, _ := unstructured.NestedString(cont, "name"); name == "buildah-build" {
+					buildahEnv, _, _ = unstructured.NestedSlice(cont, "env")
 					break
 				}
 			}
-			Expect(kanikoEnv).ToNot(BeEmpty(), "kaniko-build container should have env")
+			Expect(buildahEnv).ToNot(BeEmpty(), "buildah-build container should have env")
 			envMap := make(map[string]string)
-			for _, e := range kanikoEnv {
+			for _, e := range buildahEnv {
 				ev, _ := e.(map[string]interface{})
 				if ev != nil {
 					if n, _, _ := unstructured.NestedString(ev, "name"); n != "" {

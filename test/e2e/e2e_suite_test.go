@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -232,7 +233,7 @@ func dumpJobLogs(namespace, jobName string) {
 // collectDebugLogs gathers logs and pod events from all pods and jobs matching the artifact label.
 // Builder pods carry the label directly; export job pods are reached via `kubectl logs job/`.
 // Logs are fetched per container (only for containers that have started) so we get init container
-// output (e.g. kaniko-build) even when the pod is stuck in PodInitializing and main containers
+// output (e.g. buildah-build) even when the pod is stuck in PodInitializing and main containers
 // have not run yet.
 func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) string {
 	var buf strings.Builder
@@ -246,7 +247,7 @@ func (tc *TestClients) collectDebugLogs(artifactLabelSelector labels.Selector) s
 	buf.Write(out)
 	buf.WriteString("\n")
 
-	// Line limit for builder pod logs; use more when debugging build failures (e.g. kaniko/kairos-init output).
+	// Line limit for builder pod logs; use more when debugging build failures (e.g. buildah/kairos-init output).
 	const builderPodLogTail = 500
 
 	podList, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
@@ -355,11 +356,10 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 	err := tc.Artifacts.Delete(context.TODO(), artifactName, metav1.DeleteOptions{})
 	Expect(err).ToNot(HaveOccurred())
 
-	Eventually(func(g Gomega) int {
-		res, err := tc.Artifacts.List(context.TODO(), metav1.ListOptions{})
-		g.Expect(err).ToNot(HaveOccurred())
-		return len(res.Items)
-	}).WithTimeout(cleanupTimeout).Should(Equal(0))
+	Eventually(func(g Gomega) {
+		_, err := tc.Artifacts.Get(context.TODO(), artifactName, metav1.GetOptions{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	}).WithTimeout(cleanupTimeout).Should(Succeed())
 	Eventually(func(g Gomega) int {
 		res, err := tc.Pods.List(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
 		g.Expect(err).ToNot(HaveOccurred())

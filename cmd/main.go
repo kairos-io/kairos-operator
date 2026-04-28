@@ -52,6 +52,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var toolImage string
+	var buildahImage string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -73,6 +74,9 @@ func main() {
 	flag.StringVar(&toolImage, "tool-image",
 		fmt.Sprintf("quay.io/kairos/auroraboot:%s", controller.CompatibleAurorabootVersion),
 		"Tool image for OSArtifact builder.")
+	flag.StringVar(&buildahImage, "buildah-image",
+		fmt.Sprintf("quay.io/buildah/stable:%s", controller.CompatibleBuildahVersion),
+		"Buildah image for OCI image builds.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -227,9 +231,10 @@ func main() {
 	}
 
 	if err = (&controller.OSArtifactReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		ToolImage: toolImage,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		ToolImage:    toolImage,
+		BuildahImage: buildahImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OSArtifact")
 		os.Exit(1)

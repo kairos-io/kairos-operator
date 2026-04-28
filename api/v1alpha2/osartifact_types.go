@@ -84,22 +84,30 @@ type ImageSpec struct {
 	// +optional
 	Push bool `json:"push,omitempty"`
 
-	// ImageCredentialsSecretRef references a Secret with registry auth for pull and push (e.g. .dockerconfigjson). Used when pulling image.ref, when building (Kaniko pulls base image), and when pushing the built image. When key is empty, the whole Secret is used.
+	// ImageCredentialsSecretRef references a Secret with registry auth for pull and push (e.g. .dockerconfigjson). Used when pulling image.ref, when building (the OCI build container pulls the base image), and when pushing the built image. When key is empty, the whole Secret is used.
 	// +optional
 	ImageCredentialsSecretRef *SecretKeySelector `json:"imageCredentialsSecretRef,omitempty"`
 
-	// BuildEnv are environment variables for the Kaniko build container. Use for proxy settings (e.g. HTTP_PROXY, HTTPS_PROXY, NO_PROXY) or any other build-time env.
+	// BuildEnv are environment variables for the OCI build container. Use for proxy settings (e.g. HTTP_PROXY, HTTPS_PROXY, NO_PROXY) or any other build-time env.
 	// Only used when building (Ref empty); ignored when using a pre-built image.
 	// +optional
 	BuildEnv []corev1.EnvVar `json:"buildEnv,omitempty"`
 
-	// CACertificatesVolume names a volume (from spec.volumes) to mount at /kaniko/ssl/certs on the Kaniko build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
+	// CACertificatesVolume names a volume (from spec.volumes) to mount at /etc/ssl/buildah/certs on the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
+
+	// PullInsecureRegistry disables TLS verification when pulling the base image during the OCI build step (buildah bud --tls-verify=false). Use for HTTP-only or self-signed-cert base image registries. Only used when building (Ref empty).
+	// +optional
+	PullInsecureRegistry bool `json:"pullInsecureRegistry,omitempty"`
+
+	// PushInsecureRegistry disables TLS verification when pushing the built image to the registry (buildah push --tls-verify=false). Use for HTTP-only or self-signed-cert destination registries. Only used when Push is true.
+	// +optional
+	PushInsecureRegistry bool `json:"pushInsecureRegistry,omitempty"`
 }
 
 // BuildOptions holds options for building with the default OCI build definition (Stage 1).
-// Maps to build definition ARGs and is passed to kaniko as --build-arg.
+// Maps to build definition ARGs and is passed as --build-arg to the OCI build step.
 type BuildOptions struct {
 	// Version is the Kairos version (e.g. v3.6.0). Required when using buildOptions.
 	Version string `json:"version"`
@@ -137,7 +145,7 @@ type OCISpec struct {
 	// +optional
 	TemplateValues map[string]string `json:"templateValues,omitempty"`
 
-	// BuildContextVolume names a volume (from spec.volumes) to mount as the OCI build context at /workspace (kaniko).
+	// BuildContextVolume names a volume (from spec.volumes) to mount as the OCI build context at /workspace for the OCI build step.
 	// +optional
 	BuildContextVolume string `json:"buildContextVolume,omitempty"`
 }

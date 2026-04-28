@@ -4168,7 +4168,11 @@ spec:
                         - name
                         type: object
                     type: object
+                  pullInsecureRegistry:
+                    type: boolean
                   push:
+                    type: boolean
+                  pushInsecureRegistry:
                     type: boolean
                   ref:
                     type: string

@@ -25,9 +25,13 @@ import (
 )
 
 const (
-	testImageName       = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
-	ukiKeysVolumeName   = "uki-keys"  // volume name used in UKI tests
-	artifactsVolumeName = "artifacts" // internal builder/exporter volume name (matches controller)
+	testImageName         = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
+	ukiKeysVolumeName     = "uki-keys"  // volume name used in UKI tests
+	artifactsVolumeName   = "artifacts" // internal builder/exporter volume name (matches controller)
+	buildahCertsMountPath = "/etc/ssl/buildah/certs"
+	dockerCredsMountPath  = "/root/.docker"
+	buildContextMountPath = "/workspace"
+	caCertsVolumeName     = "my-ca-certs"
 )
 
 var _ = Describe("OSArtifactReconciler", func() {
@@ -63,7 +67,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 		return nil
 	}
 
-	// findContainerInPod finds a container by name in init or main containers (e.g. kaniko-build can be either when OCI-only).
+	// findContainerInPod finds a container by name in init or main containers (e.g. buildah-build can be either when OCI-only).
 	findContainerInPod := func(pod *corev1.Pod, name string) *corev1.Container {
 		if c := findInitContainerByName(pod, name); c != nil {
 			return c
@@ -143,7 +147,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 		utilruntime.Must(buildv1alpha2.AddToScheme(scheme))
 
 		r = &OSArtifactReconciler{
-			ToolImage: fmt.Sprintf("quay.io/kairos/auroraboot:%s", CompatibleAurorabootVersion),
+			ToolImage:    fmt.Sprintf("quay.io/kairos/auroraboot:%s", CompatibleAurorabootVersion),
+			BuildahImage: fmt.Sprintf("quay.io/buildah/stable:%s", CompatibleBuildahVersion),
 		}
 
 		// Create a direct client (no cache) for tests - we don't need reconciliation
@@ -218,16 +223,16 @@ var _ = Describe("OSArtifactReconciler", func() {
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				By("checking if a build container (kaniko-build) was created")
-				kaniko := findContainerInPod(pod, "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
+				By("checking if a build container (buildah-build) was created")
+				buildah := findContainerInPod(pod, "buildah-build")
+				Expect(buildah).ToNot(BeNil())
 
 				By("checking if the build completes successfully")
-				kanikoIsInit := findInitContainerByName(pod, "kaniko-build") != nil
+				buildahIsInit := findInitContainerByName(pod, "buildah-build") != nil
 				Eventually(func() bool {
 					p, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
-					if kanikoIsInit {
+					if buildahIsInit {
 						var allReady = len(p.Status.InitContainerStatuses) > 0
 						for _, c := range p.Status.InitContainerStatuses {
 							allReady = allReady && c.Ready
@@ -446,73 +451,73 @@ var _ = Describe("OSArtifactReconciler", func() {
 			When("buildContextVolume is set", func() {
 				BeforeEach(func() {})
 
-				It("mounts the build context volume at /workspace on kaniko", func() {
+				It("mounts the build context volume at /workspace on buildah-build", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findContainerInPod(pod, "kaniko-build")
-					Expect(kaniko).ToNot(BeNil())
+					buildah := findContainerInPod(pod, "buildah-build")
+					Expect(buildah).ToNot(BeNil())
 
 					var hasContextMount bool
-					for _, vm := range kaniko.VolumeMounts {
-						if vm.Name == "my-context" && vm.MountPath == "/workspace" {
+					for _, vm := range buildah.VolumeMounts {
+						if vm.Name == "my-context" && vm.MountPath == buildContextMountPath {
 							hasContextMount = true
 						}
 					}
-					Expect(hasContextMount).To(BeTrue(), "kaniko should have my-context mounted at /workspace")
+					Expect(hasContextMount).To(BeTrue(), "buildah-build should have my-context mounted at /workspace")
 				})
 
-				It("preserves the ocispec mount at /workspace/ocispec", func() {
+				It("preserves the ocispec mount at /ocispec", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findContainerInPod(pod, "kaniko-build")
-					Expect(kaniko).ToNot(BeNil())
+					buildah := findContainerInPod(pod, "buildah-build")
+					Expect(buildah).ToNot(BeNil())
 
 					var hasOCISpecMount bool
-					for _, vm := range kaniko.VolumeMounts {
-						if vm.Name == "ocispec" && vm.MountPath == "/workspace/ocispec" {
+					for _, vm := range buildah.VolumeMounts {
+						if vm.Name == "ocispec" && vm.MountPath == "/ocispec" {
 							hasOCISpecMount = true
 						}
 					}
-					Expect(hasOCISpecMount).To(BeTrue(), "kaniko should still have ocispec mounted at /workspace/ocispec")
+					Expect(hasOCISpecMount).To(BeTrue(), "buildah-build should still have ocispec mounted at /ocispec")
 				})
 			})
 
 			When("buildContextVolume is not set", func() {
 				BeforeEach(func() {
 					// Parent BeforeEach already created the secret and set OCISpec with BuildContextVolume.
-					// Clear BuildContextVolume and Volumes so kaniko has no extra workspace mount (build context at /workspace).
+					// Clear BuildContextVolume and Volumes so buildah-build has no extra workspace mount.
 					artifact.Spec.Image.OCISpec.BuildContextVolume = ""
 					artifact.Spec.Volumes = nil
 				})
-				It("kaniko does not have an extra workspace mount", func() {
+				It("buildah-build does not have an extra workspace mount", func() {
 					pvc, err := r.createPVC(context.TODO(), artifact)
 					Expect(err).ToNot(HaveOccurred())
 
 					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 					Expect(err).ToNot(HaveOccurred())
 
-					kaniko := findContainerInPod(pod, "kaniko-build")
-					Expect(kaniko).ToNot(BeNil())
+					buildah := findContainerInPod(pod, "buildah-build")
+					Expect(buildah).ToNot(BeNil())
 
-					// Kaniko always has rootfs, ocispec, and artifacts (tarball written to volume). No extra workspace mount.
-					mountNames := make([]string, 0, len(kaniko.VolumeMounts))
-					for _, vm := range kaniko.VolumeMounts {
+					// buildah-build always has ocispec and artifacts. No extra workspace mount.
+					mountNames := make([]string, 0, len(buildah.VolumeMounts))
+					for _, vm := range buildah.VolumeMounts {
 						mountNames = append(mountNames, vm.Name)
 					}
-					Expect(mountNames).To(ConsistOf("rootfs", "ocispec", "artifacts"))
+					Expect(mountNames).To(ConsistOf("ocispec", "artifacts"))
 				})
 			})
 		})
 
-		Describe("image.buildEnv (Kaniko build container env)", func() {
+		Describe("image.buildEnv (OCI build container env)", func() {
 			BeforeEach(func() {
 				secretName := artifact.Name + "-ocispec"
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
@@ -535,18 +540,18 @@ var _ = Describe("OSArtifactReconciler", func() {
 				}
 			})
 
-			It("sets buildEnv on the kaniko-build container", func() {
+			It("sets buildEnv on the buildah-build container", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				kaniko := findContainerInPod(pod, "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
+				buildah := findContainerInPod(pod, "buildah-build")
+				Expect(buildah).ToNot(BeNil())
 
 				envNames := make(map[string]string)
-				for _, e := range kaniko.Env {
+				for _, e := range buildah.Env {
 					envNames[e.Name] = e.Value
 				}
 				Expect(envNames).To(HaveKeyWithValue("HTTP_PROXY", "http://proxy.example.com:3128"))
@@ -555,7 +560,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
-		Describe("image.caCertificatesVolume (Kaniko build container CA certs)", func() {
+		Describe("image.caCertificatesVolume (OCI build container CA certs)", func() {
 			BeforeEach(func() {
 				secretName := artifact.Name + "-ocispec"
 				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
@@ -578,31 +583,31 @@ var _ = Describe("OSArtifactReconciler", func() {
 					OCISpec: &buildv1alpha2.OCISpec{
 						Ref: &buildv1alpha2.SecretKeySelector{Name: secretName, Key: OCISpecSecretKey},
 					},
-					CACertificatesVolume: "my-ca-certs",
+					CACertificatesVolume: caCertsVolumeName,
 				}
 				artifact.Spec.Volumes = []corev1.Volume{
-					{Name: "my-ca-certs", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "custom-ca"}}},
+					{Name: caCertsVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "custom-ca"}}},
 				}
 			})
 
-			It("mounts caCertificatesVolume at /kaniko/ssl/certs on the kaniko-build container", func() {
+			It("mounts caCertificatesVolume at /etc/ssl/buildah/certs on the buildah-build container", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				kaniko := findContainerInPod(pod, "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
+				buildah := findContainerInPod(pod, "buildah-build")
+				Expect(buildah).ToNot(BeNil())
 
 				var hasCACertsMount bool
-				for _, vm := range kaniko.VolumeMounts {
-					if vm.Name == "my-ca-certs" && vm.MountPath == "/kaniko/ssl/certs" && vm.ReadOnly {
+				for _, vm := range buildah.VolumeMounts {
+					if vm.Name == caCertsVolumeName && vm.MountPath == buildahCertsMountPath && vm.ReadOnly {
 						hasCACertsMount = true
 						break
 					}
 				}
-				Expect(hasCACertsMount).To(BeTrue(), "kaniko should have my-ca-certs mounted at /kaniko/ssl/certs read-only")
+				Expect(hasCACertsMount).To(BeTrue(), "buildah-build should have my-ca-certs mounted at /etc/ssl/buildah/certs read-only")
 			})
 		})
 
@@ -738,7 +743,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(unpack).ToNot(BeNil())
 				var hasCredsMount bool
 				for _, vm := range unpack.VolumeMounts {
-					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/root/.docker" {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == dockerCredsMountPath {
 						hasCredsMount = true
 						break
 					}
@@ -746,7 +751,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(hasCredsMount).To(BeTrue(), "unpack container must mount "+imageCredentialsVolumeName+" so AuroraBoot can pull private image.ref")
 				var hasDockerConfig bool
 				for _, e := range unpack.Env {
-					if e.Name == "DOCKER_CONFIG" && e.Value == "/root/.docker" {
+					if e.Name == "DOCKER_CONFIG" && e.Value == dockerCredsMountPath {
 						hasDockerConfig = true
 						break
 					}
@@ -754,14 +759,14 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(hasDockerConfig).To(BeTrue(), "unpack container must set DOCKER_CONFIG for AuroraBoot/DefaultKeychain")
 			})
 
-			It("uses image.ref for unpack and does not run kaniko", func() {
+			It("uses image.ref for unpack and does not run buildah-build", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(findInitContainerByName(pod, "kaniko-build")).To(BeNil())
+				Expect(findInitContainerByName(pod, "buildah-build")).To(BeNil())
 				unpack := findInitContainerByName(pod, "pull-image-baseimage")
 				Expect(unpack).ToNot(BeNil())
 				Expect(unpack.Args[0]).To(ContainSubstring(testImageName))
@@ -955,28 +960,28 @@ var _ = Describe("OSArtifactReconciler", func() {
 				}
 			})
 
-			It("mounts buildContextVolume at /workspace on kaniko", func() {
+			It("mounts buildContextVolume at /workspace on buildah-build", func() {
 				pvc, err := r.createPVC(context.TODO(), artifact)
 				Expect(err).ToNot(HaveOccurred())
 
 				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
 				Expect(err).ToNot(HaveOccurred())
 
-				kaniko := findInitContainerByName(pod, "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
+				buildah := findInitContainerByName(pod, "buildah-build")
+				Expect(buildah).ToNot(BeNil())
 				var hasCtx bool
-				for _, vm := range kaniko.VolumeMounts {
-					if vm.Name == "build-ctx" && vm.MountPath == "/workspace" {
+				for _, vm := range buildah.VolumeMounts {
+					if vm.Name == "build-ctx" && vm.MountPath == buildContextMountPath {
 						hasCtx = true
 						break
 					}
 				}
-				Expect(hasCtx).To(BeTrue(), "kaniko should have build-ctx mounted at /workspace")
+				Expect(hasCtx).To(BeTrue(), "buildah-build should have build-ctx mounted at /workspace")
 			})
 
-			It("adds image credentials volume and Kaniko mount for pull when credentials ref set without push", func() {
+			It("adds image credentials volume and mounts it on buildah-build for pull when credentials ref set without push", func() {
 				artifact.Spec.Image.ImageCredentialsSecretRef = &buildv1alpha2.SecretKeySelector{Name: "registry-creds"}
-				// Push false: we only need credentials for pulling base image
+				// Push false: we only need credentials for pulling base image.
 				artifact.Spec.Image.Push = false
 
 				pvc, err := r.createPVC(context.TODO(), artifact)
@@ -992,26 +997,26 @@ var _ = Describe("OSArtifactReconciler", func() {
 						break
 					}
 				}
-				Expect(hasCredsVol).To(BeTrue(), "credentials volume should be present for Kaniko to pull base image")
+				Expect(hasCredsVol).To(BeTrue(), "credentials volume should be present for buildah-build to pull base image")
 
-				kaniko := findInitContainerByName(pod, "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
+				buildah := findInitContainerByName(pod, "buildah-build")
+				Expect(buildah).ToNot(BeNil())
 				var hasCredsMount bool
-				for _, vm := range kaniko.VolumeMounts {
-					if vm.Name == imageCredentialsVolumeName && vm.MountPath == "/kaniko/.docker" {
+				for _, vm := range buildah.VolumeMounts {
+					if vm.Name == imageCredentialsVolumeName && vm.MountPath == dockerCredsMountPath {
 						hasCredsMount = true
 						break
 					}
 				}
-				Expect(hasCredsMount).To(BeTrue(), "kaniko should mount credentials for pull")
+				Expect(hasCredsMount).To(BeTrue(), "buildah-build should mount credentials at /root/.docker for pull")
 				var hasDockerConfig bool
-				for _, e := range kaniko.Env {
-					if e.Name == "DOCKER_CONFIG" && e.Value == "/kaniko/.docker" {
+				for _, e := range buildah.Env {
+					if e.Name == "DOCKER_CONFIG" && e.Value == dockerCredsMountPath {
 						hasDockerConfig = true
 						break
 					}
 				}
-				Expect(hasDockerConfig).To(BeTrue(), "kaniko should have DOCKER_CONFIG for pull")
+				Expect(hasDockerConfig).To(BeTrue(), "buildah-build should have DOCKER_CONFIG for pull")
 			})
 		})
 
@@ -1023,7 +1028,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
 			})
 
-			It("startBuild succeeds and creates a pod with kaniko build-args", func() {
+			It("startBuild succeeds and creates a pod with OCI build-args", func() {
 				// Refresh artifact so we have latest ResourceVersion (e.g. if a controller added finalizer).
 				Expect(r.Get(context.TODO(), client.ObjectKeyFromObject(artifact), artifact)).To(Succeed())
 				result, err := r.startBuild(context.TODO(), artifact)
@@ -1035,10 +1040,10 @@ var _ = Describe("OSArtifactReconciler", func() {
 					LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
 				})).To(Succeed())
 				Expect(pods.Items).ToNot(BeEmpty())
-				kaniko := findInitContainerByName(&pods.Items[0], "kaniko-build")
-				Expect(kaniko).ToNot(BeNil())
-				Expect(kaniko.Args).To(ContainElement("--build-arg"))
-				Expect(kaniko.Args).To(ContainElement("VERSION=v3.6.0"))
+				buildah := findInitContainerByName(&pods.Items[0], "buildah-build")
+				Expect(buildah).ToNot(BeNil())
+				// Build args are embedded in the shell script (Args[0]) for Buildah.
+				Expect(buildah.Args[0]).To(ContainSubstring("--build-arg VERSION=v3.6.0"))
 			})
 		})
 	})
