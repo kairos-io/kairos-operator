@@ -100,8 +100,8 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 	}
 
 	podLabels := map[string]string{
-		"app":  "kairos-node-labeler",
-		"mode": "daemon",
+		labelKeyApp: labelValueNodeLabelerApp,
+		"mode":      "daemon",
 	}
 
 	return &appsv1.DaemonSet{
@@ -109,7 +109,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 			Name:      kairosNodeLabelerDaemonSetName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app": "kairos-node-labeler",
+				labelKeyApp: labelValueNodeLabelerApp,
 			},
 		},
 		Spec: appsv1.DaemonSetSpec{
@@ -123,7 +123,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 				Spec: corev1.PodSpec{
 					ServiceAccountName: nodeLabelerServiceAccount,
 					NodeSelector: map[string]string{
-						"kairos.io/managed": "true",
+						labelKeyKairosManaged: "true", //nolint:goconst // common label value; not worth a constant
 					},
 					Tolerations: []corev1.Toleration{
 						{Operator: corev1.TolerationOpExists},
@@ -140,19 +140,19 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 							},
 							Env: []corev1.EnvVar{
 								{
-									Name: "NODE_NAME",
+									Name: envNodeName,
 									ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{
 											APIVersion: "v1",
-											FieldPath:  "spec.nodeName",
+											FieldPath:  fieldPathNodeName,
 										},
 									},
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "host-etc",
-									MountPath: "/host/etc",
+									Name:      hostEtcVolumeName,
+									MountPath: hostEtcMountPath,
 									ReadOnly:  true,
 								},
 							},
@@ -160,7 +160,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 					},
 					Volumes: []corev1.Volume{
 						{
-							Name: "host-etc",
+							Name: hostEtcVolumeName,
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/etc",

@@ -22,6 +22,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// configMapKeyOSRelease is the data key in the OSArtifact-generated ConfigMap
+// holding /etc/os-release contents. Also used as the SubPath when mounting.
+const configMapKeyOSRelease = "os-release"
+
 func (r *OSArtifactReconciler) genConfigMap(artifact *buildv1alpha2.OSArtifact) *corev1.ConfigMap {
 	grubCfg, osRelease := "", ""
 	if artifact.Spec.Artifacts != nil {
@@ -34,7 +38,7 @@ func (r *OSArtifactReconciler) genConfigMap(artifact *buildv1alpha2.OSArtifact) 
 			Namespace: artifact.Namespace,
 		},
 		Data: map[string]string{
-			"grub.cfg":   grubCfg,
-			"os-release": osRelease,
+			"grub.cfg":            grubCfg,
+			configMapKeyOSRelease: osRelease,
 		}}
 }

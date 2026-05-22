@@ -26,10 +26,8 @@ import (
 
 const (
 	testImageName         = "quay.io/kairos/opensuse:leap-15.6-core-amd64-generic-v3.6.0"
-	ukiKeysVolumeName     = "uki-keys"  // volume name used in UKI tests
-	artifactsVolumeName   = "artifacts" // internal builder/exporter volume name (matches controller)
+	ukiKeysVolumeName     = "uki-keys" // volume name used in UKI tests
 	buildahCertsMountPath = "/etc/ssl/buildah/certs"
-	dockerCredsMountPath  = "/root/.docker"
 	buildContextMountPath = "/workspace"
 	caCertsVolumeName     = "my-ca-certs"
 )

@@ -14,6 +14,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// labelKairosManaged identifies nodes the operator is responsible for labeling.
+const labelKairosManaged = "kairos.io/managed"
+
 // labelFields maps KAIROS_<KEY> suffixes from kairos-release to node label names.
 var labelFields = map[string]string{
 	"ID":                      "kairos.io/id",
@@ -73,14 +76,14 @@ func collectMetadata(etcPath, cmdlinePath string) (labels, annotations map[strin
 			return nil, nil
 		}
 		fmt.Println("Kairos ID found in os-release")
-		labels = map[string]string{"kairos.io/managed": "true"}
+		labels = map[string]string{labelKairosManaged: "true"} //nolint:goconst // common label value; not worth a constant
 		if bootState := detectBootState(cmdlinePath); bootState != "" {
 			labels["kairos.io/boot-state"] = bootState
 		}
 		return labels, map[string]string{}
 	}
 
-	labels = map[string]string{"kairos.io/managed": "true"}
+	labels = map[string]string{labelKairosManaged: "true"} //nolint:goconst // common label value; not worth a constant
 	annotations = map[string]string{}
 
 	for key, labelName := range labelFields {

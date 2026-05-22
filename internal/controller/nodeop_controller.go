@@ -44,6 +44,13 @@ const (
 	rebootStatusCancelled    = "cancelled"
 	rebootStatusPending      = "pending"
 	rebootStatusCompleted    = "completed"
+	// Label keys used on Jobs and Pods created by the NodeOp controller
+	labelKeyNodeOp = "kairos.io/nodeop"
+	labelKeyNode   = "kairos.io/node"
+	labelKeyReboot = "kairos.io/reboot"
+	// Volume constants
+	hostRootVolumeName = "host-root"
+	sentinelVolumeName = "sentinel-volume"
 )
 
 // NodeOpReconciler reconciles a NodeOp object
@@ -132,7 +139,7 @@ func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 				// Only watch pods with our reboot label
 				pod := obj.(*corev1.Pod)
-				_, hasRebootLabel := pod.Labels["kairos.io/reboot"]
+				_, hasRebootLabel := pod.Labels[labelKeyReboot]
 				return hasRebootLabel
 			})),
 		).
@@ -158,7 +165,7 @@ func (r *NodeOpReconciler) getNodeOp(ctx context.Context, req ctrl.Request) (*ka
 	// Set TypeMeta fields since they are not stored in etcd
 	nodeOp.TypeMeta = metav1.TypeMeta{
 		APIVersion: "operator.kairos.io/v1alpha1",
-		Kind:       "NodeOp",
+		Kind:       kindNodeOp,
 	}
 
 	return nodeOp, nil
@@ -269,7 +276,7 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		}
 
 		// Skip reboot pods - they need to stay alive to reboot the node after jobs complete
-		if _, hasRebootLabel := pod.Labels["kairos.io/reboot"]; hasRebootLabel {
+		if _, hasRebootLabel := pod.Labels[labelKeyReboot]; hasRebootLabel {
 			log.Info("Skipping reboot pod during drain",
 				"pod", pod.Name,
 				"namespace", pod.Namespace)
@@ -365,7 +372,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
-								Name:      "host-root",
+								Name:      hostRootVolumeName,
 								MountPath: "/host",
 							},
 						},
@@ -376,7 +383,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						Name:  "sentinel-creator",
 						Image: getSentinelImage(nodeOp),
 						Command: []string{
-							"/bin/sh",
+							"/bin/sh", //nolint:goconst // path literal; not worth a constant
 							"-c",
 							"echo 'Job completed at $(date)' | tee /sentinel/$(JOB_NAME)-$(date +%s)",
 						},
@@ -392,7 +399,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
-								Name:      "sentinel-volume",
+								Name:      sentinelVolumeName,
 								MountPath: "/sentinel",
 							},
 						},
@@ -400,7 +407,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 				},
 				Volumes: []corev1.Volume{
 					{
-						Name: "host-root",
+						Name: hostRootVolumeName,
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/",
@@ -408,7 +415,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						},
 					},
 					{
-						Name: "sentinel-volume",
+						Name: sentinelVolumeName,
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/usr/local/.kairos",
@@ -441,7 +448,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
-								Name:      "host-root",
+								Name:      hostRootVolumeName,
 								MountPath: "/host",
 							},
 						},
@@ -449,7 +456,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 				},
 				Volumes: []corev1.Volume{
 					{
-						Name: "host-root",
+						Name: hostRootVolumeName,
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/",
@@ -509,8 +516,8 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			GenerateName: jobBaseName + "-",
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
-				"kairos.io/nodeop": nodeOp.Name,
-				"kairos.io/node":   node.Name,
+				labelKeyNodeOp: nodeOp.Name,
+				labelKeyNode:   node.Name,
 			},
 		},
 		Spec: jobSpec,
@@ -779,7 +786,7 @@ func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj clie
 	log := logf.FromContext(ctx)
 
 	// Check if this is a reboot pod
-	if nodeOpName, ok := pod.Labels["kairos.io/nodeop"]; ok {
+	if nodeOpName, ok := pod.Labels[labelKeyNodeOp]; ok {
 		log.Info("Reboot pod status changed, triggering NodeOp reconciliation",
 			"pod", pod.Name,
 			"nodeOp", nodeOpName,
@@ -906,9 +913,9 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
-				"kairos.io/nodeop": nodeOp.Name,
-				"kairos.io/reboot": "true",
-				"kairos.io/node":   nodeName,
+				labelKeyNodeOp: nodeOp.Name,
+				labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
+				labelKeyNode:   nodeName,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -919,7 +926,7 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 					Name:  "reboot",
 					Image: operatorImage,
 					Command: []string{
-						"/bin/sh",
+						"/bin/sh", //nolint:goconst // path literal; not worth a constant
 						"-c",
 						`echo "=== Checking for existing reboot annotation ==="
 EXISTING_ANNOTATION=$(kubectl get pod $POD_NAME --namespace $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\.io/reboot-state}' 2>/dev/null || echo "")
@@ -984,7 +991,7 @@ done`,
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
-							Name:      "sentinel-volume",
+							Name:      sentinelVolumeName,
 							MountPath: "/sentinel",
 						},
 					},
@@ -992,7 +999,7 @@ done`,
 			},
 			Volumes: []corev1.Volume{
 				{
-					Name: "sentinel-volume",
+					Name: sentinelVolumeName,
 					VolumeSource: corev1.VolumeSource{
 						HostPath: &corev1.HostPathVolumeSource{
 							Path: "/usr/local/.kairos",
@@ -1029,9 +1036,9 @@ func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *
 	err := r.List(ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels(map[string]string{
-			"kairos.io/nodeop": nodeOp.Name,
-			"kairos.io/reboot": "true",
-			"kairos.io/node":   nodeName,
+			labelKeyNodeOp: nodeOp.Name,
+			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
+			labelKeyNode:   nodeName,
 		}),
 	)
 	if err != nil {
@@ -1060,9 +1067,9 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 	err := r.List(ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels(map[string]string{
-			"kairos.io/nodeop": nodeOp.Name,
-			"kairos.io/reboot": "true",
-			"kairos.io/node":   nodeName,
+			labelKeyNodeOp: nodeOp.Name,
+			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
+			labelKeyNode:   nodeName,
 		}),
 	)
 	if err != nil {
