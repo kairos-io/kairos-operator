@@ -190,9 +190,11 @@ func (r *NodeOpReconciler) getClusterNodes(ctx context.Context) ([]corev1.Node, 
 }
 
 // nodeOpOwnerRef returns the annotation value used to mark a node as cordoned
-// by the given NodeOp.
+// by the given NodeOp. The UID is included so that a NodeOp deleted and
+// recreated with the same namespace/name does not match a stale annotation
+// left behind by the previous instance.
 func nodeOpOwnerRef(nodeOp *kairosiov1alpha1.NodeOp) string {
-	return nodeOp.Namespace + "/" + nodeOp.Name
+	return fmt.Sprintf("%s/%s@%s", nodeOp.Namespace, nodeOp.Name, nodeOp.UID)
 }
 
 // cordonNode marks a node as unschedulable and records that this NodeOp owns
@@ -209,7 +211,17 @@ func (r *NodeOpReconciler) cordonNode(ctx context.Context, nodeOp *kairosiov1alp
 	}
 
 	if latestNode.Spec.Unschedulable {
-		log.Info("Node is already cordoned; not claiming ownership", "node", node.Name)
+		owner, hasAnn := latestNode.Annotations[cordonedByAnnotation]
+		switch {
+		case !hasAnn:
+			log.Info("Node is already cordoned by something outside this operator; not claiming ownership",
+				"node", node.Name)
+		case owner == nodeOpOwnerRef(nodeOp):
+			log.Info("Node is already cordoned by this NodeOp", "node", node.Name, "nodeOp", owner)
+		default:
+			log.Info("Node is already cordoned by a different NodeOp; not claiming ownership",
+				"node", node.Name, "cordonedBy", owner, "thisNodeOp", nodeOpOwnerRef(nodeOp))
+		}
 		return nil
 	}
 

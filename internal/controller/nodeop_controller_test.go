@@ -876,6 +876,82 @@ var _ = Describe("NodeOp Controller", func() {
 				"Node should remain cordoned; the operator must not uncordon a node it did not cordon itself")
 		})
 
+		It("should not uncordon a node whose cordoned-by annotation points at a stale NodeOp UID", func() {
+			By("Simulating a stale ownership annotation from a deleted NodeOp instance (same namespace/name)")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			node.Spec.Unschedulable = true
+			if node.Annotations == nil {
+				node.Annotations = map[string]string{}
+			}
+			staleNodeOpName := fmt.Sprintf("%s-recreated", resourceName)
+			// The stale value names the same namespace/name the fresh NodeOp will have.
+			// Without UID-aware ownership (the pre-fix format), the fresh NodeOp's owner ref
+			// would match this value and the operator would incorrectly uncordon the node.
+			node.Annotations["operator.kairos.io/cordoned-by"] = "default/" + staleNodeOpName
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			By("Creating a fresh NodeOp with the same namespace/name (Kubernetes assigns a new UID)")
+			recreatedNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      staleNodeOpName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					Cordon:          asBool(true),
+					RebootOnSuccess: asBool(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, recreatedNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, recreatedNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling to create the Job (node is already cordoned, so cordonNode no-ops)")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      recreatedNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Completing the Job")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{"kairos.io/nodeop": recreatedNodeOp.Name}),
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(markJobAsCompleted(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+			By("Reconciling again to process job completion")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      recreatedNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the node remains cordoned because the annotation's UID does not match this NodeOp")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(),
+				"Node should remain cordoned; a same-name/different-UID NodeOp must not claim a stale annotation")
+		})
+
 		It("should create a reboot pod when RebootOnSuccess is true and job completes successfully", func() {
 			By("Creating a NodeOp with RebootOnSuccess=true")
 			rebootNodeOp := &kairosiov1alpha1.NodeOp{
