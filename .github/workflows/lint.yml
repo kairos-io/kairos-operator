@@ -20,5 +20,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Read golangci-lint version from Makefile
+        id: golangci-lint-version
+        run: |
+          version=$(grep '^GOLANGCI_LINT_VERSION' Makefile | sed 's/.*?= *//')
+          if [ -z "$version" ]; then
+            echo "Could not parse GOLANGCI_LINT_VERSION from Makefile" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Run linter
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: ${{ steps.golangci-lint-version.outputs.version }}
