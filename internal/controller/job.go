@@ -31,25 +31,49 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const aurorabootUnpackCmd = "auroraboot unpack"
+const (
+	aurorabootUnpackCmd = "auroraboot unpack"
+	// Volume names and mount paths shared by the unpack/build/release containers.
+	rootfsVolumeName       = "rootfs"
+	rootfsMountPath        = "/rootfs"
+	artifactsVolumeName    = "artifacts"
+	artifactsMountPath     = "/artifacts"
+	configVolumeName       = "config"
+	overlayISOMountPath    = "/overlay-iso"
+	overlayRootfsMountPath = "/overlay-rootfs"
+	ocispecVolumeName      = "ocispec"
+	// DOCKER_CONFIG env var directs OCI tooling at the auth file.
+	dockerConfigEnv      = "DOCKER_CONFIG"
+	dockerCredsMountPath = "/root/.docker"
+	// buildahCmd is the buildah executable name (used as the first argv element).
+	buildahCmd = "buildah"
+)
+
+// bashCxeCommand returns the standard /bin/bash -cxe command preamble used by
+// the build containers in this file (-c: read commands from string,
+// -x: trace, -e: exit on error). Each call returns a fresh slice so callers
+// can safely append/mutate without affecting siblings.
+func bashCxeCommand() []string {
+	return []string{"/bin/bash", "-cxe"}
+}
 
 func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
-	cmd = fmt.Sprintf("%s %s /rootfs", cmd, pullImage)
+	cmd = fmt.Sprintf("%s %s %s", cmd, pullImage, rootfsMountPath)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            fmt.Sprintf("pull-image-%s", id),
 		Image:           containerImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{cmd},
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "rootfs",
-				MountPath: "/rootfs",
+				Name:      rootfsVolumeName,
+				MountPath: rootfsMountPath,
 			},
 		},
 	}
@@ -65,7 +89,7 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 	if arch != "" {
 		unpackCmd = fmt.Sprintf("%s --arch %s", unpackCmd, arch)
 	}
-	unpackCmd = fmt.Sprintf("%s %s /rootfs", unpackCmd, artifact.Spec.Image.Ref)
+	unpackCmd = fmt.Sprintf("%s %s %s", unpackCmd, artifact.Spec.Image.Ref, rootfsMountPath)
 
 	imageName := builtImageName(artifact)
 	packCmd := "luet util pack"
@@ -75,27 +99,27 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
 
 	script := fmt.Sprintf(
-		"%s && tar -czvpf test.tar -C /rootfs . && %s && chmod +r %s.tar && mv %s.tar /artifacts",
-		unpackCmd, packCmd, artifact.Name, artifact.Name,
+		"%s && tar -czvpf test.tar -C %s . && %s && chmod +r %s.tar && mv %s.tar %s",
+		unpackCmd, rootfsMountPath, packCmd, artifact.Name, artifact.Name, artifactsMountPath,
 	)
 	volMounts := []corev1.VolumeMount{
-		{Name: "rootfs", MountPath: "/rootfs"},
-		{Name: "artifacts", MountPath: "/artifacts"},
+		{Name: rootfsVolumeName, MountPath: rootfsMountPath},
+		{Name: artifactsVolumeName, MountPath: artifactsMountPath},
 	}
 	env := []corev1.EnvVar{}
 	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
 		volMounts = append(volMounts, corev1.VolumeMount{
 			Name:      imageCredentialsVolumeName,
-			MountPath: "/root/.docker",
+			MountPath: dockerCredsMountPath,
 			ReadOnly:  true,
 		})
-		env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/root/.docker"})
+		env = append(env, corev1.EnvVar{Name: dockerConfigEnv, Value: dockerCredsMountPath})
 	}
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "pull-image-baseimage",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{script},
 		Env:             env,
 		VolumeMounts:    volMounts,
@@ -113,21 +137,21 @@ func builtImageName(artifact *buildv1alpha2.OSArtifact) string {
 func osReleaseContainer(containerImage string) corev1.Container {
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
-		Name:            "os-release",
+		Name:            configMapKeyOSRelease,
 		Image:           containerImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args: []string{
-			"cp -rfv /etc/os-release /rootfs/etc/os-release",
+			fmt.Sprintf("cp -rfv /etc/%s %s/etc/%s", configMapKeyOSRelease, rootfsMountPath, configMapKeyOSRelease),
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
-				MountPath: "/etc/os-release",
-				SubPath:   "os-release",
+				Name:      configVolumeName,
+				MountPath: "/etc/" + configMapKeyOSRelease,
+				SubPath:   configMapKeyOSRelease,
 			},
 			{
-				Name:      "rootfs",
-				MountPath: "/rootfs",
+				Name:      rootfsVolumeName,
+				MountPath: rootfsMountPath,
 			},
 		},
 	}
@@ -138,19 +162,19 @@ func kairosReleaseContainer(containerImage string) corev1.Container {
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "kairos-release",
 		Image:           containerImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args: []string{
-			"cp -rfv /etc/kairos-release /rootfs/etc/kairos-release",
+			"cp -rfv /etc/kairos-release " + rootfsMountPath + "/etc/kairos-release",
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
+				Name:      configVolumeName,
 				MountPath: "/etc/kairos-release",
 				SubPath:   "kairos-release",
 			},
 			{
-				Name:      "rootfs",
-				MountPath: "/rootfs",
+				Name:      rootfsVolumeName,
+				MountPath: rootfsMountPath,
 			},
 		},
 	}
@@ -304,10 +328,10 @@ func ptr[T any](val T) *T {
 
 func appendOverlayFlags(cmd *strings.Builder, overlayISO, overlayRootfs string) {
 	if overlayISO != "" {
-		cmd.WriteString(" --overlay-iso /overlay-iso")
+		cmd.WriteString(" --overlay-iso " + overlayISOMountPath)
 	}
 	if overlayRootfs != "" {
-		cmd.WriteString(" --overlay-rootfs /overlay-rootfs")
+		cmd.WriteString(" --overlay-rootfs " + overlayRootfsMountPath)
 	}
 }
 
@@ -315,13 +339,13 @@ func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, overlayISO, overlayR
 	if overlayISO != "" {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      overlayISO,
-			MountPath: "/overlay-iso",
+			MountPath: overlayISOMountPath,
 		})
 	}
 	if overlayRootfs != "" {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      overlayRootfs,
-			MountPath: "/overlay-rootfs",
+			MountPath: overlayRootfsMountPath,
 		})
 	}
 	return mounts
@@ -330,8 +354,8 @@ func appendOverlayVolumeMounts(mounts []corev1.VolumeMount, overlayISO, overlayR
 // builderVolumeMounts returns volume mounts for the builder pod and overlay volume names from artifacts.
 func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMount, string, string) {
 	mounts := []corev1.VolumeMount{
-		{Name: "artifacts", MountPath: "/artifacts"},
-		{Name: "rootfs", MountPath: "/rootfs"},
+		{Name: artifactsVolumeName, MountPath: artifactsMountPath},
+		{Name: rootfsVolumeName, MountPath: rootfsMountPath},
 	}
 	overlayISO, overlayRootfs := "", ""
 	if artifact.Spec.Artifacts != nil {
@@ -340,7 +364,7 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 	}
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.GRUBConfig != "" {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      "config",
+			Name:      configVolumeName,
 			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
 			SubPath:   "grub.cfg",
 		})
@@ -385,7 +409,7 @@ func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            "build-iso",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{buildISOCommand(artifact, arch, overlayISO, overlayRootfs)},
 		VolumeMounts:    mounts,
 	}
@@ -402,7 +426,7 @@ func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) stri
 	var cmd strings.Builder
 	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
 	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifact.Name))
-	fmt.Fprintf(&cmd, " --output-dir %s", "/artifacts")
+	fmt.Fprintf(&cmd, " --output-dir %s", artifactsMountPath)
 	fmt.Fprintf(&cmd, " --output-type %s", outputType)
 	fmt.Fprintf(&cmd, " --public-keys %s", ukiKeysMountPath)
 	fmt.Fprintf(&cmd, " --tpm-pcr-private-key %s/tpm2-pcr-private.pem", ukiKeysMountPath)
@@ -423,7 +447,7 @@ func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            name,
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{buildUKICommand(artifact, outputType)},
 		VolumeMounts:    mounts,
 	}
@@ -458,7 +482,7 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            "build-cloud-image",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{buildCloudImageCmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
 	}
@@ -495,7 +519,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            "build-netboot",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
 		Args:            []string{buildNetbootCmd(isoBasename)},
 		VolumeMounts:    mounts,
@@ -528,7 +552,7 @@ func makeAzureCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSAr
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            "build-azure-cloud-image",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{buildAzureCmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
 	}
@@ -561,7 +585,7 @@ func makeGCECloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArti
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
 		Name:            "build-gce-cloud-image",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{buildGCECmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
 	}
@@ -575,7 +599,7 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 		for i := range artifact.Spec.Volumes {
 			if artifact.Spec.Volumes[i].Name == artifact.Spec.Artifacts.Volume {
 				artifactsVol = corev1.Volume{
-					Name:         "artifacts",
+					Name:         artifactsVolumeName,
 					VolumeSource: artifact.Spec.Volumes[i].VolumeSource,
 				}
 				break
@@ -584,7 +608,7 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 	} else {
 		// spec.artifacts.volume unset: use the operator-created PVC. startBuild always creates and passes a non-nil pvc here.
 		artifactsVol = corev1.Volume{
-			Name: "artifacts",
+			Name: artifactsVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: pvc.Name,
@@ -596,11 +620,11 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 
 	return append([]corev1.Volume{artifactsVol},
 		corev1.Volume{
-			Name:         "rootfs",
+			Name:         rootfsVolumeName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
 		corev1.Volume{
-			Name: "config",
+			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: artifact.Name},
@@ -641,7 +665,7 @@ func volumeForExportArtifacts(ctx context.Context, cl client.Client, artifact *b
 					}
 				}
 				return corev1.Volume{
-					Name:         "artifacts",
+					Name:         artifactsVolumeName,
 					VolumeSource: src,
 				}, nil
 			}
@@ -656,7 +680,7 @@ func volumeForExportArtifacts(ctx context.Context, cl client.Client, artifact *b
 		return corev1.Volume{}, fmt.Errorf("no artifacts pvc and spec.artifacts.volume not set")
 	}
 	return corev1.Volume{
-		Name: "artifacts",
+		Name: artifactsVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 				ClaimName: pvc.Name,
@@ -696,8 +720,8 @@ func ociBuildArgPairs(artifact *buildv1alpha2.OSArtifact) []string {
 // Runs rootless using vfs storage + chroot isolation (no privileged required; needs SETUID+SETGID capabilities).
 func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolume string, arch string, buildahImage string) corev1.Container {
 	volMounts := []corev1.VolumeMount{
-		{Name: "ocispec", MountPath: "/ocispec", ReadOnly: true},
-		{Name: "artifacts", MountPath: "/artifacts"},
+		{Name: ocispecVolumeName, MountPath: "/" + ocispecVolumeName, ReadOnly: true},
+		{Name: artifactsVolumeName, MountPath: artifactsMountPath},
 	}
 	if buildContextVolume != "" {
 		volMounts = append(volMounts, corev1.VolumeMount{
@@ -721,24 +745,23 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		{Name: "STORAGE_DRIVER", Value: "vfs"},
 	}
 	if artifact.Spec.Image.ImageCredentialsSecretRef != nil {
-		credsMountPath := "/root/.docker"
 		volMounts = append(volMounts, corev1.VolumeMount{
 			Name:      imageCredentialsVolumeName,
-			MountPath: credsMountPath,
+			MountPath: dockerCredsMountPath,
 			ReadOnly:  true,
 		})
-		authfilePath = credsMountPath + "/config.json"
-		env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: credsMountPath})
+		authfilePath = dockerCredsMountPath + "/config.json"
+		env = append(env, corev1.EnvVar{Name: dockerConfigEnv, Value: dockerCredsMountPath})
 	}
 	if len(artifact.Spec.Image.BuildEnv) > 0 {
 		env = append(env, artifact.Spec.Image.BuildEnv...)
 	}
 
 	localTag := fmt.Sprintf("localhost/%s:latest", artifact.Name)
-	tarPath := fmt.Sprintf("/artifacts/%s.tar", artifact.Name)
+	tarPath := fmt.Sprintf("%s/%s.tar", artifactsMountPath, artifact.Name)
 
 	// Build the bud command.
-	budArgs := []string{"buildah", "bud", "--layers=false", "-f", "/ocispec/" + OCISpecSecretKey}
+	budArgs := []string{buildahCmd, "bud", "--layers=false", "-f", "/" + ocispecVolumeName + "/" + OCISpecSecretKey}
 	if authfilePath != "" {
 		budArgs = append(budArgs, "--authfile", authfilePath)
 	}
@@ -758,7 +781,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 
 	// Build the push-to-tarball command.
 	// TODO: investigate switching to oci-archive once auroraboot's ocifile: handler supports OCI Image Layout (index.json) format; currently it expects Docker archive (manifest.json).
-	pushTarArgs := []string{"buildah", "push"}
+	pushTarArgs := []string{buildahCmd, "push"}
 	if authfilePath != "" {
 		pushTarArgs = append(pushTarArgs, "--authfile", authfilePath)
 	}
@@ -773,7 +796,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	// Optional push to registry.
 	if artifact.Spec.Image.Push && artifact.Spec.Image.BuildImage != nil {
 		destination := artifact.Spec.Image.BuildImage.ImageRef()
-		pushRegArgs := []string{"buildah", "push"}
+		pushRegArgs := []string{buildahCmd, "push"}
 		if authfilePath != "" {
 			pushRegArgs = append(pushRegArgs, "--authfile", authfilePath)
 		}
@@ -793,7 +816,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "buildah-build",
 		Image:           buildahImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{script},
 		Env:             env,
 		VolumeMounts:    volMounts,
@@ -811,7 +834,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 func appendOCISpecVolume(volumes []corev1.Volume, artifact *buildv1alpha2.OSArtifact) []corev1.Volume {
 	if artifact.Spec.Image.OCISpec != nil && artifact.Spec.Image.OCISpec.Ref != nil {
 		volumes = append(volumes, corev1.Volume{
-			Name: "ocispec",
+			Name: ocispecVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: artifact.Spec.Image.OCISpec.Ref.Name,
@@ -875,16 +898,16 @@ func imageExtractorContainer(toolImage, arch string, artifactName string) corev1
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
-	cmd = fmt.Sprintf("%s ocifile:/artifacts/%s.tar /rootfs", cmd, artifactName)
+	cmd = fmt.Sprintf("%s ocifile:%s/%s.tar %s", cmd, artifactsMountPath, artifactName, rootfsMountPath)
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "image-extractor",
 		Image:           toolImage,
-		Command:         []string{"/bin/bash", "-cxe"},
+		Command:         bashCxeCommand(),
 		Args:            []string{cmd},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: "rootfs", MountPath: "/rootfs"},
-			{Name: "artifacts", MountPath: "/artifacts", ReadOnly: true},
+			{Name: rootfsVolumeName, MountPath: rootfsMountPath},
+			{Name: artifactsVolumeName, MountPath: artifactsMountPath, ReadOnly: true},
 		},
 	}
 }

@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	kindNodeOpUpgrade = "NodeOpUpgrade"
-	phaseInitializing = "Initializing"
-	hostMountPath     = "/host"
+	kindNodeOpUpgrade     = "NodeOpUpgrade"
+	phaseInitializing     = "Initializing"
+	hostMountPath         = "/host"
+	labelKeyNodeOpUpgrade = "nodeopupgrade.kairos.io/name"
 )
 
 // NodeOpUpgradeReconciler reconciles a NodeOpUpgrade object
@@ -116,7 +117,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			Namespace: nodeOpUpgrade.Namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "nodeopupgrade-controller",
-				"nodeopupgrade.kairos.io/name": nodeOpUpgrade.Name,
+				labelKeyNodeOpUpgrade:          nodeOpUpgrade.Name,
 			},
 		},
 		Spec: kairosiov1alpha1.NodeOpSpec{
@@ -226,7 +227,7 @@ exit 0
 
 	// Build the complete command
 	command := make([]string, 2, 3)
-	command[0] = "/bin/sh"
+	command[0] = "/bin/sh" //nolint:goconst // path literal; not worth a constant
 	command[1] = "-c"
 
 	command = append(command, script)
@@ -300,7 +301,7 @@ func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
 	nodeOp := obj.(*kairosiov1alpha1.NodeOp)
 
 	// Look for the owning NodeOpUpgrade using labels
-	if nodeOpUpgradeName, exists := nodeOp.Labels["nodeopupgrade.kairos.io/name"]; exists {
+	if nodeOpUpgradeName, exists := nodeOp.Labels[labelKeyNodeOpUpgrade]; exists {
 		return []reconcile.Request{
 			{
 				NamespacedName: types.NamespacedName{

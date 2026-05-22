@@ -23,6 +23,18 @@ import (
 
 const (
 	nodeLabelerServiceAccount = "kairos-node-labeler"
+	// Labels used on node-labeler Jobs/DaemonSet Pods
+	labelKeyApp              = "app"
+	labelKeyJobNode          = "node"
+	labelValueNodeLabelerApp = "kairos-node-labeler"
+	// Env/fieldRef wiring for the node-labeler container
+	envNodeName       = "NODE_NAME"
+	fieldPathNodeName = "spec.nodeName"
+	// Host /etc bind mount used by the node-labeler to read kairos-release
+	hostEtcVolumeName = "host-etc"
+	hostEtcMountPath  = "/host/etc"
+	// Common label keys
+	labelKeyKairosManaged = "kairos.io/managed"
 )
 
 // NodeLabelerReconciler reconciles nodes to ensure they are labeled
@@ -54,8 +66,8 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 	if err := r.List(ctx, jobList,
 		client.InNamespace(namespace),
 		client.MatchingLabels(map[string]string{
-			"node": nodeName,
-			"app":  "kairos-node-labeler",
+			labelKeyJobNode: nodeName,
+			labelKeyApp:     labelValueNodeLabelerApp,
 		}),
 	); err != nil {
 		return false, err
@@ -80,15 +92,15 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 			Name:      jobName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app":  "kairos-node-labeler",
-				"node": node.Name,
+				labelKeyApp:     labelValueNodeLabelerApp,
+				labelKeyJobNode: node.Name,
 			},
 		},
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app": "kairos-node-labeler",
+						labelKeyApp: labelValueNodeLabelerApp,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -105,22 +117,22 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 							},
 							Env: []corev1.EnvVar{
 								{
-									Name: "NODE_NAME",
+									Name: envNodeName,
 									ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{
-											FieldPath: "spec.nodeName",
+											FieldPath: fieldPathNodeName,
 										},
 									},
 								},
 								{
 									Name:  "HOST_ETC_PATH",
-									Value: "/host/etc",
+									Value: hostEtcMountPath,
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "host-etc",
-									MountPath: "/host/etc",
+									Name:      hostEtcVolumeName,
+									MountPath: hostEtcMountPath,
 									ReadOnly:  true,
 								},
 							},
@@ -128,7 +140,7 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 					},
 					Volumes: []corev1.Volume{
 						{
-							Name: "host-etc",
+							Name: hostEtcVolumeName,
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/etc",
