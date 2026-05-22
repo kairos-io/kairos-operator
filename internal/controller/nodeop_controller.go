@@ -40,9 +40,15 @@ const (
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
 	// Annotation marking a node as cordoned by a specific NodeOp.
-	// Value is "<namespace>/<name>" of the NodeOp that flipped the node to unschedulable.
-	// uncordonNode only acts when this annotation matches; nodes cordoned by a human or
-	// other tooling are left alone.
+	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
+	// unschedulable; including the UID prevents a recreated NodeOp with the same
+	// name from matching a stale annotation. uncordonNode only acts when this
+	// annotation matches; nodes cordoned by a human or other tooling are left alone.
+	//
+	// The "operator.kairos.io/" prefix mirrors the NodeOp CRD's API group, since
+	// this annotation is controller-internal ownership state (not a Kairos-wide
+	// semantic label like "kairos.io/managed"). Other Kairos components are not
+	// expected to read it.
 	cordonedByAnnotation = "operator.kairos.io/cordoned-by"
 	// Reboot status constants
 	rebootStatusNotRequested = "not-requested"
@@ -231,6 +237,10 @@ func (r *NodeOpReconciler) cordonNode(ctx context.Context, nodeOp *kairosiov1alp
 	}
 	latestNode.Annotations[cordonedByAnnotation] = nodeOpOwnerRef(nodeOp)
 
+	// Optimistic-concurrency Update: if the node changed between Get and Update
+	// (e.g. another reconciler patched a label, or a human ran kubectl cordon),
+	// this returns a Conflict error which propagates up to Reconcile and triggers
+	// a requeue. The next reconcile re-reads the latest node state and retries.
 	if err := r.Update(ctx, latestNode); err != nil {
 		log.Error(err, "Failed to cordon node", "node", node.Name)
 		return err
@@ -256,6 +266,8 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 
 	if !latestNode.Spec.Unschedulable {
 		// Clean up a stale annotation if the node was uncordoned out-of-band.
+		// Conflicts on this Update are handled the same way as below: the error
+		// propagates to Reconcile, which requeues.
 		if _, hasAnn := latestNode.Annotations[cordonedByAnnotation]; hasAnn {
 			delete(latestNode.Annotations, cordonedByAnnotation)
 			if err := r.Update(ctx, latestNode); err != nil {
@@ -279,6 +291,9 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 
 	latestNode.Spec.Unschedulable = false
 	delete(latestNode.Annotations, cordonedByAnnotation)
+	// Same optimistic-concurrency pattern as cordonNode: a Conflict here means
+	// the node was modified between Get and Update, and the error propagates up
+	// so Reconcile can requeue and re-evaluate.
 	if err := r.Update(ctx, latestNode); err != nil {
 		log.Error(err, "Failed to uncordon node", "node", node.Name)
 		return err
