@@ -39,6 +39,11 @@ const (
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
+	// Annotation marking a node as cordoned by a specific NodeOp.
+	// Value is "<namespace>/<name>" of the NodeOp that flipped the node to unschedulable.
+	// uncordonNode only acts when this annotation matches; nodes cordoned by a human or
+	// other tooling are left alone.
+	cordonedByAnnotation = "operator.kairos.io/cordoned-by"
 	// Reboot status constants
 	rebootStatusNotRequested = "not-requested"
 	rebootStatusCancelled    = "cancelled"
@@ -184,11 +189,19 @@ func (r *NodeOpReconciler) getClusterNodes(ctx context.Context) ([]corev1.Node, 
 	return nodeList.Items, nil
 }
 
-// cordonNode marks a node as unschedulable
-func (r *NodeOpReconciler) cordonNode(ctx context.Context, node *corev1.Node) error {
+// nodeOpOwnerRef returns the annotation value used to mark a node as cordoned
+// by the given NodeOp.
+func nodeOpOwnerRef(nodeOp *kairosiov1alpha1.NodeOp) string {
+	return nodeOp.Namespace + "/" + nodeOp.Name
+}
+
+// cordonNode marks a node as unschedulable and records that this NodeOp owns
+// the cordon (via the cordonedByAnnotation). If the node is already cordoned
+// by something else (a human, another controller), the annotation is NOT set,
+// so a later uncordonNode call will correctly leave the node alone.
+func (r *NodeOpReconciler) cordonNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node *corev1.Node) error {
 	log := logf.FromContext(ctx)
 
-	// Get the latest version of the node
 	latestNode := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: node.Name}, latestNode); err != nil {
 		log.Error(err, "Failed to get latest node state", "node", node.Name)
@@ -196,26 +209,33 @@ func (r *NodeOpReconciler) cordonNode(ctx context.Context, node *corev1.Node) er
 	}
 
 	if latestNode.Spec.Unschedulable {
-		log.Info("Node is already cordoned", "node", node.Name)
+		log.Info("Node is already cordoned; not claiming ownership", "node", node.Name)
 		return nil
 	}
 
-	// Update the node with the latest resource version
 	latestNode.Spec.Unschedulable = true
+	if latestNode.Annotations == nil {
+		latestNode.Annotations = map[string]string{}
+	}
+	latestNode.Annotations[cordonedByAnnotation] = nodeOpOwnerRef(nodeOp)
+
 	if err := r.Update(ctx, latestNode); err != nil {
 		log.Error(err, "Failed to cordon node", "node", node.Name)
 		return err
 	}
 
-	log.Info("Successfully cordoned node", "node", node.Name)
+	log.Info("Successfully cordoned node", "node", node.Name, "nodeOp", nodeOpOwnerRef(nodeOp))
 	return nil
 }
 
-// uncordonNode marks a node as schedulable
-func (r *NodeOpReconciler) uncordonNode(ctx context.Context, node *corev1.Node) error {
+// uncordonNode marks a node as schedulable, but only if this NodeOp is the one
+// that cordoned it (as recorded by cordonedByAnnotation). Nodes that the
+// operator did not cordon — including nodes that were already cordoned when
+// the NodeOp started, and nodes manually re-cordoned after the operator
+// uncordoned them once — are left alone.
+func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node *corev1.Node) error {
 	log := logf.FromContext(ctx)
 
-	// Get the latest version of the node
 	latestNode := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: node.Name}, latestNode); err != nil {
 		log.Error(err, "Failed to get latest node state", "node", node.Name)
@@ -223,18 +243,36 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, node *corev1.Node) 
 	}
 
 	if !latestNode.Spec.Unschedulable {
-		log.Info("Node is already uncordoned", "node", node.Name)
+		// Clean up a stale annotation if the node was uncordoned out-of-band.
+		if _, hasAnn := latestNode.Annotations[cordonedByAnnotation]; hasAnn {
+			delete(latestNode.Annotations, cordonedByAnnotation)
+			if err := r.Update(ctx, latestNode); err != nil {
+				log.Error(err, "Failed to clear stale cordoned-by annotation", "node", node.Name)
+				return err
+			}
+		}
 		return nil
 	}
 
-	// Update the node with the latest resource version
+	owner, hasAnn := latestNode.Annotations[cordonedByAnnotation]
+	if !hasAnn {
+		log.Info("Node is cordoned but not by this operator; leaving it alone", "node", node.Name)
+		return nil
+	}
+	if owner != nodeOpOwnerRef(nodeOp) {
+		log.Info("Node was cordoned by a different NodeOp; leaving it alone",
+			"node", node.Name, "cordonedBy", owner, "thisNodeOp", nodeOpOwnerRef(nodeOp))
+		return nil
+	}
+
 	latestNode.Spec.Unschedulable = false
+	delete(latestNode.Annotations, cordonedByAnnotation)
 	if err := r.Update(ctx, latestNode); err != nil {
 		log.Error(err, "Failed to uncordon node", "node", node.Name)
 		return err
 	}
 
-	log.Info("Successfully uncordoned node", "node", node.Name)
+	log.Info("Successfully uncordoned node", "node", node.Name, "nodeOp", nodeOpOwnerRef(nodeOp))
 	return nil
 }
 
@@ -476,7 +514,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	// If cordoning is requested, cordon the node first
 	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
-		if err := r.cordonNode(ctx, &node); err != nil {
+		if err := r.cordonNode(ctx, nodeOp, &node); err != nil {
 			return err
 		}
 
@@ -485,7 +523,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			if err := r.drainNode(ctx, &node, nodeOp.Spec.DrainOptions); err != nil {
 				log.Error(err, "Failed to drain node", "node", node.Name)
 				// If draining fails, uncordon the node
-				if uncordonErr := r.uncordonNode(ctx, &node); uncordonErr != nil {
+				if uncordonErr := r.uncordonNode(ctx, nodeOp, &node); uncordonErr != nil {
 					log.Error(uncordonErr, "Failed to uncordon node after drain failure", "node", node.Name)
 				}
 				return err
@@ -609,7 +647,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 					log.Error(err, "Failed to get node for uncordoning after reboot completion", "node", nodeName)
 					return err
 				}
-				if err := r.uncordonNode(ctx, node); err != nil {
+				if err := r.uncordonNode(ctx, nodeOp, node); err != nil {
 					log.Error(err, "Failed to uncordon node after reboot completion", "node", nodeName)
 					return err
 				}
