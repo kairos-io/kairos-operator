@@ -22,6 +22,7 @@ KAIROS_FLAVOR_RELEASE="v0.0.4"
 KAIROS_HOME_URL="https://github.com/kairos-io/kairos"
 KAIROS_ID="kairos"
 KAIROS_ID_LIKE="kairos-core-hadron-v0.0.4"
+KAIROS_IMAGE_REPO="quay.io/kairos/hadron:v4.0.3-amd64-generic-v0.0.4-k3sv1.32.4-k3s1"
 KAIROS_INIT_VERSION="v0.8.4"
 KAIROS_MODEL="generic"
 KAIROS_NAME="kairos-core-hadron-v0.0.4"
@@ -96,6 +97,24 @@ var _ = Describe("Node Labeler", func() {
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/version", "v4.0.3"))
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/bug-report-url", "https://github.com/kairos-io/kairos/issues"))
 				Expect(annotations).To(HaveKeyWithValue("kairos.io/home-url", "https://github.com/kairos-io/kairos"))
+				Expect(annotations).To(HaveKeyWithValue("kairos.io/image-repo",
+					"quay.io/kairos/hadron:v4.0.3-amd64-generic-v0.0.4-k3sv1.32.4-k3s1"))
+			})
+
+			It("omits kairos.io/image-repo annotation when KAIROS_IMAGE_REPO is missing", func() {
+				releaseWithoutImage := `KAIROS_ID="kairos"
+KAIROS_FLAVOR="ubuntu"
+KAIROS_VARIANT="core"
+KAIROS_RELEASE="v5.0.0"
+KAIROS_MODEL="generic"
+KAIROS_TRUSTED_BOOT="false"
+KAIROS_FIPS="false"
+`
+				etcDir := writeKairosRelease(releaseWithoutImage)
+				cmdlinePath := writeCmdlineFile("COS_ACTIVE")
+
+				_, annotations := collectMetadata(etcDir, cmdlinePath)
+				Expect(annotations).NotTo(HaveKey("kairos.io/image-repo"))
 			})
 		})
 

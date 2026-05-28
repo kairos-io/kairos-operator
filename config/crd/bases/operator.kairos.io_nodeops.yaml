@@ -105,6 +105,9 @@ spec:
               rebootOnSuccess:
                 default: false
                 type: boolean
+              skipNodesAlreadyAtImage:
+                default: false
+                type: boolean
               stopOnFailure:
                 default: false
                 type: boolean

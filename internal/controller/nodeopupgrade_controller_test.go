@@ -568,6 +568,35 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeFalse())
 		})
 
+		It("should set SkipNodesAlreadyAtImage=true on the created NodeOp by default", func() {
+			By("Creating a NodeOpUpgrade with Force unset")
+			nodeOpUpgrade.Spec.Force = asBool(false)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the NodeOp has SkipNodesAlreadyAtImage=true")
+			Expect(nodeOp.Spec.SkipNodesAlreadyAtImage).NotTo(BeNil(),
+				"NodeOpUpgrade should explicitly pass SkipNodesAlreadyAtImage through to NodeOp")
+			Expect(*nodeOp.Spec.SkipNodesAlreadyAtImage).To(BeTrue())
+		})
+
+		It("should set SkipNodesAlreadyAtImage=false on the created NodeOp when Force is true", func() {
+			By("Creating a NodeOpUpgrade with Force=true")
+			nodeOpUpgrade.Spec.Force = asBool(true)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying SkipNodesAlreadyAtImage is disabled so Force runs the upgrade everywhere")
+			Expect(nodeOp.Spec.SkipNodesAlreadyAtImage).NotTo(BeNil())
+			Expect(*nodeOp.Spec.SkipNodesAlreadyAtImage).To(BeFalse())
+		})
+
 		It("should set RebootOnSuccess to true when upgrading both partitions", func() {
 			By("Creating NodeOpUpgrade with both UpgradeActive and UpgradeRecovery true")
 			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
