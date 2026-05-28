@@ -570,7 +570,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 		It("should set SkipNodesAlreadyAtImage=true on the created NodeOp by default", func() {
 			By("Creating a NodeOpUpgrade with Force unset")
-			nodeOpUpgrade.Spec.Force = asBool(false)
+			nodeOpUpgrade.Spec.Force = nil
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 			By("Reconciling the NodeOpUpgrade")
