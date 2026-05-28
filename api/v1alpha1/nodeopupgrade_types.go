@@ -58,7 +58,9 @@ type NodeOpUpgradeSpec struct {
 	UpgradeActive *bool `json:"upgradeActive,omitempty"`
 
 	// Force specifies whether to perform the upgrade without checking if the current version
-	// matches the target version. When true, the upgrade will proceed regardless of version comparison.
+	// matches the target version. When true, the upgrade will proceed regardless of version comparison
+	// AND will run on every targeted node even if the node's kairos.io/image-repo annotation already
+	// matches Spec.Image (i.e. it disables the pre-Pod skip as well as the in-Pod version check).
 	// +optional
 	Force *bool `json:"force,omitempty"`
 }
