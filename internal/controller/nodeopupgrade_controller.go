@@ -111,6 +111,9 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 	// Determine if we should reboot on success (true if UpgradeActive is true or nil)
 	shouldReboot := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
+	// Skip nodes that are already at the target image, unless the upgrade is forced.
+	skipNodesAlreadyAtImage := !getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault)
+
 	nodeOp := &kairosiov1alpha1.NodeOp{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      nodeOpUpgrade.Name,
@@ -121,15 +124,16 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			},
 		},
 		Spec: kairosiov1alpha1.NodeOpSpec{
-			NodeSelector:     nodeOpUpgrade.Spec.NodeSelector,
-			Image:            nodeOpUpgrade.Spec.Image,
-			ImagePullSecrets: nodeOpUpgrade.Spec.ImagePullSecrets,
-			Concurrency:      nodeOpUpgrade.Spec.Concurrency,
-			StopOnFailure:    nodeOpUpgrade.Spec.StopOnFailure,
-			Command:          upgradeCommand,
-			HostMountPath:    hostMountPath,
-			Cordon:           asBool(true), // Always cordon for upgrades
-			RebootOnSuccess:  &shouldReboot,
+			NodeSelector:            nodeOpUpgrade.Spec.NodeSelector,
+			Image:                   nodeOpUpgrade.Spec.Image,
+			ImagePullSecrets:        nodeOpUpgrade.Spec.ImagePullSecrets,
+			Concurrency:             nodeOpUpgrade.Spec.Concurrency,
+			StopOnFailure:           nodeOpUpgrade.Spec.StopOnFailure,
+			Command:                 upgradeCommand,
+			HostMountPath:           hostMountPath,
+			Cordon:                  asBool(true), // Always cordon for upgrades
+			RebootOnSuccess:         &shouldReboot,
+			SkipNodesAlreadyAtImage: &skipNodesAlreadyAtImage,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
 				Enabled: asBool(true), // Always drain for upgrades
 			},

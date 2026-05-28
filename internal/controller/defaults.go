@@ -3,9 +3,10 @@ package controller
 // Default values for boolean fields
 const (
 	// NodeOp defaults
-	RebootOnSuccessDefault = false
-	CordonDefault          = false
-	StopOnFailureDefault   = false
+	RebootOnSuccessDefault         = false
+	CordonDefault                  = false
+	StopOnFailureDefault           = false
+	SkipNodesAlreadyAtImageDefault = false
 
 	// DrainOptions defaults
 	DrainEnabledDefault            = false

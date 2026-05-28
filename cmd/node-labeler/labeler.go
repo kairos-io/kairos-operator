@@ -41,6 +41,7 @@ var annotationFields = map[string]string{
 	"VERSION":        "kairos.io/version",
 	"BUG_REPORT_URL": "kairos.io/bug-report-url",
 	"HOME_URL":       "kairos.io/home-url",
+	"IMAGE_REPO":     "kairos.io/image-repo",
 }
 
 // syncLabels reads Kairos metadata from etcPath and cmdlinePath and applies
