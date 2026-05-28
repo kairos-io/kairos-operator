@@ -2506,3 +2506,81 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 		})
 	})
 })
+
+var _ = Describe("getTargetNodes ordering", func() {
+	const (
+		timeout  = time.Second * 10
+		interval = time.Millisecond * 250
+	)
+
+	var (
+		testCtx     context.Context
+		workerName1 string
+		workerName2 string
+		cpName      string
+		myNodes     []*corev1.Node
+		reconciler  *NodeOpReconciler
+	)
+
+	BeforeEach(func() {
+		testCtx = context.Background()
+		suffix := time.Now().UnixNano()
+		// Name the control-plane node so it sorts LAST alphabetically. That
+		// way, if getTargetNodes returns nodes in whatever order the API
+		// server happened to give them, the CP would come last — only the
+		// explicit master-first sort can push it to position 0.
+		workerName1 = fmt.Sprintf("sort-aaa-worker-1-%d", suffix)
+		workerName2 = fmt.Sprintf("sort-bbb-worker-2-%d", suffix)
+		cpName = fmt.Sprintf("sort-zzz-cp-%d", suffix)
+
+		// Intentionally create the control-plane node in the middle so that
+		// the only way it ends up first is via the sorting logic.
+		worker1 := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: workerName1}}
+		cp := &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+			Name:   cpName,
+			Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+		}}
+		worker2 := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: workerName2}}
+
+		Expect(k8sClient.Create(testCtx, worker1)).To(Succeed())
+		Expect(k8sClient.Create(testCtx, cp)).To(Succeed())
+		Expect(k8sClient.Create(testCtx, worker2)).To(Succeed())
+
+		myNodes = []*corev1.Node{worker1, cp, worker2}
+
+		reconciler = &NodeOpReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	AfterEach(func() {
+		for _, n := range myNodes {
+			Eventually(func() error {
+				return k8sClient.Delete(testCtx, n)
+			}, timeout, interval).Should(Succeed())
+		}
+	})
+
+	It("should sort control-plane nodes first when no NodeSelector is set", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-selector"},
+			Spec:       kairosiov1alpha1.NodeOpSpec{},
+		}
+
+		targets, err := reconciler.getTargetNodes(testCtx, nodeOp)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Only consider the nodes this test created; other tests' leftover
+		// nodes (if any) are irrelevant to the ordering we want to verify.
+		mine := map[string]bool{workerName1: true, cpName: true, workerName2: true}
+		var ours []string
+		for _, n := range targets {
+			if mine[n.Name] {
+				ours = append(ours, n.Name)
+			}
+		}
+		Expect(ours).To(HaveLen(3))
+		Expect(ours[0]).To(Equal(cpName), "control-plane node should be sorted first even without a NodeSelector")
+	})
+})
