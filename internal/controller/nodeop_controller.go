@@ -1205,24 +1205,23 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 		return nil, err
 	}
 
-	// If no node selector specified, return all nodes
+	// If no node selector specified, target all nodes; otherwise filter.
+	var targetNodes []corev1.Node
+	var selectorStr string
 	if nodeOp.Spec.NodeSelector == nil {
 		log.V(1).Info("No node selector specified, targeting all nodes", "nodeCount", len(allNodes))
-		return allNodes, nil
-	}
-
-	// Convert label selector to a selector
-	selector, err := metav1.LabelSelectorAsSelector(nodeOp.Spec.NodeSelector)
-	if err != nil {
-		log.Error(err, "Failed to convert NodeSelector to selector")
-		return nil, err
-	}
-
-	// Filter nodes based on label selector
-	var targetNodes []corev1.Node
-	for _, node := range allNodes {
-		if selector.Matches(labels.Set(node.Labels)) {
-			targetNodes = append(targetNodes, node)
+		targetNodes = allNodes
+	} else {
+		selector, err := metav1.LabelSelectorAsSelector(nodeOp.Spec.NodeSelector)
+		if err != nil {
+			log.Error(err, "Failed to convert NodeSelector to selector")
+			return nil, err
+		}
+		selectorStr = selector.String()
+		for _, node := range allNodes {
+			if selector.Matches(labels.Set(node.Labels)) {
+				targetNodes = append(targetNodes, node)
+			}
 		}
 	}
 
@@ -1233,8 +1232,8 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 		return isMasterNode(sortedNodes[i]) && !isMasterNode(sortedNodes[j])
 	})
 
-	log.Info("Found target nodes using selector",
-		"selector", selector.String(),
+	log.Info("Found target nodes",
+		"selector", selectorStr,
 		"targetNodeCount", len(sortedNodes),
 		"totalNodeCount", len(allNodes))
 
