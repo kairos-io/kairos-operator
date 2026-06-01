@@ -653,6 +653,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 					UpgradeActive:   asBool(false), // Avoid having to complete reboot pods
 					UpgradeRecovery: asBool(true),
 					Concurrency:     1,
+					Force:           asBool(true), // Bypass preflight; this test focuses on NodeOp ordering
 					NodeSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{targetLabel: labelTrue},
 					},
@@ -760,6 +761,49 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				_, isMaster := node.Labels["node-role.kubernetes.io/master"]
 				Expect(isMaster).To(BeFalse(), fmt.Sprintf("Node %s should be a worker", name))
 			}
+		})
+
+		It("populates Spec.Preflight on the created NodeOp when Spec.Force is false", func() {
+			By("Creating the NodeOpUpgrade with Force=false (default)")
+			nodeOpUpgrade.Spec.Force = asBool(false)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the NodeOp has Spec.Preflight set")
+			Expect(nodeOp.Spec.Preflight).NotTo(BeNil(),
+				"NodeOpUpgrade should populate Spec.Preflight on the NodeOp when Force=false")
+			Expect(nodeOp.Spec.Preflight.Command).NotTo(BeEmpty())
+
+			By("Verifying the preflight Command contains the version-comparison script")
+			script := strings.Join(nodeOp.Spec.Preflight.Command, "\n")
+			Expect(script).To(ContainSubstring("get_version"))
+			Expect(script).To(ContainSubstring("/etc/kairos-release"))
+			Expect(script).To(ContainSubstring("/host/etc/kairos-release"))
+			Expect(script).To(ContainSubstring("/dev/termination-log"),
+				"the preflight script must communicate skip via /dev/termination-log")
+
+			By("Verifying Spec.Preflight.Image is empty so it defaults to Spec.Image at the NodeOp level")
+			Expect(nodeOp.Spec.Preflight.Image).To(BeEmpty())
+
+			By("Verifying Spec.Preflight.ActiveDeadlineSeconds is set")
+			Expect(nodeOp.Spec.Preflight.ActiveDeadlineSeconds).NotTo(BeNil())
+			Expect(*nodeOp.Spec.Preflight.ActiveDeadlineSeconds).To(BeNumerically(">", 0))
+		})
+
+		It("leaves Spec.Preflight nil on the created NodeOp when Spec.Force is true", func() {
+			By("Creating the NodeOpUpgrade with Force=true")
+			nodeOpUpgrade.Spec.Force = asBool(true)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Spec.Preflight is nil so the upgrade runs everywhere with no preflight check")
+			Expect(nodeOp.Spec.Preflight).To(BeNil())
 		})
 	})
 })

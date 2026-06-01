@@ -84,6 +84,35 @@ type NodeOpSpec struct {
 	// +optional
 	// +kubebuilder:default=false
 	StopOnFailure *bool `json:"stopOnFailure,omitempty"`
+
+	// Preflight, when set, runs a non-disruptive Pod on each target node before
+	// any cordon/drain/Job creation. If the preflight container writes to
+	// /dev/termination-log, the node is recorded as Completed (skipped) with
+	// no Job, cordon, or drain. An empty termination message means "proceed",
+	// and the normal flow runs. A failed preflight Pod (after retries exhaust
+	// or ActiveDeadlineSeconds expires) marks the node Failed.
+	// +optional
+	Preflight *PreflightSpec `json:"preflight,omitempty"`
+}
+
+// PreflightSpec defines a per-node check that runs before cordon/drain/Job.
+// Communication with the controller is via the container's termination
+// message (terminationMessagePolicy=File): a non-empty message means
+// "skip this node with the given reason", an empty message means "proceed".
+type PreflightSpec struct {
+	// Command is the command to run inside the preflight container.
+	Command []string `json:"command"`
+
+	// Image is the container image to use for the preflight Pod.
+	// Defaults to the NodeOp's Spec.Image when empty.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// ActiveDeadlineSeconds bounds the preflight Pod's total lifetime.
+	// On expiry the kubelet terminates the Pod and the node is marked Failed.
+	// +optional
+	// +kubebuilder:default=120
+	ActiveDeadlineSeconds *int32 `json:"activeDeadlineSeconds,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.

@@ -133,6 +133,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
 				Enabled: asBool(true), // Always drain for upgrades
 			},
+			Preflight: buildUpgradePreflight(nodeOpUpgrade),
 		},
 	}
 
@@ -142,6 +143,63 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 	}
 
 	return r.Create(ctx, nodeOp)
+}
+
+// buildUpgradePreflight returns the PreflightSpec the NodeOp should run before
+// cordoning/draining each target node. Returns nil when Force=true so the
+// upgrade runs on every node regardless of the current OS version.
+//
+// The preflight script reads /etc/kairos-release inside the upgrade image and
+// compares the resulting version triple against the host's /etc/kairos-release
+// (mounted read-only at Spec.HostMountPath). When the versions match it writes
+// a one-line reason to /dev/termination-log so the NodeOp controller records
+// the node as Completed (skipped). When the versions differ it stays silent
+// and exits 0, which the controller treats as "proceed".
+func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairosiov1alpha1.PreflightSpec {
+	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) {
+		return nil
+	}
+	deadline := int32(120)
+	return &kairosiov1alpha1.PreflightSpec{
+		Command:               []string{"/bin/sh", "-c", upgradePreflightScript()}, //nolint:goconst // path literal; not worth a constant
+		ActiveDeadlineSeconds: &deadline,
+	}
+}
+
+// upgradePreflightScript is the shell snippet run inside each preflight Pod
+// when this is a NodeOpUpgrade. Output convention: a non-empty
+// /dev/termination-log means "skip this node with the given reason"; an empty
+// termination log + exit 0 means "proceed".
+func upgradePreflightScript() string {
+	return `set -e
+get_version() {
+    local file_path="$1"
+    # shellcheck disable=SC1090
+    . "$file_path"
+    echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
+}
+
+if [ -f "/etc/kairos-release" ]; then
+    TARGET=$(get_version "/etc/kairos-release")
+else
+    TARGET=$(get_version "/etc/os-release")
+fi
+
+if [ -f "` + hostMountPath + `/etc/kairos-release" ]; then
+    CURRENT=$(get_version "` + hostMountPath + `/etc/kairos-release")
+elif [ -f "` + hostMountPath + `/etc/os-release" ]; then
+    CURRENT=$(get_version "` + hostMountPath + `/etc/os-release")
+else
+    echo "host kairos-release/os-release not accessible" >&2
+    exit 1
+fi
+
+echo "Host: ${CURRENT}, Target: ${TARGET}"
+if [ "${CURRENT}" = "${TARGET}" ]; then
+    echo "node is already at ${TARGET}" > /dev/termination-log
+fi
+exit 0
+`
 }
 
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
