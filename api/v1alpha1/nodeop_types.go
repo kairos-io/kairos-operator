@@ -84,15 +84,6 @@ type NodeOpSpec struct {
 	// +optional
 	// +kubebuilder:default=false
 	StopOnFailure *bool `json:"stopOnFailure,omitempty"`
-
-	// SkipNodesAlreadyAtImage, when true, skips Job creation for target nodes
-	// whose "kairos.io/image-repo" annotation already matches Spec.Image. Such nodes
-	// are recorded in status as Completed with a skip message instead of running
-	// a no-op Pod. Defaults to false; the NodeOpUpgrade controller sets this to
-	// true unless the upgrade is forced.
-	// +optional
-	// +kubebuilder:default=false
-	SkipNodesAlreadyAtImage *bool `json:"skipNodesAlreadyAtImage,omitempty"`
 }
 
 // DrainOptions defines the options for draining a node.

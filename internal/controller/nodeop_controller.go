@@ -59,10 +59,6 @@ const (
 	labelKeyNodeOp = "kairos.io/nodeop"
 	labelKeyNode   = "kairos.io/node"
 	labelKeyReboot = "kairos.io/reboot"
-	// nodeImageRepoAnnotation is the annotation set by the node-labeler from
-	// KAIROS_IMAGE_REPO. When SkipNodesAlreadyAtImage is enabled, the NodeOp
-	// controller compares this against Spec.Image to skip no-op work.
-	nodeImageRepoAnnotation = "kairos.io/image-repo"
 	// Volume constants
 	hostRootVolumeName = "host-root"
 	sentinelVolumeName = "sentinel-volume"
@@ -668,9 +664,8 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Update the status map with any changes
 		nodeOp.Status.NodeStatuses[nodeName] = status
 
-		// Handle uncordoning for completed nodes. Skipped nodes (JobName=="")
-		// were never cordoned by this NodeOp, so there is nothing to undo.
-		if status.Phase == phaseCompleted && status.JobName != "" && getBool(nodeOp.Spec.Cordon, CordonDefault) {
+		// Handle uncordoning for completed nodes
+		if status.Phase == phaseCompleted && getBool(nodeOp.Spec.Cordon, CordonDefault) {
 			rebootOnSuccess := getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault)
 
 			if (rebootOnSuccess && status.RebootStatus == rebootStatusCompleted) || !rebootOnSuccess {
@@ -691,12 +686,6 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			anyFailed = true
 		}
 
-		// Skipped nodes (no Job, no reboot pod) are immediately complete
-		// regardless of RebootOnSuccess.
-		if status.Phase == phaseCompleted && status.JobName == "" {
-			completedNodes++
-			continue
-		}
 		// Count completed nodes based on whether reboot is required
 		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 			// Node is only completed when both job and reboot pod are completed
@@ -733,11 +722,6 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 // processJobStatus processes the job status for a specific node
 func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, status kairosiov1alpha1.NodeStatus) (kairosiov1alpha1.NodeStatus, error) {
 	log := logf.FromContext(ctx)
-
-	// Skipped nodes (recorded by recordSkippedNodes) have no Job to inspect.
-	if status.JobName == "" {
-		return status, nil
-	}
 
 	// Get the Job status
 	job := &batchv1.Job{}
@@ -1272,12 +1256,6 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
 	}
 
-	// Mark nodes already at the target image as completed-without-running.
-	// Must happen before concurrency counting so skipped nodes don't consume slots.
-	if err := r.recordSkippedNodes(ctx, nodeOp, targetNodes); err != nil {
-		return err
-	}
-
 	// Check if we should stop creating new jobs due to failures
 	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
 		log.Info("Stopping job creation due to failure and StopOnFailure=true")
@@ -1353,62 +1331,6 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 		}
 	}
 
-	return nil
-}
-
-// recordSkippedNodes adds a Completed-with-skip-message NodeStatus entry for
-// any target node whose kairos.io/image-repo annotation matches Spec.Image,
-// provided SkipNodesAlreadyAtImage is enabled and Spec.Image is set. Skipped
-// nodes get an empty JobName and RebootStatus=not-requested, so downstream
-// status processing and concurrency counting can recognise them as a no-op.
-func (r *NodeOpReconciler) recordSkippedNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, targetNodes []corev1.Node) error {
-	if !getBool(nodeOp.Spec.SkipNodesAlreadyAtImage, SkipNodesAlreadyAtImageDefault) || nodeOp.Spec.Image == "" {
-		return nil
-	}
-
-	log := logf.FromContext(ctx)
-
-	changed := false
-	for _, node := range targetNodes {
-		if _, exists := nodeOp.Status.NodeStatuses[node.Name]; exists {
-			continue
-		}
-		if node.Annotations[nodeImageRepoAnnotation] != nodeOp.Spec.Image {
-			continue
-		}
-		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
-			Phase:        phaseCompleted,
-			Message:      fmt.Sprintf("Skipped: node already at image %s", nodeOp.Spec.Image),
-			RebootStatus: rebootStatusNotRequested,
-			LastUpdated:  metav1.Now(),
-		}
-		changed = true
-		log.Info("Skipping node already at target image", "node", node.Name, "image", nodeOp.Spec.Image)
-	}
-
-	if !changed {
-		return nil
-	}
-
-	// Recompute overall Phase so an all-skipped NodeOp settles to Completed
-	// within the same reconcile instead of waiting for the next pass.
-	allCompleted := len(targetNodes) > 0
-	for _, n := range targetNodes {
-		s, ok := nodeOp.Status.NodeStatuses[n.Name]
-		if !ok || s.Phase != phaseCompleted {
-			allCompleted = false
-			break
-		}
-	}
-	if allCompleted {
-		nodeOp.Status.Phase = phaseCompleted
-	}
-	nodeOp.Status.LastUpdated = metav1.Now()
-
-	if err := r.Status().Update(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to record skipped nodes in NodeOp status")
-		return err
-	}
 	return nil
 }
 

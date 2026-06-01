@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -568,33 +569,164 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(*nodeOp.Spec.RebootOnSuccess).To(BeFalse())
 		})
 
-		It("should set SkipNodesAlreadyAtImage=true on the created NodeOp by default", func() {
-			By("Creating a NodeOpUpgrade with Force unset")
-			nodeOpUpgrade.Spec.Force = nil
-			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+		Context("Skipping nodes already at the target image", func() {
+			const targetImage = "quay.io/kairos/fedora:v4.0.3-amd64-generic-v0.0.4-k3sv1.32.4-k3s1"
 
-			By("Reconciling the NodeOpUpgrade")
-			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
-			Expect(err).NotTo(HaveOccurred())
+			createNode := func(name string, annotations map[string]string) {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:        name,
+						Labels:      map[string]string{"kubernetes.io/hostname": name},
+						Annotations: annotations,
+					},
+				}
+				Expect(k8sClient.Create(ctx, node)).To(Succeed())
+				createdNodeNames = append(createdNodeNames, name)
+			}
 
-			By("Verifying the NodeOp has SkipNodesAlreadyAtImage=true")
-			Expect(nodeOp.Spec.SkipNodesAlreadyAtImage).NotTo(BeNil(),
-				"NodeOpUpgrade should explicitly pass SkipNodesAlreadyAtImage through to NodeOp")
-			Expect(*nodeOp.Spec.SkipNodesAlreadyAtImage).To(BeTrue())
-		})
+			extractHostnameNotIn := func(sel *metav1.LabelSelector) []string {
+				if sel == nil {
+					return nil
+				}
+				for _, expr := range sel.MatchExpressions {
+					if expr.Key == "kubernetes.io/hostname" && expr.Operator == metav1.LabelSelectorOpNotIn {
+						out := append([]string(nil), expr.Values...)
+						return out
+					}
+				}
+				return nil
+			}
 
-		It("should set SkipNodesAlreadyAtImage=false on the created NodeOp when Force is true", func() {
-			By("Creating a NodeOpUpgrade with Force=true")
-			nodeOpUpgrade.Spec.Force = asBool(true)
-			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+			It("excludes matching nodes from the NodeOp's NodeSelector and records them as skipped", func() {
+				uniq := fmt.Sprintf("-%d", time.Now().UnixNano())
+				skippedA, skippedB, upgraded := "skip-a"+uniq, "skip-b"+uniq, "go-c"+uniq
 
-			By("Reconciling the NodeOpUpgrade")
-			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
-			Expect(err).NotTo(HaveOccurred())
+				By("Creating two nodes already at the target image and one out-of-date node")
+				createNode(skippedA, map[string]string{"kairos.io/image-repo": targetImage})
+				createNode(skippedB, map[string]string{"kairos.io/image-repo": targetImage})
+				createNode(upgraded, map[string]string{"kairos.io/image-repo": "quay.io/kairos/fedora:older"})
 
-			By("Verifying SkipNodesAlreadyAtImage is disabled so Force runs the upgrade everywhere")
-			Expect(nodeOp.Spec.SkipNodesAlreadyAtImage).NotTo(BeNil())
-			Expect(*nodeOp.Spec.SkipNodesAlreadyAtImage).To(BeFalse())
+				nodeOpUpgrade.Spec.Image = targetImage
+				nodeOpUpgrade.Spec.Force = asBool(false)
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				By("Reconciling the NodeOpUpgrade")
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the created NodeOp targets only the out-of-date node")
+				notIn := extractHostnameNotIn(nodeOp.Spec.NodeSelector)
+				Expect(notIn).To(ConsistOf(skippedA, skippedB),
+					"NodeOpUpgrade should augment NodeSelector with kubernetes.io/hostname NotIn for skipped nodes")
+
+				By("Verifying NodeOpUpgrade.status pre-records the skipped nodes as Completed")
+				updated := &kairosiov1alpha1.NodeOpUpgrade{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: nodeOpUpgradeName, Namespace: "default",
+				}, updated)).To(Succeed())
+
+				Expect(updated.Status.NodeStatuses).To(HaveKey(skippedA))
+				Expect(updated.Status.NodeStatuses).To(HaveKey(skippedB))
+				Expect(updated.Status.NodeStatuses).NotTo(HaveKey(upgraded),
+					"out-of-date node's status will be filled in by the NodeOp, not pre-populated")
+
+				skipStatusA := updated.Status.NodeStatuses[skippedA]
+				Expect(skipStatusA.Phase).To(Equal("Completed"))
+				Expect(skipStatusA.JobName).To(BeEmpty())
+				Expect(skipStatusA.Message).To(ContainSubstring("Skipped"))
+				Expect(skipStatusA.Message).To(ContainSubstring(targetImage))
+			})
+
+			It("leaves the NodeSelector unchanged when no nodes match Spec.Image", func() {
+				uniq := fmt.Sprintf("-%d", time.Now().UnixNano())
+				createNode("other-a"+uniq, map[string]string{"kairos.io/image-repo": "quay.io/kairos/fedora:older"})
+				createNode("other-b"+uniq, nil) // no annotation at all
+
+				originalSelector := &metav1.LabelSelector{MatchLabels: map[string]string{"kairos.io/managed": "true"}}
+				nodeOpUpgrade.Spec.NodeSelector = originalSelector.DeepCopy()
+				nodeOpUpgrade.Spec.Image = targetImage
+				nodeOpUpgrade.Spec.Force = asBool(false)
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(extractHostnameNotIn(nodeOp.Spec.NodeSelector)).To(BeEmpty(),
+					"no skipped nodes means no NotIn expression should be added")
+				Expect(nodeOp.Spec.NodeSelector.MatchLabels).To(Equal(originalSelector.MatchLabels))
+			})
+
+			It("leaves the NodeSelector unchanged when Force=true even if nodes match Spec.Image", func() {
+				uniq := fmt.Sprintf("-%d", time.Now().UnixNano())
+				createNode("match-a"+uniq, map[string]string{"kairos.io/image-repo": targetImage})
+
+				nodeOpUpgrade.Spec.Image = targetImage
+				nodeOpUpgrade.Spec.Force = asBool(true)
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(extractHostnameNotIn(nodeOp.Spec.NodeSelector)).To(BeEmpty(),
+					"Force=true must disable the pre-Pod skip")
+
+				updated := &kairosiov1alpha1.NodeOpUpgrade{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: nodeOpUpgradeName, Namespace: "default",
+				}, updated)).To(Succeed())
+				Expect(updated.Status.NodeStatuses).NotTo(HaveKey("match-a" + uniq))
+			})
+
+			It("does not create a NodeOp when every matching node is already at Spec.Image", func() {
+				uniq := fmt.Sprintf("-%d", time.Now().UnixNano())
+				labelKey := "skip-test" + uniq
+				createNode("all-a"+uniq, map[string]string{"kairos.io/image-repo": targetImage})
+				createNode("all-b"+uniq, map[string]string{"kairos.io/image-repo": targetImage})
+
+				// Tag both nodes so the upgrade's NodeSelector can target them.
+				for _, n := range []string{"all-a" + uniq, "all-b" + uniq} {
+					node := &corev1.Node{}
+					Expect(k8sClient.Get(ctx, types.NamespacedName{Name: n}, node)).To(Succeed())
+					if node.Labels == nil {
+						node.Labels = map[string]string{}
+					}
+					node.Labels[labelKey] = "true"
+					Expect(k8sClient.Update(ctx, node)).To(Succeed())
+				}
+
+				nodeOpUpgrade.Spec.Image = targetImage
+				nodeOpUpgrade.Spec.Force = asBool(false)
+				nodeOpUpgrade.Spec.NodeSelector = &metav1.LabelSelector{
+					MatchLabels: map[string]string{labelKey: "true"},
+				}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				controllerReconciler := &NodeOpUpgradeReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: nodeOpUpgradeName, Namespace: "default"},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying no NodeOp was created")
+				nodeOp := &kairosiov1alpha1.NodeOp{}
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name: nodeOpUpgradeName, Namespace: "default",
+				}, nodeOp)
+				Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+					"NodeOpUpgrade should short-circuit and not create a NodeOp when every target is skipped")
+
+				By("Verifying NodeOpUpgrade.status records both nodes as skipped and Phase=Completed")
+				updated := &kairosiov1alpha1.NodeOpUpgrade{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: nodeOpUpgradeName, Namespace: "default",
+				}, updated)).To(Succeed())
+				Expect(updated.Status.NodeStatuses).To(HaveKey("all-a" + uniq))
+				Expect(updated.Status.NodeStatuses).To(HaveKey("all-b" + uniq))
+				Expect(updated.Status.Phase).To(Equal("Completed"))
+			})
 		})
 
 		It("should set RebootOnSuccess to true when upgrading both partitions", func() {
