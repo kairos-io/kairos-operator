@@ -82,7 +82,7 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if apierrors.IsNotFound(err) {
 			// Compute which nodes are already at the target image so the NodeOp
 			// (if any) is created targeting only the ones that actually need work.
-			skippedNames, err := r.classifySkippedNodes(ctx, nodeOpUpgrade)
+			skippedNames, matchingCount, err := r.classifySkippedNodes(ctx, nodeOpUpgrade)
 			if err != nil {
 				log.Error(err, "Failed to classify nodes for image-repo skip")
 				return ctrl.Result{}, err
@@ -93,7 +93,9 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// these entries will appear.
 			r.recordSkippedNodes(nodeOpUpgrade, skippedNames)
 
-			if r.allTargetsSkipped(ctx, nodeOpUpgrade, skippedNames) {
+			// Short-circuit when every matching node is already at the target image.
+			// matchingCount > 0 avoids a no-op selector that legitimately matches nothing.
+			if matchingCount > 0 && len(skippedNames) == matchingCount {
 				log.Info("All targeted nodes are already at the target image; skipping NodeOp creation",
 					"nodeOpUpgrade", nodeOpUpgrade.Name, "skipped", len(skippedNames))
 				nodeOpUpgrade.Status.Phase = phaseCompleted
@@ -357,26 +359,28 @@ func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
 
 // classifySkippedNodes returns the names of nodes that match the upgrade's
 // NodeSelector and whose kairos.io/image-repo annotation already equals
-// Spec.Image. Honors Spec.Force: when true (or Spec.Image is empty) it returns
-// an empty slice so the upgrade runs on every targeted node.
+// Spec.Image, alongside the total number of matching nodes. The caller can
+// short-circuit NodeOp creation when len(skipped) == matchingCount > 0.
+//
+// Honors Spec.Force: when true (or Spec.Image is empty) the function returns
+// (nil, 0, nil) so the upgrade runs on every targeted node.
 func (r *NodeOpUpgradeReconciler) classifySkippedNodes(ctx context.Context,
-	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) ([]string, error) {
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) (skipped []string, matchingCount int, err error) {
 	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) || nodeOpUpgrade.Spec.Image == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	matching, err := r.listMatchingNodes(ctx, nodeOpUpgrade.Spec.NodeSelector)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	var skipped []string
 	for _, node := range matching {
 		if node.Annotations[nodeImageRepoAnnotation] == nodeOpUpgrade.Spec.Image {
 			skipped = append(skipped, node.Name)
 		}
 	}
-	return skipped, nil
+	return skipped, len(matching), nil
 }
 
 // listMatchingNodes returns all cluster nodes that match the given selector.
@@ -427,30 +431,6 @@ func (r *NodeOpUpgradeReconciler) recordSkippedNodes(nodeOpUpgrade *kairosiov1al
 			LastUpdated:  metav1.Now(),
 		}
 	}
-}
-
-// allTargetsSkipped reports whether every node matching Spec.NodeSelector is
-// already accounted for in skippedNames. Used to short-circuit NodeOp creation
-// when there is no work to schedule.
-func (r *NodeOpUpgradeReconciler) allTargetsSkipped(ctx context.Context,
-	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade, skippedNames []string) bool {
-	matching, err := r.listMatchingNodes(ctx, nodeOpUpgrade.Spec.NodeSelector)
-	if err != nil || len(matching) == 0 {
-		return false
-	}
-	if len(skippedNames) < len(matching) {
-		return false
-	}
-	skipSet := make(map[string]struct{}, len(skippedNames))
-	for _, n := range skippedNames {
-		skipSet[n] = struct{}{}
-	}
-	for _, n := range matching {
-		if _, ok := skipSet[n.Name]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // selectorExcludingNodes returns a copy of base augmented with a
