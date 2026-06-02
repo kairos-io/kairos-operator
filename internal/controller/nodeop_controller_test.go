@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,6 +13,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1335,6 +1337,100 @@ var _ = Describe("NodeOp Controller", func() {
 			sentinelVolume := job.Spec.Template.Spec.Volumes[1]
 			Expect(sentinelVolume.Name).To(Equal("sentinel-volume"))
 			Expect(sentinelVolume.VolumeSource.HostPath.Path).To(Equal("/usr/local/.kairos"))
+		})
+
+		It("creates the Job with a deterministic Name and embeds it in the reboot Pod's sentinel watch", func() {
+			By("Creating a NodeOp with RebootOnSuccess=true")
+			uniqueIDNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-unique-id", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, uniqueIDNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, uniqueIDNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling once")
+			rec := &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: uniqueIDNodeOp.Name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Looking up the Job and the reboot Pod that were created for the same node")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name},
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			job := jobList.Items[0]
+
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name, "kairos.io/reboot": "true"},
+			)).To(Succeed())
+			Expect(podList.Items).To(HaveLen(1))
+			rebootPod := podList.Items[0]
+
+			By("Verifying the Job was created with an explicit, unique Name (not GenerateName)")
+			Expect(job.Name).NotTo(BeEmpty())
+			Expect(job.GenerateName).To(BeEmpty(),
+				"Job must be created with a deterministic Name so the reboot Pod can be told exactly which sentinel to watch")
+
+			By("Verifying the reboot Pod's watch pattern is the Job's exact name, not the jobBaseName")
+			Expect(rebootPod.Spec.Containers).To(HaveLen(1))
+			rebootScript := strings.Join(rebootPod.Spec.Containers[0].Command, "\n")
+			Expect(rebootScript).To(ContainSubstring(job.Name+"-*"),
+				"reboot Pod must watch for the Job-specific sentinel pattern <jobName>-*")
+		})
+
+		It("does not include the racy leftover-sentinel cleanup in the reboot Pod's script", func() {
+			By("Creating a NodeOp with RebootOnSuccess=true")
+			noCleanupNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-no-cleanup", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, noCleanupNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, noCleanupNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			rec := &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: noCleanupNodeOp.Name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": noCleanupNodeOp.Name, "kairos.io/reboot": "true"},
+			)).To(Succeed())
+			Expect(podList.Items).To(HaveLen(1))
+
+			rebootScript := strings.Join(podList.Items[0].Spec.Containers[0].Command, "\n")
+			Expect(rebootScript).NotTo(ContainSubstring("Cleaning up any leftover sentinel files"),
+				"the leftover-sentinel cleanup must be gone now that the watch pattern is Job-specific")
+			Expect(rebootScript).NotTo(ContainSubstring("LEFTOVER_SENTINELS"),
+				"the leftover-sentinel cleanup must be gone now that the watch pattern is Job-specific")
 		})
 
 		It("should update rebootStatus field correctly throughout the reboot lifecycle", func() {
@@ -2958,6 +3054,14 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 		node := &corev1.Node{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: skippedNode}, node)).To(Succeed())
 		Expect(node.Spec.Unschedulable).To(BeFalse())
+
+		By("Verifying the preflight Pod was cleaned up after the verdict was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod for the skipped node must be deleted once the verdict is recorded")
 	})
 
 	It("proceeds with cordon/drain/Job when preflight terminates with an empty message", func() {
@@ -2995,6 +3099,14 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 		node := &corev1.Node{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proceedNode}, node)).To(Succeed())
 		Expect(node.Spec.Unschedulable).To(BeTrue())
+
+		By("Verifying the preflight Pod was cleaned up after the verdict was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod must be deleted once the controller decides to proceed with the main Job")
 	})
 
 	It("marks a node Failed when its preflight Pod ends up in PodFailed", func() {
@@ -3031,6 +3143,14 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 		node := &corev1.Node{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: failedNode}, node)).To(Succeed())
 		Expect(node.Spec.Unschedulable).To(BeFalse())
+
+		By("Verifying the preflight Pod was cleaned up after the failure was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod must be deleted once the controller records the Failed verdict")
 	})
 
 	It("leaves NodeStatus.Phase=Preflight while the Pod has not terminated", func() {
@@ -3078,14 +3198,22 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 
 		pods := listPreflightPods()
 		Expect(pods).To(HaveLen(1), "with Concurrency=1 only the first node should be in Preflight")
+		firstNode := pods[0].Spec.NodeName
 
 		By("Skipping the first preflight Pod so its slot becomes free")
 		completePreflight(&pods[0], "skipped")
 
 		reconcileOnce()
 
-		Eventually(func() int { return len(listPreflightPods()) }, timeout, interval).Should(Equal(2),
-			"after the first slot frees, the next preflight Pod should be created")
+		By("Verifying the freed slot was reused for a different node (the first Pod was cleaned up after its verdict)")
+		Eventually(func() bool {
+			current := listPreflightPods()
+			if len(current) != 1 {
+				return false
+			}
+			return current[0].Spec.NodeName != firstNode
+		}, timeout, interval).Should(BeTrue(),
+			"after the first verdict freed its slot, a preflight Pod should now exist for a different node")
 	})
 
 	It("uses Spec.Preflight.Image when set, leaving the main Job's image alone", func() {

@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -555,7 +556,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 }
 
 // createNodeJob creates a Job for a specific node
-func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, jobName string) error {
 	log := logf.FromContext(ctx)
 
 	// If cordoning is requested, cordon the node first
@@ -577,10 +578,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		}
 	}
 
-	// Create a full name combining all information
-	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6) // Leave room for suffix
-
 	// Determine backoff limit - use NodeOp setting or default to Kubernetes default (6)
 	backoffLimit := int32(6) // Kubernetes default
 	if nodeOp.Spec.BackoffLimit != nil {
@@ -597,8 +594,8 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: jobBaseName + "-",
-			Namespace:    nodeOp.Namespace,
+			Name:      jobName,
+			Namespace: nodeOp.Namespace,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
 				labelKeyNode:   node.Name,
@@ -619,7 +616,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		return err
 	}
 
-	// Get the actual job name that Kubernetes assigned
 	actualJobName := job.Name
 
 	// Initialize node status
@@ -1015,7 +1011,13 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 }
 
 // createRebootPod creates a reboot pod that waits for a sentinel file before rebooting
-func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobBaseName string) error {
+// createRebootPod schedules a long-lived Pod on nodeName whose only job is to
+// watch /usr/local/.kairos for a sentinel file written by the upgrade Job's
+// sentinel-creator container, then reboot the host. We pass the upgrade Job's
+// full name (not just the jobBaseName prefix) so the watch pattern
+// "<jobName>-*" matches exactly one Job's sentinel — see startMainJob for the
+// rationale.
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
 	log := logf.FromContext(ctx)
 
 	// Ensure service account for reboot pod
@@ -1060,19 +1062,10 @@ echo "No reboot annotation found, proceeding with reboot process..."
 
 ls -la /sentinel/ || echo "Cannot list /sentinel directory"
 
-echo "=== Cleaning up any leftover sentinel files ==="
-LEFTOVER_SENTINELS=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null || true)
-if [ -n "$LEFTOVER_SENTINELS" ]; then
-	echo "Found leftover sentinel files from previous runs:"
-	echo "$LEFTOVER_SENTINELS"
-	find /sentinel -name "` + jobBaseName + `-*" -type f -delete 2>/dev/null || true
-	echo "Cleaned up leftover sentinel files"
-else
-	echo "No leftover sentinel files found"
-fi
-
+# Watch only for THIS Job's sentinel (` + jobName + `-*). Stale sentinels left by
+# previous runs use different Job names and can't match.
 while true; do
-	SENTINEL_FILE=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null | head -1)
+	SENTINEL_FILE=$(find /sentinel -name "` + jobName + `-*" -type f 2>/dev/null | head -1)
 	if [ -n "$SENTINEL_FILE" ]; then
 		echo "Found sentinel file: $SENTINEL_FILE"
 		echo "Deleting sentinel file before reboot..."
@@ -1398,15 +1391,28 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 // startMainJob creates the reboot Pod (if RebootOnSuccess) and then the main
 // upgrade Job for a node. Shared by the no-preflight path and the
 // preflight-proceeded path.
+//
+// We mint a short per-run ID up-front and use it as the suffix of the Job's
+// explicit Name (instead of relying on Kubernetes' GenerateName, which only
+// reveals the assigned name after Create). The reboot Pod, which is created
+// BEFORE the Job to survive drain, can then be told exactly which Job's
+// sentinel file to watch for ("<jobName>-*"). Without this, the reboot Pod
+// could only watch on "<jobBaseName>-*" — a pattern that matches both the
+// active Job's sentinel and any stale sentinels left behind by a previous
+// interrupted run, which used to require a startup "cleanup" pass that raced
+// the active Job's sentinel-creator. Unique per-run names eliminate that
+// ambiguity (so the cleanup pass is gone).
 func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
+	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
+	jobName := jobBaseName + "-" + rand.String(5)
+
 	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-		jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
-		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobBaseName); err != nil {
+		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
 			return err
 		}
 	}
-	return r.createNodeJob(ctx, nodeOp, node)
+	return r.createNodeJob(ctx, nodeOp, node, jobName)
 }
 
 // hasFailedJobs checks if any jobs have failed
@@ -1495,7 +1501,11 @@ func (r *NodeOpReconciler) advancePreflight(ctx context.Context, nodeOp *kairosi
 		if msg == "" {
 			// Proceed: hand the slot off to the normal upgrade flow.
 			log.Info("Preflight reported proceed; starting main Job", "node", node.Name)
-			return r.startMainJob(ctx, nodeOp, node)
+			if err := r.startMainJob(ctx, nodeOp, node); err != nil {
+				return err
+			}
+			r.deletePreflightPod(ctx, pod)
+			return nil
 		}
 		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
 			Phase:        phaseCompleted,
@@ -1504,7 +1514,11 @@ func (r *NodeOpReconciler) advancePreflight(ctx context.Context, nodeOp *kairosi
 			LastUpdated:  metav1.Now(),
 		}
 		log.Info("Preflight reported skip", "node", node.Name, "reason", msg)
-		return r.Status().Update(ctx, nodeOp)
+		if err := r.Status().Update(ctx, nodeOp); err != nil {
+			return err
+		}
+		r.deletePreflightPod(ctx, pod)
+		return nil
 	case corev1.PodFailed:
 		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
 			Phase:        phaseFailed,
@@ -1513,10 +1527,27 @@ func (r *NodeOpReconciler) advancePreflight(ctx context.Context, nodeOp *kairosi
 			LastUpdated:  metav1.Now(),
 		}
 		log.Info("Preflight Pod ended in PodFailed; marking node Failed", "node", node.Name)
-		return r.Status().Update(ctx, nodeOp)
+		if err := r.Status().Update(ctx, nodeOp); err != nil {
+			return err
+		}
+		r.deletePreflightPod(ctx, pod)
+		return nil
 	default:
 		// Still Pending/Running/etc. — nothing to advance yet.
 		return nil
+	}
+}
+
+// deletePreflightPod removes a preflight Pod once its verdict has been
+// recorded. Best-effort: failures are logged but don't bubble up so the
+// already-acted-upon verdict isn't undone by a transient delete error.
+func (r *NodeOpReconciler) deletePreflightPod(ctx context.Context, pod *corev1.Pod) {
+	log := logf.FromContext(ctx)
+	grace := int64(0)
+	if err := r.Delete(ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &grace}); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete preflight Pod", "pod", pod.Name)
+		}
 	}
 }
 
