@@ -1032,9 +1032,13 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 		operatorImage = "quay.io/kairos/kairos-operator:latest"
 	}
 
+	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
+	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
+	rebootPrefix := utils.TruncateNameWithHash(nodeOp.Name+"-reboot", utils.KubernetesNameLengthLimit-6) + "-"
+
 	rebootPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
+			GenerateName: rebootPrefix,
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
@@ -1441,18 +1445,38 @@ func (r *NodeOpReconciler) countRunningJobs(nodeOp *kairosiov1alpha1.NodeOp) int
 	return count
 }
 
-// startPreflight creates a preflight Pod for the given node and records the
-// node as Phase=Preflight in the NodeOp status. The Pod runs the user-supplied
-// preflight command with the host root mounted read-only at Spec.HostMountPath.
+// startPreflight ensures a preflight Pod exists for the given node and records
+// the node as Phase=Preflight in the NodeOp status. The Pod runs the
+// user-supplied preflight command with the host root mounted read-only at
+// Spec.HostMountPath.
+//
+// If a labeled preflight Pod for this node already exists (e.g. because a
+// previous reconcile created the Pod but failed before writing NodeStatus, so
+// manageJobCreation re-routes the node back through startPreflight), we reuse
+// it instead of creating a duplicate that advancePreflight would later have to
+// pick from arbitrarily.
 func (r *NodeOpReconciler) startPreflight(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
 	log := logf.FromContext(ctx)
 
-	pod := r.buildPreflightPod(nodeOp, node)
-	if err := controllerutil.SetControllerReference(nodeOp, pod, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference on preflight Pod: %w", err)
+	existing, err := r.findPreflightPod(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
 	}
-	if err := r.Create(ctx, pod); err != nil {
-		return fmt.Errorf("failed to create preflight Pod for %s: %w", node.Name, err)
+
+	var podName string
+	if existing != nil {
+		podName = existing.Name
+		log.Info("Reusing existing preflight Pod", "nodeOp", nodeOp.Name, "node", node.Name, "pod", podName)
+	} else {
+		pod := r.buildPreflightPod(nodeOp, node)
+		if err := controllerutil.SetControllerReference(nodeOp, pod, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set controller reference on preflight Pod: %w", err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			return fmt.Errorf("failed to create preflight Pod for %s: %w", node.Name, err)
+		}
+		podName = pod.Name
+		log.Info("Created preflight Pod", "nodeOp", nodeOp.Name, "node", node.Name, "pod", podName)
 	}
 
 	if nodeOp.Status.NodeStatuses == nil {
@@ -1468,7 +1492,6 @@ func (r *NodeOpReconciler) startPreflight(ctx context.Context, nodeOp *kairosiov
 		log.Error(err, "Failed to update NodeOp status after starting preflight")
 		return err
 	}
-	log.Info("Created preflight Pod", "nodeOp", nodeOp.Name, "node", node.Name, "pod", pod.Name)
 	return nil
 }
 
@@ -1629,9 +1652,13 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 		hostMount = "/host" //nolint:goconst // default fallback; not worth a constant
 	}
 
+	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
+	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
+	prefix := utils.TruncateNameWithHash(nodeOp.Name+"-preflight", utils.KubernetesNameLengthLimit-6) + "-"
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: nodeOp.Name + "-preflight-",
+			GenerateName: prefix,
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
 				labelKeyNodeOp:    nodeOp.Name,

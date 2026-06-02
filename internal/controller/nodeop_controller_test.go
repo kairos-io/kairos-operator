@@ -3015,6 +3015,66 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 		Expect(second).To(HaveLen(len(first)))
 	})
 
+	It("reuses an existing preflight Pod and records NodeStatus when one is found without a status entry", func() {
+		By("Manually creating a preflight Pod for a node BEFORE the NodeOp's status is populated")
+		// This simulates the partial-failure scenario where a prior reconcile
+		// created the Pod but failed to write Status.Update afterwards — the
+		// next reconcile must reuse the existing Pod, not create a duplicate.
+		uniq := nodeNames[0]
+		preExisting := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: resourceName + "-preflight-",
+				Namespace:    "default",
+				Labels: map[string]string{
+					"kairos.io/nodeop":    resourceName,
+					"kairos.io/preflight": "true",
+					"kairos.io/node":      uniq,
+				},
+			},
+			Spec: corev1.PodSpec{
+				NodeName:      uniq,
+				RestartPolicy: corev1.RestartPolicyOnFailure,
+				Containers: []corev1.Container{{
+					Name:    "preflight",
+					Image:   preflightCtxImage,
+					Command: []string{"/bin/sh", "-c", "true"},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+
+		By("Creating the NodeOp with no status yet")
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		By("Verifying only one preflight Pod exists for this node (existing one was reused, not duplicated)")
+		podsForNode := []corev1.Pod{}
+		for _, p := range listPreflightPods() {
+			if p.Spec.NodeName == uniq {
+				podsForNode = append(podsForNode, p)
+			}
+		}
+		Expect(podsForNode).To(HaveLen(1))
+		Expect(podsForNode[0].Name).To(Equal(preExisting.Name),
+			"the existing preflight Pod must be reused; the controller must not create a duplicate")
+
+		By("Verifying NodeStatus.Phase is recorded as Preflight even though the Pod was pre-existing")
+		updated := getNodeOp()
+		Expect(updated.Status.NodeStatuses).To(HaveKey(uniq))
+		Expect(updated.Status.NodeStatuses[uniq].Phase).To(Equal("Preflight"))
+	})
+
 	It("skips a node when its preflight Pod terminates with a non-empty message", func() {
 		nodeOp := &kairosiov1alpha1.NodeOp{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},

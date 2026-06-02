@@ -170,33 +170,53 @@ func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairo
 // when this is a NodeOpUpgrade. Output convention: a non-empty
 // /dev/termination-log means "skip this node with the given reason"; an empty
 // termination log + exit 0 means "proceed".
+//
+// get_version returns an empty string when KAIROS_VERSION is missing (e.g.
+// when falling back to /etc/os-release on a non-Kairos image or older OS that
+// doesn't carry KAIROS_* variables). The skip short-circuit then requires
+// BOTH CURRENT and TARGET to be non-empty before declaring equality —
+// otherwise two unknowns would compare equal and we'd wrongly skip the
+// upgrade. Unknown either side means "proceed".
+//
+// File paths are read from environment variables (defaults match what the
+// preflight Pod sees in production), so tests can drive the script with
+// synthetic files in a temp directory.
 func upgradePreflightScript() string {
 	return `set -e
+: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
+: "${TARGET_OS_RELEASE:=/etc/os-release}"
+: "${HOST_KAIROS_RELEASE:=` + hostMountPath + `/etc/kairos-release}"
+: "${HOST_OS_RELEASE:=` + hostMountPath + `/etc/os-release}"
+: "${TERMINATION_LOG:=/dev/termination-log}"
+
 get_version() {
     local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        echo ""
+        return 0
+    fi
     # shellcheck disable=SC1090
     . "$file_path"
+    if [ -z "${KAIROS_VERSION}" ]; then
+        echo ""
+        return 0
+    fi
     echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
 }
 
-if [ -f "/etc/kairos-release" ]; then
-    TARGET=$(get_version "/etc/kairos-release")
-else
-    TARGET=$(get_version "/etc/os-release")
+TARGET=$(get_version "${TARGET_KAIROS_RELEASE}")
+if [ -z "${TARGET}" ]; then
+    TARGET=$(get_version "${TARGET_OS_RELEASE}")
 fi
 
-if [ -f "` + hostMountPath + `/etc/kairos-release" ]; then
-    CURRENT=$(get_version "` + hostMountPath + `/etc/kairos-release")
-elif [ -f "` + hostMountPath + `/etc/os-release" ]; then
-    CURRENT=$(get_version "` + hostMountPath + `/etc/os-release")
-else
-    echo "host kairos-release/os-release not accessible" >&2
-    exit 1
+CURRENT=$(get_version "${HOST_KAIROS_RELEASE}")
+if [ -z "${CURRENT}" ]; then
+    CURRENT=$(get_version "${HOST_OS_RELEASE}")
 fi
 
-echo "Host: ${CURRENT}, Target: ${TARGET}"
-if [ "${CURRENT}" = "${TARGET}" ]; then
-    echo "node is already at ${TARGET}" > /dev/termination-log
+echo "Host: ${CURRENT:-unknown}, Target: ${TARGET:-unknown}"
+if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
+    echo "node is already at ${TARGET}" > "${TERMINATION_LOG}"
 fi
 exit 0
 `
