@@ -163,6 +163,16 @@ func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return hasRebootLabel
 			})),
 		).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForPreflightPod),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				// Only watch Pods we created as part of a preflight check.
+				pod := obj.(*corev1.Pod)
+				_, hasPreflightLabel := pod.Labels[labelKeyPreflight]
+				return hasPreflightLabel
+			})),
+		).
 		Named("nodeop").
 		Complete(r)
 }
@@ -864,6 +874,32 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 		"job", job.Name,
 		"namespace", job.Namespace)
 	return nil
+}
+
+// findNodeOpsForPreflightPod enqueues the owning NodeOp when a preflight Pod's
+// status changes. Without this, the NodeOp would only re-reconcile on its
+// 5-minute fallback requeue, leaving a node stuck in Phase=Preflight long
+// after its preflight Pod has terminated.
+func (r *NodeOpReconciler) findNodeOpsForPreflightPod(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod := obj.(*corev1.Pod)
+	log := logf.FromContext(ctx)
+
+	nodeOpName, ok := pod.Labels[labelKeyNodeOp]
+	if !ok {
+		return nil
+	}
+	log.Info("Preflight pod status changed, triggering NodeOp reconciliation",
+		"pod", pod.Name,
+		"nodeOp", nodeOpName,
+		"namespace", pod.Namespace)
+	return []reconcile.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Name:      nodeOpName,
+				Namespace: pod.Namespace,
+			},
+		},
+	}
 }
 
 // findNodeOpsForRebootPod finds NodeOps that are associated with the given reboot pod

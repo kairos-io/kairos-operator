@@ -61,6 +61,38 @@ var _ = Describe("getSentinelImage", func() {
 	})
 })
 
+var _ = Describe("findNodeOpsForPreflightPod", func() {
+	r := &NodeOpReconciler{}
+
+	It("returns the owning NodeOp when the Pod carries the preflight + nodeop labels", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-preflight-xyz",
+				Namespace: "default",
+				Labels: map[string]string{
+					"kairos.io/preflight": "true",
+					"kairos.io/nodeop":    "my-upgrade",
+				},
+			},
+		}
+		reqs := r.findNodeOpsForPreflightPod(context.Background(), pod)
+		Expect(reqs).To(HaveLen(1))
+		Expect(reqs[0].NamespacedName.Name).To(Equal("my-upgrade"))
+		Expect(reqs[0].NamespacedName.Namespace).To(Equal("default"))
+	})
+
+	It("returns nothing when the Pod is missing the nodeop label", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "stray",
+				Namespace: "default",
+				Labels:    map[string]string{"kairos.io/preflight": "true"},
+			},
+		}
+		Expect(r.findNodeOpsForPreflightPod(context.Background(), pod)).To(BeEmpty())
+	})
+})
+
 var _ = Describe("NodeOp Controller", func() {
 	const (
 		NodeOpNamespace = "default"
