@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,6 +13,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -58,6 +60,38 @@ var _ = Describe("getSentinelImage", func() {
 
 	It("should return busybox:latest when Spec.Image and SENTINEL_IMAGE are empty", func() {
 		Expect(getSentinelImage(nodeOp)).To(Equal("busybox:latest"))
+	})
+})
+
+var _ = Describe("findNodeOpsForPreflightPod", func() {
+	r := &NodeOpReconciler{}
+
+	It("returns the owning NodeOp when the Pod carries the preflight + nodeop labels", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-preflight-xyz",
+				Namespace: "default",
+				Labels: map[string]string{
+					"kairos.io/preflight": "true",
+					"kairos.io/nodeop":    "my-upgrade",
+				},
+			},
+		}
+		reqs := r.findNodeOpsForPreflightPod(context.Background(), pod)
+		Expect(reqs).To(HaveLen(1))
+		Expect(reqs[0].NamespacedName.Name).To(Equal("my-upgrade"))
+		Expect(reqs[0].NamespacedName.Namespace).To(Equal("default"))
+	})
+
+	It("returns nothing when the Pod is missing the nodeop label", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "stray",
+				Namespace: "default",
+				Labels:    map[string]string{"kairos.io/preflight": "true"},
+			},
+		}
+		Expect(r.findNodeOpsForPreflightPod(context.Background(), pod)).To(BeEmpty())
 	})
 })
 
@@ -1303,6 +1337,100 @@ var _ = Describe("NodeOp Controller", func() {
 			sentinelVolume := job.Spec.Template.Spec.Volumes[1]
 			Expect(sentinelVolume.Name).To(Equal("sentinel-volume"))
 			Expect(sentinelVolume.VolumeSource.HostPath.Path).To(Equal("/usr/local/.kairos"))
+		})
+
+		It("creates the Job with a deterministic Name and embeds it in the reboot Pod's sentinel watch", func() {
+			By("Creating a NodeOp with RebootOnSuccess=true")
+			uniqueIDNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-unique-id", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, uniqueIDNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, uniqueIDNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling once")
+			rec := &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: uniqueIDNodeOp.Name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Looking up the Job and the reboot Pod that were created for the same node")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name},
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			job := jobList.Items[0]
+
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name, "kairos.io/reboot": "true"},
+			)).To(Succeed())
+			Expect(podList.Items).To(HaveLen(1))
+			rebootPod := podList.Items[0]
+
+			By("Verifying the Job was created with an explicit, unique Name (not GenerateName)")
+			Expect(job.Name).NotTo(BeEmpty())
+			Expect(job.GenerateName).To(BeEmpty(),
+				"Job must be created with a deterministic Name so the reboot Pod can be told exactly which sentinel to watch")
+
+			By("Verifying the reboot Pod's watch pattern is the Job's exact name, not the jobBaseName")
+			Expect(rebootPod.Spec.Containers).To(HaveLen(1))
+			rebootScript := strings.Join(rebootPod.Spec.Containers[0].Command, "\n")
+			Expect(rebootScript).To(ContainSubstring(job.Name+"-*"),
+				"reboot Pod must watch for the Job-specific sentinel pattern <jobName>-*")
+		})
+
+		It("does not include the racy leftover-sentinel cleanup in the reboot Pod's script", func() {
+			By("Creating a NodeOp with RebootOnSuccess=true")
+			noCleanupNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-no-cleanup", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, noCleanupNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, noCleanupNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			rec := &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := rec.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: noCleanupNodeOp.Name, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels{"kairos.io/nodeop": noCleanupNodeOp.Name, "kairos.io/reboot": "true"},
+			)).To(Succeed())
+			Expect(podList.Items).To(HaveLen(1))
+
+			rebootScript := strings.Join(podList.Items[0].Spec.Containers[0].Command, "\n")
+			Expect(rebootScript).NotTo(ContainSubstring("Cleaning up any leftover sentinel files"),
+				"the leftover-sentinel cleanup must be gone now that the watch pattern is Job-specific")
+			Expect(rebootScript).NotTo(ContainSubstring("LEFTOVER_SENTINELS"),
+				"the leftover-sentinel cleanup must be gone now that the watch pattern is Job-specific")
 		})
 
 		It("should update rebootStatus field correctly throughout the reboot lifecycle", func() {
@@ -2582,5 +2710,634 @@ var _ = Describe("getTargetNodes ordering", func() {
 		}
 		Expect(ours).To(HaveLen(3))
 		Expect(ours[0]).To(Equal(cpName), "control-plane node should be sorted first even without a NodeSelector")
+	})
+})
+
+var _ = Describe("NodeOp Controller - Preflight", func() {
+	const (
+		preflightCtxImage = "quay.io/kairos/test:preflight"
+	)
+
+	var (
+		ctx                  context.Context
+		resourceName         string
+		nodeNames            []string
+		nodes                []*corev1.Node
+		controllerReconciler *NodeOpReconciler
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
+		uniq := fmt.Sprintf("-%d", time.Now().UnixNano())
+		resourceName = "preflight-test" + uniq
+		nodeNames = []string{"pf-a" + uniq, "pf-b" + uniq, "pf-c" + uniq}
+		nodes = make([]*corev1.Node, 0, len(nodeNames))
+		for _, name := range nodeNames {
+			n := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   name,
+					Labels: map[string]string{"kubernetes.io/hostname": name},
+				},
+			}
+			Expect(k8sClient.Create(ctx, n)).To(Succeed())
+			nodes = append(nodes, n)
+		}
+		controllerReconciler = &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	})
+
+	AfterEach(func() {
+		Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
+
+		// Delete NodeOp.
+		Eventually(func() error {
+			r := &kairosiov1alpha1.NodeOp{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, r)
+			if err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			return k8sClient.Delete(ctx, r)
+		}, timeout, interval).Should(Succeed())
+
+		// Delete owned Jobs.
+		Eventually(func() error {
+			jl := &batchv1.JobList{}
+			if err := k8sClient.List(ctx, jl, client.InNamespace("default")); err != nil {
+				return err
+			}
+			for i := range jl.Items {
+				j := jl.Items[i]
+				for _, o := range j.OwnerReferences {
+					if o.Kind == kindNodeOp && o.Name == resourceName {
+						prop := metav1.DeletePropagationBackground
+						if err := k8sClient.Delete(ctx, &j, &client.DeleteOptions{PropagationPolicy: &prop}); err != nil {
+							return err
+						}
+						break
+					}
+				}
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+
+		// Delete preflight Pods we may have created for this NodeOp.
+		podList := &corev1.PodList{}
+		Expect(k8sClient.List(ctx, podList,
+			client.InNamespace("default"),
+			client.MatchingLabels{"kairos.io/preflight": "true", "kairos.io/nodeop": resourceName},
+		)).To(Succeed())
+		for i := range podList.Items {
+			pod := podList.Items[i]
+			grace := int64(0)
+			_ = k8sClient.Delete(ctx, &pod, &client.DeleteOptions{GracePeriodSeconds: &grace})
+		}
+
+		// Delete the test nodes.
+		for _, n := range nodes {
+			node := n
+			Eventually(func() error {
+				return k8sClient.Delete(ctx, node)
+			}, timeout, interval).Should(Succeed())
+		}
+	})
+
+	// --- Helpers ----------------------------------------------------------
+
+	listPreflightPods := func() []corev1.Pod {
+		podList := &corev1.PodList{}
+		Expect(k8sClient.List(ctx, podList,
+			client.InNamespace("default"),
+			client.MatchingLabels{"kairos.io/preflight": "true", "kairos.io/nodeop": resourceName},
+		)).To(Succeed())
+		return podList.Items
+	}
+
+	reconcileOnce := func() {
+		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: resourceName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	getNodeOp := func() *kairosiov1alpha1.NodeOp {
+		out := &kairosiov1alpha1.NodeOp{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: "default"}, out)).To(Succeed())
+		return out
+	}
+
+	listOwnedJobs := func() []batchv1.Job {
+		jl := &batchv1.JobList{}
+		Expect(k8sClient.List(ctx, jl,
+			client.InNamespace("default"),
+			client.MatchingLabels{"kairos.io/nodeop": resourceName},
+		)).To(Succeed())
+		var owned []batchv1.Job
+		for _, j := range jl.Items {
+			for _, o := range j.OwnerReferences {
+				if o.Kind == kindNodeOp && o.Name == resourceName {
+					owned = append(owned, j)
+					break
+				}
+			}
+		}
+		return owned
+	}
+
+	completePreflight := func(pod *corev1.Pod, terminationMessage string) {
+		latest := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, latest)).To(Succeed())
+		latest.Status.Phase = corev1.PodSucceeded
+		latest.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name: "preflight",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 0,
+						Reason:   "Completed",
+						Message:  terminationMessage,
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, latest)).To(Succeed())
+	}
+
+	failPreflight := func(pod *corev1.Pod) {
+		latest := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, latest)).To(Succeed())
+		latest.Status.Phase = corev1.PodFailed
+		latest.Status.ContainerStatuses = []corev1.ContainerStatus{
+			{
+				Name: "preflight",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 137,
+						Reason:   "DeadlineExceeded",
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, latest)).To(Succeed())
+	}
+
+	// --- Tests ------------------------------------------------------------
+
+	It("preserves existing behavior when Spec.Preflight is nil", func() {
+		By("Creating a NodeOp without Spec.Preflight")
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		By("Verifying no preflight Pods were created")
+		Expect(listPreflightPods()).To(BeEmpty())
+
+		By("Verifying Jobs were created directly (one per node)")
+		Eventually(func() int { return len(listOwnedJobs()) }, timeout, interval).Should(Equal(len(nodeNames)))
+	})
+
+	It("creates one preflight Pod per node and no Jobs while preflight is in progress", func() {
+		By("Creating a NodeOp with Spec.Preflight set")
+		deadline := int32(45)
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:         preflightCtxImage,
+				Command:       []string{"echo", "test"},
+				HostMountPath: "/host",
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command:               []string{"/bin/sh", "-c", "echo nope > /dev/termination-log"},
+					ActiveDeadlineSeconds: &deadline,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		By("Verifying one preflight Pod per node was created")
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		got := []string{pods[0].Spec.NodeName, pods[1].Spec.NodeName, pods[2].Spec.NodeName}
+		Expect(got).To(ConsistOf(nodeNames))
+
+		By("Verifying each preflight Pod has the expected spec")
+		for _, pod := range pods {
+			Expect(pod.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
+			Expect(pod.Spec.ActiveDeadlineSeconds).NotTo(BeNil())
+			Expect(*pod.Spec.ActiveDeadlineSeconds).To(Equal(int64(deadline)))
+
+			Expect(pod.Spec.Containers).To(HaveLen(1))
+			c := pod.Spec.Containers[0]
+			Expect(c.Image).To(Equal(preflightCtxImage), "preflight image defaults to Spec.Image when Spec.Preflight.Image is empty")
+			Expect(c.Command).To(Equal([]string{"/bin/sh", "-c", "echo nope > /dev/termination-log"}))
+
+			// terminationMessagePolicy defaults to File (zero value). Verify it's not FallbackToLogsOnError.
+			Expect(c.TerminationMessagePolicy == "" || c.TerminationMessagePolicy == corev1.TerminationMessageReadFile).To(BeTrue())
+
+			By("Verifying the host root is mounted read-only at Spec.HostMountPath")
+			var hostVol *corev1.Volume
+			for i := range pod.Spec.Volumes {
+				if pod.Spec.Volumes[i].HostPath != nil && pod.Spec.Volumes[i].HostPath.Path == "/" {
+					v := pod.Spec.Volumes[i]
+					hostVol = &v
+					break
+				}
+			}
+			Expect(hostVol).NotTo(BeNil(), "preflight Pod must mount the host root via hostPath")
+
+			var hostMount *corev1.VolumeMount
+			for i := range c.VolumeMounts {
+				if c.VolumeMounts[i].Name == hostVol.Name {
+					m := c.VolumeMounts[i]
+					hostMount = &m
+					break
+				}
+			}
+			Expect(hostMount).NotTo(BeNil())
+			Expect(hostMount.MountPath).To(Equal("/host"))
+			Expect(hostMount.ReadOnly).To(BeTrue())
+
+			By("Verifying labels and owner ref")
+			Expect(pod.Labels).To(HaveKeyWithValue("kairos.io/preflight", "true"))
+			Expect(pod.Labels).To(HaveKeyWithValue("kairos.io/nodeop", resourceName))
+			Expect(pod.Labels).To(HaveKeyWithValue("kairos.io/node", pod.Spec.NodeName))
+			Expect(pod.OwnerReferences).To(HaveLen(1))
+			Expect(pod.OwnerReferences[0].Kind).To(Equal(kindNodeOp))
+			Expect(pod.OwnerReferences[0].Name).To(Equal(resourceName))
+		}
+
+		By("Verifying NodeStatus.Phase = Preflight for every targeted node")
+		updated := getNodeOp()
+		for _, n := range nodeNames {
+			Expect(updated.Status.NodeStatuses).To(HaveKey(n))
+			Expect(updated.Status.NodeStatuses[n].Phase).To(Equal("Preflight"))
+		}
+
+		By("Verifying no Jobs were created while preflight is in progress")
+		Expect(listOwnedJobs()).To(BeEmpty())
+
+		By("Verifying no nodes were cordoned")
+		for _, name := range nodeNames {
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(),
+				fmt.Sprintf("node %s must NOT be cordoned during preflight", name))
+		}
+	})
+
+	It("is idempotent: a second reconcile does not create more preflight Pods", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		first := listPreflightPods()
+		Expect(first).To(HaveLen(len(nodeNames)))
+
+		reconcileOnce()
+		second := listPreflightPods()
+		Expect(second).To(HaveLen(len(first)))
+	})
+
+	It("reuses an existing preflight Pod and records NodeStatus when one is found without a status entry", func() {
+		By("Manually creating a preflight Pod for a node BEFORE the NodeOp's status is populated")
+		// This simulates the partial-failure scenario where a prior reconcile
+		// created the Pod but failed to write Status.Update afterwards — the
+		// next reconcile must reuse the existing Pod, not create a duplicate.
+		uniq := nodeNames[0]
+		preExisting := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: resourceName + "-preflight-",
+				Namespace:    "default",
+				Labels: map[string]string{
+					"kairos.io/nodeop":    resourceName,
+					"kairos.io/preflight": "true",
+					"kairos.io/node":      uniq,
+				},
+			},
+			Spec: corev1.PodSpec{
+				NodeName:      uniq,
+				RestartPolicy: corev1.RestartPolicyOnFailure,
+				Containers: []corev1.Container{{
+					Name:    "preflight",
+					Image:   preflightCtxImage,
+					Command: []string{"/bin/sh", "-c", "true"},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+
+		By("Creating the NodeOp with no status yet")
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		By("Verifying only one preflight Pod exists for this node (existing one was reused, not duplicated)")
+		podsForNode := []corev1.Pod{}
+		for _, p := range listPreflightPods() {
+			if p.Spec.NodeName == uniq {
+				podsForNode = append(podsForNode, p)
+			}
+		}
+		Expect(podsForNode).To(HaveLen(1))
+		Expect(podsForNode[0].Name).To(Equal(preExisting.Name),
+			"the existing preflight Pod must be reused; the controller must not create a duplicate")
+
+		By("Verifying NodeStatus.Phase is recorded as Preflight even though the Pod was pre-existing")
+		updated := getNodeOp()
+		Expect(updated.Status.NodeStatuses).To(HaveKey(uniq))
+		Expect(updated.Status.NodeStatuses[uniq].Phase).To(Equal("Preflight"))
+	})
+
+	It("skips a node when its preflight Pod terminates with a non-empty message", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		By("Marking the first preflight Pod as Succeeded with a skip reason")
+		completePreflight(&pods[0], "node is already at v4.0.3")
+
+		reconcileOnce()
+
+		skippedNode := pods[0].Spec.NodeName
+		updated := getNodeOp()
+		status, ok := updated.Status.NodeStatuses[skippedNode]
+		Expect(ok).To(BeTrue())
+		Expect(status.Phase).To(Equal("Completed"))
+		Expect(status.JobName).To(BeEmpty())
+		Expect(status.Message).To(Equal("Skipped by preflight: node is already at v4.0.3"))
+
+		By("Verifying no Job was created for the skipped node")
+		for _, j := range listOwnedJobs() {
+			Expect(j.Labels["kairos.io/node"]).NotTo(Equal(skippedNode))
+		}
+
+		By("Verifying the skipped node was NOT cordoned")
+		node := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: skippedNode}, node)).To(Succeed())
+		Expect(node.Spec.Unschedulable).To(BeFalse())
+
+		By("Verifying the preflight Pod was cleaned up after the verdict was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod for the skipped node must be deleted once the verdict is recorded")
+	})
+
+	It("proceeds with cordon/drain/Job when preflight terminates with an empty message", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Cordon:  asBool(true),
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		By("Marking the first preflight Pod as Succeeded with an EMPTY message (proceed)")
+		completePreflight(&pods[0], "")
+
+		reconcileOnce()
+
+		proceedNode := pods[0].Spec.NodeName
+		updated := getNodeOp()
+		status, ok := updated.Status.NodeStatuses[proceedNode]
+		Expect(ok).To(BeTrue())
+		Expect(status.Phase).NotTo(Equal("Preflight"), "node should have moved past Preflight after empty-message verdict")
+		Expect(status.Phase).NotTo(Equal("Completed"), "an empty-message verdict means proceed, not skip")
+		Expect(status.JobName).NotTo(BeEmpty(), "a Job should have been created for the proceeding node")
+
+		By("Verifying the proceeding node was cordoned")
+		node := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proceedNode}, node)).To(Succeed())
+		Expect(node.Spec.Unschedulable).To(BeTrue())
+
+		By("Verifying the preflight Pod was cleaned up after the verdict was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod must be deleted once the controller decides to proceed with the main Job")
+	})
+
+	It("marks a node Failed when its preflight Pod ends up in PodFailed", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "exit 5"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		By("Marking the first preflight Pod as PodFailed")
+		failPreflight(&pods[0])
+
+		reconcileOnce()
+
+		failedNode := pods[0].Spec.NodeName
+		updated := getNodeOp()
+		status, ok := updated.Status.NodeStatuses[failedNode]
+		Expect(ok).To(BeTrue())
+		Expect(status.Phase).To(Equal("Failed"))
+		Expect(status.JobName).To(BeEmpty(), "no Job should have been created for a node that failed preflight")
+		Expect(status.Message).To(ContainSubstring("Preflight"))
+
+		By("Verifying the failed-preflight node was NOT cordoned")
+		node := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: failedNode}, node)).To(Succeed())
+		Expect(node.Spec.Unschedulable).To(BeFalse())
+
+		By("Verifying the preflight Pod was cleaned up after the failure was recorded")
+		Eventually(func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: pods[0].Name, Namespace: "default"}, p)
+			return apierrors.IsNotFound(err) || p.DeletionTimestamp != nil
+		}, timeout, interval).Should(BeTrue(),
+			"the preflight Pod must be deleted once the controller records the Failed verdict")
+	})
+
+	It("leaves NodeStatus.Phase=Preflight while the Pod has not terminated", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "sleep 60"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		By("Reconciling again without touching Pod status")
+		reconcileOnce()
+
+		updated := getNodeOp()
+		for _, n := range nodeNames {
+			Expect(updated.Status.NodeStatuses[n].Phase).To(Equal("Preflight"))
+		}
+		Expect(listOwnedJobs()).To(BeEmpty())
+	})
+
+	It("counts Preflight against Concurrency: with Concurrency=1, only one preflight Pod runs at a time", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:       preflightCtxImage,
+				Command:     []string{"echo", "test"},
+				Concurrency: 1,
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(1), "with Concurrency=1 only the first node should be in Preflight")
+		firstNode := pods[0].Spec.NodeName
+
+		By("Skipping the first preflight Pod so its slot becomes free")
+		completePreflight(&pods[0], "skipped")
+
+		reconcileOnce()
+
+		By("Verifying the freed slot was reused for a different node (the first Pod was cleaned up after its verdict)")
+		Eventually(func() bool {
+			current := listPreflightPods()
+			if len(current) != 1 {
+				return false
+			}
+			return current[0].Spec.NodeName != firstNode
+		}, timeout, interval).Should(BeTrue(),
+			"after the first verdict freed its slot, a preflight Pod should now exist for a different node")
+	})
+
+	It("uses Spec.Preflight.Image when set, leaving the main Job's image alone", func() {
+		const preflightOverride = "quay.io/kairos/test:preflight-only"
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+					Image:   preflightOverride,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+		for _, pod := range pods {
+			Expect(pod.Spec.Containers[0].Image).To(Equal(preflightOverride))
+		}
+
+		By("Completing all preflights with empty messages so the main Job runs")
+		for i := range pods {
+			completePreflight(&pods[i], "")
+		}
+
+		reconcileOnce()
+
+		jobs := listOwnedJobs()
+		Expect(jobs).To(HaveLen(len(nodeNames)))
+		for _, job := range jobs {
+			containers := job.Spec.Template.Spec.Containers
+			if len(containers) == 0 {
+				containers = job.Spec.Template.Spec.InitContainers
+			}
+			Expect(containers).NotTo(BeEmpty())
+			Expect(containers[0].Image).To(Equal(preflightCtxImage),
+				"the main Job container must keep Spec.Image, not the preflight override")
+		}
+	})
+
+	It("defaults Spec.Preflight.ActiveDeadlineSeconds to a sane value when not set", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "true"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+		for _, pod := range pods {
+			Expect(pod.Spec.ActiveDeadlineSeconds).NotTo(BeNil(),
+				"preflight Pod must always have an ActiveDeadlineSeconds to guarantee forward progress")
+			Expect(*pod.Spec.ActiveDeadlineSeconds).To(BeNumerically(">", 0))
+		}
 	})
 })

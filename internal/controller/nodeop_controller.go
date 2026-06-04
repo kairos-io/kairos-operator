@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -56,9 +57,18 @@ const (
 	rebootStatusPending      = "pending"
 	rebootStatusCompleted    = "completed"
 	// Label keys used on Jobs and Pods created by the NodeOp controller
-	labelKeyNodeOp = "kairos.io/nodeop"
-	labelKeyNode   = "kairos.io/node"
-	labelKeyReboot = "kairos.io/reboot"
+	labelKeyNodeOp    = "kairos.io/nodeop"
+	labelKeyNode      = "kairos.io/node"
+	labelKeyReboot    = "kairos.io/reboot"
+	labelKeyPreflight = "kairos.io/preflight"
+	// Phase set on a node while its preflight Pod is in flight.
+	phasePreflight = "Preflight"
+	// preflightContainerName is the single container name inside every preflight Pod.
+	preflightContainerName = "preflight"
+	// preflightDefaultActiveDeadlineSeconds bounds total preflight Pod lifetime
+	// (used as a controller-side fallback when Spec.Preflight.ActiveDeadlineSeconds
+	// is nil; the CRD's kubebuilder:default applies the same value at admission).
+	preflightDefaultActiveDeadlineSeconds = int64(120)
 	// Volume constants
 	hostRootVolumeName = "host-root"
 	sentinelVolumeName = "sentinel-volume"
@@ -152,6 +162,16 @@ func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				pod := obj.(*corev1.Pod)
 				_, hasRebootLabel := pod.Labels[labelKeyReboot]
 				return hasRebootLabel
+			})),
+		).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.findNodeOpsForPreflightPod),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				// Only watch Pods we created as part of a preflight check.
+				pod := obj.(*corev1.Pod)
+				_, hasPreflightLabel := pod.Labels[labelKeyPreflight]
+				return hasPreflightLabel
 			})),
 		).
 		Named("nodeop").
@@ -438,7 +458,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      hostRootVolumeName,
-								MountPath: "/host",
+								MountPath: "/host", //nolint:goconst // FHS default mount; not worth a constant
 							},
 						},
 					},
@@ -514,7 +534,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      hostRootVolumeName,
-								MountPath: "/host",
+								MountPath: "/host", //nolint:goconst // FHS default mount; not worth a constant
 							},
 						},
 					},
@@ -536,7 +556,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 }
 
 // createNodeJob creates a Job for a specific node
-func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, jobName string) error {
 	log := logf.FromContext(ctx)
 
 	// If cordoning is requested, cordon the node first
@@ -558,10 +578,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		}
 	}
 
-	// Create a full name combining all information
-	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6) // Leave room for suffix
-
 	// Determine backoff limit - use NodeOp setting or default to Kubernetes default (6)
 	backoffLimit := int32(6) // Kubernetes default
 	if nodeOp.Spec.BackoffLimit != nil {
@@ -578,8 +594,8 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: jobBaseName + "-",
-			Namespace:    nodeOp.Namespace,
+			Name:      jobName,
+			Namespace: nodeOp.Namespace,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
 				labelKeyNode:   node.Name,
@@ -600,7 +616,6 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		return err
 	}
 
-	// Get the actual job name that Kubernetes assigned
 	actualJobName := job.Name
 
 	// Initialize node status
@@ -650,6 +665,18 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	completedNodes := 0
 	var err error
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
+		// Nodes still in the Preflight phase have no Job yet; their state is
+		// driven by manageJobCreation via the preflight Pod.
+		if status.Phase == phasePreflight {
+			continue
+		}
+		// Skipped-by-preflight nodes are terminal: Phase=Completed, no Job,
+		// no reboot. Don't run them through the Job/reboot processors.
+		if status.Phase == phaseCompleted && status.JobName == "" {
+			completedNodes++
+			continue
+		}
+
 		status, err = r.processJobStatus(ctx, nodeOp, nodeName, status)
 		if err != nil {
 			return err
@@ -845,6 +872,32 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 	return nil
 }
 
+// findNodeOpsForPreflightPod enqueues the owning NodeOp when a preflight Pod's
+// status changes. Without this, the NodeOp would only re-reconcile on its
+// 5-minute fallback requeue, leaving a node stuck in Phase=Preflight long
+// after its preflight Pod has terminated.
+func (r *NodeOpReconciler) findNodeOpsForPreflightPod(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod := obj.(*corev1.Pod)
+	log := logf.FromContext(ctx)
+
+	nodeOpName, ok := pod.Labels[labelKeyNodeOp]
+	if !ok {
+		return nil
+	}
+	log.Info("Preflight pod status changed, triggering NodeOp reconciliation",
+		"pod", pod.Name,
+		"nodeOp", nodeOpName,
+		"namespace", pod.Namespace)
+	return []reconcile.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Name:      nodeOpName,
+				Namespace: pod.Namespace,
+			},
+		},
+	}
+}
+
 // findNodeOpsForRebootPod finds NodeOps that are associated with the given reboot pod
 func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj client.Object) []reconcile.Request {
 	pod := obj.(*corev1.Pod)
@@ -958,7 +1011,13 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 }
 
 // createRebootPod creates a reboot pod that waits for a sentinel file before rebooting
-func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobBaseName string) error {
+// createRebootPod schedules a long-lived Pod on nodeName whose only job is to
+// watch /usr/local/.kairos for a sentinel file written by the upgrade Job's
+// sentinel-creator container, then reboot the host. We pass the upgrade Job's
+// full name (not just the jobBaseName prefix) so the watch pattern
+// "<jobName>-*" matches exactly one Job's sentinel — see startMainJob for the
+// rationale.
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
 	log := logf.FromContext(ctx)
 
 	// Ensure service account for reboot pod
@@ -973,9 +1032,13 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 		operatorImage = "quay.io/kairos/kairos-operator:latest"
 	}
 
+	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
+	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
+	rebootPrefix := utils.TruncateNameWithHash(nodeOp.Name+"-reboot", utils.KubernetesNameLengthLimit-6) + "-"
+
 	rebootPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-reboot-", nodeOp.Name),
+			GenerateName: rebootPrefix,
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
@@ -1003,19 +1066,10 @@ echo "No reboot annotation found, proceeding with reboot process..."
 
 ls -la /sentinel/ || echo "Cannot list /sentinel directory"
 
-echo "=== Cleaning up any leftover sentinel files ==="
-LEFTOVER_SENTINELS=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null || true)
-if [ -n "$LEFTOVER_SENTINELS" ]; then
-	echo "Found leftover sentinel files from previous runs:"
-	echo "$LEFTOVER_SENTINELS"
-	find /sentinel -name "` + jobBaseName + `-*" -type f -delete 2>/dev/null || true
-	echo "Cleaned up leftover sentinel files"
-else
-	echo "No leftover sentinel files found"
-fi
-
+# Watch only for THIS Job's sentinel (` + jobName + `-*). Stale sentinels left by
+# previous runs use different Job names and can't match.
 while true; do
-	SENTINEL_FILE=$(find /sentinel -name "` + jobBaseName + `-*" -type f 2>/dev/null | head -1)
+	SENTINEL_FILE=$(find /sentinel -name "` + jobName + `-*" -type f 2>/dev/null | head -1)
 	if [ -n "$SENTINEL_FILE" ]; then
 		echo "Found sentinel file: $SENTINEL_FILE"
 		echo "Deleting sentinel file before reboot..."
@@ -1240,97 +1294,129 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 	return sortedNodes, nil
 }
 
-// manageJobCreation manages the creation of jobs based on concurrency and stop-on-failure settings
+// manageJobCreation drives per-node state transitions: it advances preflight
+// Pods that already exist, starts preflight or main work for nodes that don't
+// have any state yet (respecting Concurrency and StopOnFailure), and creates
+// the main Job when a preflight has reported "proceed".
 func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
 
-	// Get target nodes
 	targetNodes, err := r.getTargetNodes(ctx, nodeOp)
 	if err != nil {
 		return err
 	}
 
-	// Initialize status if needed
 	if nodeOp.Status.NodeStatuses == nil {
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
 	}
 
-	// Check if we should stop creating new jobs due to failures
 	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
 		log.Info("Stopping job creation due to failure and StopOnFailure=true")
 		return nil
 	}
 
-	// Count currently running jobs
-	runningCount := r.countRunningJobs(nodeOp)
+	// First pass: advance any nodes currently in Preflight. Skipped/Failed
+	// outcomes free their slot; proceed outcomes transition into the normal
+	// Job-creation path inline (slot stays held by the same node).
+	for _, node := range targetNodes {
+		status, exists := nodeOp.Status.NodeStatuses[node.Name]
+		if !exists || status.Phase != phasePreflight {
+			continue
+		}
+		if err := r.advancePreflight(ctx, nodeOp, node); err != nil {
+			log.Error(err, "Failed to advance preflight for node", "node", node.Name)
+			return err
+		}
+	}
 
-	// Determine how many new jobs we can start
+	// StopOnFailure may have been tripped by a preflight failure recorded above.
+	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
+		log.Info("Stopping new work after preflight failure (StopOnFailure=true)")
+		return nil
+	}
+
+	// Second pass: start work for nodes that don't have a status entry yet,
+	// up to the concurrency budget.
+	runningCount := r.countRunningJobs(nodeOp)
 	var maxConcurrency int32
 	if nodeOp.Spec.Concurrency == 0 {
-		// 0 means unlimited concurrency
 		maxConcurrency = int32(len(targetNodes))
 	} else {
 		maxConcurrency = nodeOp.Spec.Concurrency
 	}
-
 	availableSlots := maxConcurrency - runningCount
 	if availableSlots <= 0 {
-		log.V(1).Info("No available slots for new jobs",
+		log.V(1).Info("No available slots for new work",
 			"nodeOp", nodeOp.Name,
 			"running", runningCount,
 			"maxConcurrency", maxConcurrency)
 		return nil
 	}
 
-	// Find nodes that don't have jobs yet
-	var nodesNeedingJobs []corev1.Node
+	var freshNodes []corev1.Node
 	for _, node := range targetNodes {
 		if _, exists := nodeOp.Status.NodeStatuses[node.Name]; !exists {
-			nodesNeedingJobs = append(nodesNeedingJobs, node)
+			freshNodes = append(freshNodes, node)
 		}
 	}
-
-	if len(nodesNeedingJobs) == 0 {
-		log.V(1).Info("All target nodes already have jobs", "nodeOp", nodeOp.Name)
+	if len(freshNodes) == 0 {
 		return nil
 	}
 
-	// Create jobs up to the available slots
-	jobsToCreate := int(availableSlots)
-	if jobsToCreate > len(nodesNeedingJobs) {
-		jobsToCreate = len(nodesNeedingJobs)
+	toStart := int(availableSlots)
+	if toStart > len(freshNodes) {
+		toStart = len(freshNodes)
 	}
 
-	log.Info("Creating jobs for nodes",
+	log.Info("Starting new work for nodes",
 		"nodeOp", nodeOp.Name,
-		"jobsToCreate", jobsToCreate,
+		"toStart", toStart,
 		"availableSlots", availableSlots,
-		"nodesNeedingJobs", len(nodesNeedingJobs))
+		"freshNodes", len(freshNodes))
 
-	// Create reboot pods first if needed
-	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		for i := 0; i < jobsToCreate; i++ {
-			node := nodesNeedingJobs[i]
-			fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-			jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
-
-			if err := r.createRebootPod(ctx, nodeOp, node.Name, jobBaseName); err != nil {
-				log.Error(err, "Failed to create reboot pod for node", "node", node.Name)
-				// Continue with other nodes
+	for i := 0; i < toStart; i++ {
+		node := freshNodes[i]
+		if nodeOp.Spec.Preflight != nil {
+			if err := r.startPreflight(ctx, nodeOp, node); err != nil {
+				log.Error(err, "Failed to start preflight for node", "node", node.Name)
+				continue
 			}
+			continue
 		}
-	}
-
-	// Create jobs for the selected nodes
-	for i := 0; i < jobsToCreate; i++ {
-		node := nodesNeedingJobs[i]
-		if err := r.createNodeJob(ctx, nodeOp, node); err != nil {
-			log.Error(err, "Failed to create Job for node, continuing with other nodes", "node", node.Name)
+		if err := r.startMainJob(ctx, nodeOp, node); err != nil {
+			log.Error(err, "Failed to start main Job for node", "node", node.Name)
 			continue
 		}
 	}
 
 	return nil
+}
+
+// startMainJob creates the reboot Pod (if RebootOnSuccess) and then the main
+// upgrade Job for a node. Shared by the no-preflight path and the
+// preflight-proceeded path.
+//
+// We mint a short per-run ID up-front and use it as the suffix of the Job's
+// explicit Name (instead of relying on Kubernetes' GenerateName, which only
+// reveals the assigned name after Create). The reboot Pod, which is created
+// BEFORE the Job to survive drain, can then be told exactly which Job's
+// sentinel file to watch for ("<jobName>-*"). Without this, the reboot Pod
+// could only watch on "<jobBaseName>-*" — a pattern that matches both the
+// active Job's sentinel and any stale sentinels left behind by a previous
+// interrupted run, which used to require a startup "cleanup" pass that raced
+// the active Job's sentinel-creator. Unique per-run names eliminate that
+// ambiguity (so the cleanup pass is gone).
+func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
+	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
+	jobName := jobBaseName + "-" + rand.String(5)
+
+	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
+		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
+			return err
+		}
+	}
+	return r.createNodeJob(ctx, nodeOp, node, jobName)
 }
 
 // hasFailedJobs checks if any jobs have failed
@@ -1347,13 +1433,263 @@ func (r *NodeOpReconciler) hasFailedJobs(nodeOp *kairosiov1alpha1.NodeOp) bool {
 func (r *NodeOpReconciler) countRunningJobs(nodeOp *kairosiov1alpha1.NodeOp) int32 {
 	var count int32
 	for _, status := range nodeOp.Status.NodeStatuses {
-		// Conditions where we consider a job "running" or "busy":
-		// 1. It's in Pending or Running phase, OR
-		// 2. It's Completed but reboot is still pending (node is busy rebooting)
-		if status.Phase == phasePending || status.Phase == phaseRunning ||
+		// Conditions where we consider a node "in flight" against the concurrency budget:
+		// 1. It's running a preflight check, OR
+		// 2. It's in Pending or Running phase, OR
+		// 3. It's Completed but reboot is still pending (node is busy rebooting)
+		if status.Phase == phasePreflight || status.Phase == phasePending || status.Phase == phaseRunning ||
 			(status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending) {
 			count++
 		}
 	}
 	return count
+}
+
+// startPreflight ensures a preflight Pod exists for the given node and records
+// the node as Phase=Preflight in the NodeOp status. The Pod runs the
+// user-supplied preflight command with the host root mounted read-only at
+// Spec.HostMountPath.
+//
+// If a labeled preflight Pod for this node already exists (e.g. because a
+// previous reconcile created the Pod but failed before writing NodeStatus, so
+// manageJobCreation re-routes the node back through startPreflight), we reuse
+// it instead of creating a duplicate that advancePreflight would later have to
+// pick from arbitrarily.
+func (r *NodeOpReconciler) startPreflight(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	log := logf.FromContext(ctx)
+
+	existing, err := r.findPreflightPod(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
+	}
+
+	var podName string
+	if existing != nil {
+		podName = existing.Name
+		log.Info("Reusing existing preflight Pod", "nodeOp", nodeOp.Name, "node", node.Name, "pod", podName)
+	} else {
+		pod := r.buildPreflightPod(nodeOp, node)
+		if err := controllerutil.SetControllerReference(nodeOp, pod, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set controller reference on preflight Pod: %w", err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			return fmt.Errorf("failed to create preflight Pod for %s: %w", node.Name, err)
+		}
+		podName = pod.Name
+		log.Info("Created preflight Pod", "nodeOp", nodeOp.Name, "node", node.Name, "pod", podName)
+	}
+
+	if nodeOp.Status.NodeStatuses == nil {
+		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
+	}
+	nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+		Phase:        phasePreflight,
+		Message:      "Preflight in progress",
+		RebootStatus: rebootStatusNotRequested,
+		LastUpdated:  metav1.Now(),
+	}
+	if err := r.Status().Update(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to update NodeOp status after starting preflight")
+		return err
+	}
+	return nil
+}
+
+// advancePreflight inspects the preflight Pod for a node currently in
+// Phase=Preflight and either: marks the node Completed (with the termination
+// message as the skip reason), marks it Failed, or proceeds to create the main
+// Job (which transitions it to Phase=Pending). Nodes whose preflight Pod has
+// not yet terminated are left untouched.
+func (r *NodeOpReconciler) advancePreflight(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	log := logf.FromContext(ctx)
+
+	pod, err := r.findPreflightPod(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
+	}
+	if pod == nil {
+		// Preflight Pod disappeared. Treat as Failed so the user notices.
+		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+			Phase:        phaseFailed,
+			Message:      "Preflight Pod not found",
+			RebootStatus: rebootStatusNotRequested,
+			LastUpdated:  metav1.Now(),
+		}
+		return r.Status().Update(ctx, nodeOp)
+	}
+
+	switch pod.Status.Phase {
+	case corev1.PodSucceeded:
+		msg := preflightTerminationMessage(pod)
+		if msg == "" {
+			// Proceed: hand the slot off to the normal upgrade flow.
+			log.Info("Preflight reported proceed; starting main Job", "node", node.Name)
+			if err := r.startMainJob(ctx, nodeOp, node); err != nil {
+				return err
+			}
+			r.deletePreflightPod(ctx, pod)
+			return nil
+		}
+		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+			Phase:        phaseCompleted,
+			Message:      "Skipped by preflight: " + msg,
+			RebootStatus: rebootStatusNotRequested,
+			LastUpdated:  metav1.Now(),
+		}
+		log.Info("Preflight reported skip", "node", node.Name, "reason", msg)
+		if err := r.Status().Update(ctx, nodeOp); err != nil {
+			return err
+		}
+		r.deletePreflightPod(ctx, pod)
+		return nil
+	case corev1.PodFailed:
+		nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+			Phase:        phaseFailed,
+			Message:      "Preflight failed: " + preflightFailureReason(pod),
+			RebootStatus: rebootStatusNotRequested,
+			LastUpdated:  metav1.Now(),
+		}
+		log.Info("Preflight Pod ended in PodFailed; marking node Failed", "node", node.Name)
+		if err := r.Status().Update(ctx, nodeOp); err != nil {
+			return err
+		}
+		r.deletePreflightPod(ctx, pod)
+		return nil
+	default:
+		// Still Pending/Running/etc. — nothing to advance yet.
+		return nil
+	}
+}
+
+// deletePreflightPod removes a preflight Pod once its verdict has been
+// recorded. Best-effort: failures are logged but don't bubble up so the
+// already-acted-upon verdict isn't undone by a transient delete error.
+func (r *NodeOpReconciler) deletePreflightPod(ctx context.Context, pod *corev1.Pod) {
+	log := logf.FromContext(ctx)
+	grace := int64(0)
+	if err := r.Delete(ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &grace}); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete preflight Pod", "pod", pod.Name)
+		}
+	}
+}
+
+// preflightTerminationMessage returns the termination message written by the
+// preflight container (if any). Empty string means "proceed".
+func preflightTerminationMessage(pod *corev1.Pod) string {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != preflightContainerName {
+			continue
+		}
+		if cs.State.Terminated != nil {
+			return cs.State.Terminated.Message
+		}
+	}
+	return ""
+}
+
+// preflightFailureReason returns a short human-readable reason for a failed
+// preflight Pod, falling back to the Pod's own Reason/Message fields.
+func preflightFailureReason(pod *corev1.Pod) string {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != preflightContainerName {
+			continue
+		}
+		if cs.State.Terminated != nil {
+			reason := cs.State.Terminated.Reason
+			if reason == "" {
+				reason = fmt.Sprintf("exit %d", cs.State.Terminated.ExitCode)
+			}
+			return reason
+		}
+	}
+	if pod.Status.Reason != "" {
+		return pod.Status.Reason
+	}
+	return "container did not report a terminated state"
+}
+
+// findPreflightPod returns the preflight Pod owned by this NodeOp for the
+// given node, or nil if none exists.
+func (r *NodeOpReconciler) findPreflightPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (*corev1.Pod, error) {
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(nodeOp.Namespace),
+		client.MatchingLabels{
+			labelKeyNodeOp:    nodeOp.Name,
+			labelKeyNode:      nodeName,
+			labelKeyPreflight: "true", //nolint:goconst // common label value; not worth a constant
+		},
+	); err != nil {
+		return nil, err
+	}
+	if len(podList.Items) == 0 {
+		return nil, nil
+	}
+	return &podList.Items[0], nil
+}
+
+// buildPreflightPod returns the PodSpec for a single preflight Pod targeting
+// the given node. The host root is mounted read-only at Spec.HostMountPath
+// (defaulting to "/host"). `restartPolicy: OnFailure` plus
+// `ActiveDeadlineSeconds` absorb transient failures while bounding total
+// lifetime. `terminationMessagePolicy: File` (the default) ensures the
+// container only communicates a skip reason via explicit writes to
+// /dev/termination-log.
+func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) *corev1.Pod {
+	image := nodeOp.Spec.Preflight.Image
+	if image == "" {
+		image = getNodeOpImage(nodeOp)
+	}
+
+	deadline := preflightDefaultActiveDeadlineSeconds
+	if nodeOp.Spec.Preflight.ActiveDeadlineSeconds != nil {
+		deadline = int64(*nodeOp.Spec.Preflight.ActiveDeadlineSeconds)
+	}
+
+	hostMount := nodeOp.Spec.HostMountPath
+	if hostMount == "" {
+		hostMount = "/host" //nolint:goconst // default fallback; not worth a constant
+	}
+
+	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
+	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
+	prefix := utils.TruncateNameWithHash(nodeOp.Name+"-preflight", utils.KubernetesNameLengthLimit-6) + "-"
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: prefix,
+			Namespace:    nodeOp.Namespace,
+			Labels: map[string]string{
+				labelKeyNodeOp:    nodeOp.Name,
+				labelKeyNode:      node.Name,
+				labelKeyPreflight: "true", //nolint:goconst // common label value; not worth a constant
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:              node.Name,
+			RestartPolicy:         corev1.RestartPolicyOnFailure,
+			ActiveDeadlineSeconds: &deadline,
+			ImagePullSecrets:      nodeOp.Spec.ImagePullSecrets,
+			Containers: []corev1.Container{{
+				Name:                     preflightContainerName,
+				Image:                    image,
+				Command:                  nodeOp.Spec.Preflight.Command,
+				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      hostRootVolumeName,
+					MountPath: hostMount,
+					ReadOnly:  true,
+				}},
+			}},
+			Volumes: []corev1.Volume{{
+				Name: hostRootVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/",
+					},
+				},
+			}},
+		},
+	}
 }

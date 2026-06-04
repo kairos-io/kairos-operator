@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +26,123 @@ const (
 	interval  = time.Millisecond * 250
 	labelTrue = "true"
 )
+
+var _ = Describe("upgradePreflightScript", func() {
+	// These tests drive the actual shell script with synthetic
+	// /etc/kairos-release files in a temp directory (via env-var overrides),
+	// so we're testing real behaviour rather than literal script content.
+
+	type files struct {
+		targetKairos, targetOS, hostKairos, hostOS string
+	}
+
+	// runScript runs the preflight script with the given files mapped in via
+	// env vars (empty path => omit the file). Returns the contents of the
+	// termination-log file (or "" if not written).
+	runScript := func(f files) string {
+		tmpDir := GinkgoT().TempDir()
+		writeMaybe := func(name, content string) string {
+			if content == "" {
+				return filepath.Join(tmpDir, name+"-DOES-NOT-EXIST")
+			}
+			p := filepath.Join(tmpDir, name)
+			Expect(os.WriteFile(p, []byte(content), 0644)).To(Succeed())
+			return p
+		}
+
+		termLog := filepath.Join(tmpDir, "termination-log")
+
+		cmd := exec.Command("/bin/sh", "-c", upgradePreflightScript())
+		cmd.Env = append(os.Environ(),
+			"TARGET_KAIROS_RELEASE="+writeMaybe("target-kairos", f.targetKairos),
+			"TARGET_OS_RELEASE="+writeMaybe("target-os", f.targetOS),
+			"HOST_KAIROS_RELEASE="+writeMaybe("host-kairos", f.hostKairos),
+			"HOST_OS_RELEASE="+writeMaybe("host-os", f.hostOS),
+			"TERMINATION_LOG="+termLog,
+		)
+		out, err := cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "script must always exit 0: %s", string(out))
+
+		msg, readErr := os.ReadFile(termLog)
+		if os.IsNotExist(readErr) {
+			return ""
+		}
+		Expect(readErr).NotTo(HaveOccurred())
+		return string(msg)
+	}
+
+	const matchingRelease = `KAIROS_VERSION="v4.1.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const differentRelease = `KAIROS_VERSION="v4.2.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const osReleaseWithoutKairos = `NAME="Generic Linux"
+VERSION="1.0"
+ID=generic
+`
+
+	It("skips when both kairos-release files have matching KAIROS_* values", func() {
+		msg := runScript(files{
+			targetKairos: matchingRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(msg).To(ContainSubstring("node is already at"))
+		Expect(msg).To(ContainSubstring("v4.1.0"))
+	})
+
+	It("proceeds when KAIROS_VERSION differs between target and host", func() {
+		msg := runScript(files{
+			targetKairos: differentRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(msg).To(BeEmpty(), "different versions must NOT trigger a skip")
+	})
+
+	It("proceeds when the target side has no readable KAIROS_VERSION (target falls back to os-release without KAIROS_*)", func() {
+		// This is the bug Copilot flagged: if both sides fall back to
+		// os-release files that lack KAIROS_*, get_version returns "" for
+		// both, and a naive equality check would skip the upgrade.
+		msg := runScript(files{
+			targetOS: osReleaseWithoutKairos,
+			hostOS:   osReleaseWithoutKairos,
+		})
+		Expect(msg).To(BeEmpty(),
+			"two unknown versions must NOT compare equal and trigger a wrongful skip")
+	})
+
+	It("proceeds when only the target side lacks KAIROS_VERSION", func() {
+		msg := runScript(files{
+			targetOS:   osReleaseWithoutKairos,
+			hostKairos: matchingRelease,
+		})
+		Expect(msg).To(BeEmpty())
+	})
+
+	It("proceeds when only the host side lacks KAIROS_VERSION", func() {
+		msg := runScript(files{
+			targetKairos: matchingRelease,
+			hostOS:       osReleaseWithoutKairos,
+		})
+		Expect(msg).To(BeEmpty())
+	})
+
+	It("proceeds when no files exist at all", func() {
+		msg := runScript(files{})
+		Expect(msg).To(BeEmpty())
+	})
+
+	It("falls back from kairos-release to os-release when kairos-release is missing", func() {
+		// os-release on a Kairos host CAN carry KAIROS_* — exercise that path.
+		msg := runScript(files{
+			targetOS:   matchingRelease,
+			hostKairos: matchingRelease,
+		})
+		Expect(msg).To(ContainSubstring("node is already at"))
+	})
+})
 
 // reconcileNodeOpUpgrade is a helper that reconciles a NodeOpUpgrade and returns the resulting NodeOp
 func reconcileNodeOpUpgrade(ctx context.Context, k8sClient client.Client,
@@ -653,6 +773,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 					UpgradeActive:   asBool(false), // Avoid having to complete reboot pods
 					UpgradeRecovery: asBool(true),
 					Concurrency:     1,
+					Force:           asBool(true), // Bypass preflight; this test focuses on NodeOp ordering
 					NodeSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{targetLabel: labelTrue},
 					},
@@ -760,6 +881,48 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				_, isMaster := node.Labels["node-role.kubernetes.io/master"]
 				Expect(isMaster).To(BeFalse(), fmt.Sprintf("Node %s should be a worker", name))
 			}
+		})
+
+		It("populates Spec.Preflight on the created NodeOp when Spec.Force is false", func() {
+			By("Creating the NodeOpUpgrade with Force=false (default)")
+			nodeOpUpgrade.Spec.Force = asBool(false)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the NodeOp has Spec.Preflight set")
+			Expect(nodeOp.Spec.Preflight).NotTo(BeNil(),
+				"NodeOpUpgrade should populate Spec.Preflight on the NodeOp when Force=false")
+			Expect(nodeOp.Spec.Preflight.Command).NotTo(BeEmpty())
+
+			By("Verifying the preflight Command is a shell invocation that uses /dev/termination-log to report skip")
+			Expect(nodeOp.Spec.Preflight.Command).To(HaveLen(3))
+			Expect(nodeOp.Spec.Preflight.Command[0]).To(Equal("/bin/sh"))
+			Expect(nodeOp.Spec.Preflight.Command[1]).To(Equal("-c"))
+			Expect(nodeOp.Spec.Preflight.Command[2]).To(ContainSubstring("TERMINATION_LOG"),
+				"the script must communicate skip via the TERMINATION_LOG path (defaults to /dev/termination-log)")
+
+			By("Verifying Spec.Preflight.Image is empty so it defaults to Spec.Image at the NodeOp level")
+			Expect(nodeOp.Spec.Preflight.Image).To(BeEmpty())
+
+			By("Verifying Spec.Preflight.ActiveDeadlineSeconds is set")
+			Expect(nodeOp.Spec.Preflight.ActiveDeadlineSeconds).NotTo(BeNil())
+			Expect(*nodeOp.Spec.Preflight.ActiveDeadlineSeconds).To(BeNumerically(">", 0))
+		})
+
+		It("leaves Spec.Preflight nil on the created NodeOp when Spec.Force is true", func() {
+			By("Creating the NodeOpUpgrade with Force=true")
+			nodeOpUpgrade.Spec.Force = asBool(true)
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Spec.Preflight is nil so the upgrade runs everywhere with no preflight check")
+			Expect(nodeOp.Spec.Preflight).To(BeNil())
 		})
 	})
 })

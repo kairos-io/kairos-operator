@@ -102,6 +102,21 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              preflight:
+                properties:
+                  activeDeadlineSeconds:
+                    default: 120
+                    format: int32
+                    type: integer
+                  command:
+                    items:
+                      type: string
+                    type: array
+                  image:
+                    type: string
+                required:
+                - command
+                type: object
               rebootOnSuccess:
                 default: false
                 type: boolean

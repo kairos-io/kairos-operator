@@ -133,6 +133,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
 				Enabled: asBool(true), // Always drain for upgrades
 			},
+			Preflight: buildUpgradePreflight(nodeOpUpgrade),
 		},
 	}
 
@@ -142,6 +143,83 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 	}
 
 	return r.Create(ctx, nodeOp)
+}
+
+// buildUpgradePreflight returns the PreflightSpec the NodeOp should run before
+// cordoning/draining each target node. Returns nil when Force=true so the
+// upgrade runs on every node regardless of the current OS version.
+//
+// The preflight script reads /etc/kairos-release inside the upgrade image and
+// compares the resulting version triple against the host's /etc/kairos-release
+// (mounted read-only at Spec.HostMountPath). When the versions match it writes
+// a one-line reason to /dev/termination-log so the NodeOp controller records
+// the node as Completed (skipped). When the versions differ it stays silent
+// and exits 0, which the controller treats as "proceed".
+func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairosiov1alpha1.PreflightSpec {
+	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) {
+		return nil
+	}
+	deadline := int32(120)
+	return &kairosiov1alpha1.PreflightSpec{
+		Command:               []string{"/bin/sh", "-c", upgradePreflightScript()}, //nolint:goconst // path literal; not worth a constant
+		ActiveDeadlineSeconds: &deadline,
+	}
+}
+
+// upgradePreflightScript is the shell snippet run inside each preflight Pod
+// when this is a NodeOpUpgrade. Output convention: a non-empty
+// /dev/termination-log means "skip this node with the given reason"; an empty
+// termination log + exit 0 means "proceed".
+//
+// get_version returns an empty string when KAIROS_VERSION is missing (e.g.
+// when falling back to /etc/os-release on a non-Kairos image or older OS that
+// doesn't carry KAIROS_* variables). The skip short-circuit then requires
+// BOTH CURRENT and TARGET to be non-empty before declaring equality —
+// otherwise two unknowns would compare equal and we'd wrongly skip the
+// upgrade. Unknown either side means "proceed".
+//
+// File paths are read from environment variables (defaults match what the
+// preflight Pod sees in production), so tests can drive the script with
+// synthetic files in a temp directory.
+func upgradePreflightScript() string {
+	return `set -e
+: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
+: "${TARGET_OS_RELEASE:=/etc/os-release}"
+: "${HOST_KAIROS_RELEASE:=` + hostMountPath + `/etc/kairos-release}"
+: "${HOST_OS_RELEASE:=` + hostMountPath + `/etc/os-release}"
+: "${TERMINATION_LOG:=/dev/termination-log}"
+
+get_version() {
+    local file_path="$1"
+    if [ ! -f "$file_path" ]; then
+        echo ""
+        return 0
+    fi
+    # shellcheck disable=SC1090
+    . "$file_path"
+    if [ -z "${KAIROS_VERSION}" ]; then
+        echo ""
+        return 0
+    fi
+    echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
+}
+
+TARGET=$(get_version "${TARGET_KAIROS_RELEASE}")
+if [ -z "${TARGET}" ]; then
+    TARGET=$(get_version "${TARGET_OS_RELEASE}")
+fi
+
+CURRENT=$(get_version "${HOST_KAIROS_RELEASE}")
+if [ -z "${CURRENT}" ]; then
+    CURRENT=$(get_version "${HOST_OS_RELEASE}")
+fi
+
+echo "Host: ${CURRENT:-unknown}, Target: ${TARGET:-unknown}"
+if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
+    echo "node is already at ${TARGET}" > "${TERMINATION_LOG}"
+fi
+exit 0
+`
 }
 
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
