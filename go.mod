@@ -7,7 +7,7 @@ godebug default=go1.23
 require (
 	al.essio.dev/pkg/shellescape v1.6.0
 	github.com/onsi/ginkgo/v2 v2.28.1
-	github.com/onsi/gomega v1.39.1
+	github.com/onsi/gomega v1.42.0
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
