@@ -614,3 +614,16 @@ var _ = Describe("volumeForExportArtifacts", func() {
 		})
 	})
 })
+
+var _ = Describe("unpackContainer", func() {
+	It("does not add --allow-insecure-registries when insecure is false", func() {
+		c := unpackContainer("0", "auroraboot:test", "localhost:5000/bundle:latest", "amd64", false)
+		Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack"))
+		Expect(c.Args[0]).ToNot(ContainSubstring("--allow-insecure-registries"))
+	})
+
+	It("adds --allow-insecure-registries when insecure is true", func() {
+		c := unpackContainer("0", "auroraboot:test", "localhost:5000/bundle:latest", "amd64", true)
+		Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack --arch amd64 --allow-insecure-registries localhost:5000/bundle:latest /rootfs"))
+	})
+})

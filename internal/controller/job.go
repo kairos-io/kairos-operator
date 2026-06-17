@@ -57,10 +57,13 @@ func bashCxeCommand() []string {
 	return []string{"/bin/bash", "-cxe"}
 }
 
-func unpackContainer(id, containerImage, pullImage, arch string) corev1.Container {
+func unpackContainer(id, containerImage, pullImage, arch string, insecure bool) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
+	}
+	if insecure {
+		cmd = fmt.Sprintf("%s --allow-insecure-registries", cmd)
 	}
 	cmd = fmt.Sprintf("%s %s %s", cmd, pullImage, rootfsMountPath)
 
@@ -255,7 +258,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifact.Name))
 		}
 		for i, bundle := range artifacts.Bundles {
-			inits = append(inits, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch))
+			inits = append(inits, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch, artifact.Spec.Image.PullInsecureRegistry))
 		}
 		if artifacts.OSRelease != "" {
 			inits = append(inits, osReleaseContainer(r.ToolImage))
