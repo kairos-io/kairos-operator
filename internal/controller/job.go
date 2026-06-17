@@ -89,6 +89,9 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 	if arch != "" {
 		unpackCmd = fmt.Sprintf("%s --arch %s", unpackCmd, arch)
 	}
+	if artifact.Spec.Image.PullInsecureRegistry {
+		unpackCmd = fmt.Sprintf("%s --allow-insecure-registries", unpackCmd)
+	}
 	unpackCmd = fmt.Sprintf("%s %s %s", unpackCmd, artifact.Spec.Image.Ref, rootfsMountPath)
 
 	imageName := builtImageName(artifact)

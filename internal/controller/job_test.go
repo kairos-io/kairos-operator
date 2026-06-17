@@ -516,6 +516,32 @@ var _ = Describe("newBuilderPod scheduling", func() {
 	})
 })
 
+var _ = Describe("unpackAndPackToArtifactsContainer", func() {
+	newRefArtifact := func() *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "ref-artifact"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{Ref: "localhost:5000/my/image:latest"},
+			},
+		}
+	}
+
+	It("does not add --allow-insecure-registries by default", func() {
+		c := unpackAndPackToArtifactsContainer(newRefArtifact(), "auroraboot:test")
+		Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack"))
+		Expect(c.Args[0]).ToNot(ContainSubstring("--allow-insecure-registries"))
+	})
+
+	When("PullInsecureRegistry is true", func() {
+		It("adds --allow-insecure-registries to the unpack command", func() {
+			a := newRefArtifact()
+			a.Spec.Image.PullInsecureRegistry = true
+			c := unpackAndPackToArtifactsContainer(a, "auroraboot:test")
+			Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack --allow-insecure-registries localhost:5000/my/image:latest /rootfs"))
+		})
+	})
+})
+
 var _ = Describe("volumeForExportArtifacts", func() {
 	When("artifacts.volume is set and no PVC exists", func() {
 		It("returns volume named artifacts with source from spec.volumes", func() {
