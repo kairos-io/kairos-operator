@@ -153,22 +153,9 @@ func (tc *TestClients) CreateArtifact(artifact *buildv1alpha2.OSArtifact) (strin
 	return artifactName, artifactLabelSelector
 }
 
-// WaitForBuildCompletion waits for the build pod to complete and the artifact to
-// reach a terminal phase (Ready or Error). If the artifact enters Error, the test
-// fails immediately with builder pod and export job logs for diagnostics.
-func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabelSelector labels.Selector) {
-	By("waiting for build pod to complete")
-	Eventually(func(g Gomega) {
-		w, err := tc.Pods.Watch(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
-		g.Expect(err).ToNot(HaveOccurred())
-
-		var stopped bool
-		for !stopped {
-			event, ok := <-w.ResultChan()
-			stopped = event.Type != watch.Deleted && event.Type != watch.Error || !ok
-		}
-	}).WithTimeout(time.Hour).Should(Succeed())
-
+// waitForTerminalPhase waits until the artifact reaches a terminal phase (Ready or Error) and
+// returns it. Shared by WaitForBuildCompletion and WaitForBuildFailure.
+func (tc *TestClients) waitForTerminalPhase(artifactName string) buildv1alpha2.ArtifactPhase {
 	By("waiting for artifact to reach a terminal phase")
 	var terminalPhase buildv1alpha2.ArtifactPhase
 	Eventually(func(g Gomega) {
@@ -192,11 +179,43 @@ func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabel
 		}
 		g.Expect(string(terminalPhase)).ToNot(BeEmpty(), "watch closed without artifact reaching a terminal phase")
 	}).WithTimeout(time.Hour).Should(Succeed())
+	return terminalPhase
+}
 
-	if terminalPhase == buildv1alpha2.Error {
+// WaitForBuildCompletion waits for the build pod to complete and the artifact to
+// reach a terminal phase (Ready or Error). If the artifact enters Error, the test
+// fails immediately with builder pod and export job logs for diagnostics.
+func (tc *TestClients) WaitForBuildCompletion(artifactName string, artifactLabelSelector labels.Selector) {
+	By("waiting for build pod to complete")
+	Eventually(func(g Gomega) {
+		w, err := tc.Pods.Watch(context.TODO(), metav1.ListOptions{LabelSelector: artifactLabelSelector.String()})
+		g.Expect(err).ToNot(HaveOccurred())
+
+		var stopped bool
+		for !stopped {
+			event, ok := <-w.ResultChan()
+			stopped = event.Type != watch.Deleted && event.Type != watch.Error || !ok
+		}
+	}).WithTimeout(time.Hour).Should(Succeed())
+
+	if tc.waitForTerminalPhase(artifactName) == buildv1alpha2.Error {
 		Fail(fmt.Sprintf("artifact %q entered Error phase.\n\n%s",
 			artifactName, tc.collectDebugLogs(artifactLabelSelector)))
 	}
+}
+
+// WaitForBuildFailure waits for the artifact to reach a terminal phase and fails the spec unless
+// that phase is Error. Use to assert a build is expected to fail (e.g. unpacking from an HTTP-only
+// registry without pullInsecureRegistry). Returns the collected debug logs so callers can assert on
+// the failure reason.
+func (tc *TestClients) WaitForBuildFailure(artifactName string, artifactLabelSelector labels.Selector) string {
+	terminalPhase := tc.waitForTerminalPhase(artifactName)
+	logs := tc.collectDebugLogs(artifactLabelSelector)
+	if terminalPhase != buildv1alpha2.Error {
+		Fail(fmt.Sprintf("artifact %q reached %q phase, but it was expected to fail (enter Error phase).\n\n%s",
+			artifactName, terminalPhase, logs))
+	}
+	return logs
 }
 
 // WaitForExportCompletion waits for the export job to complete

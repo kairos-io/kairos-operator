@@ -97,7 +97,7 @@ type ImageSpec struct {
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 
-	// PullInsecureRegistry disables TLS verification when pulling the base image during the OCI build step (buildah bud --tls-verify=false). Use for HTTP-only or self-signed-cert base image registries. Only used when building (Ref empty).
+	// PullInsecureRegistry allows pulling images from registries over plain HTTP or with untrusted/self-signed TLS certificates. It applies wherever the operator pulls an image: the buildah base-image pull during the OCI build step (buildah bud --tls-verify=false), and the auroraboot unpack of a pre-built image.ref and of artifacts.bundles (auroraboot unpack --allow-insecure-registries). Use for HTTP-only or self-signed-cert registries, for example a local or in-cluster registry.
 	// +optional
 	PullInsecureRegistry bool `json:"pullInsecureRegistry,omitempty"`
 

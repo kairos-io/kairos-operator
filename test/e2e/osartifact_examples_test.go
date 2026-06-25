@@ -273,6 +273,27 @@ spec:
 	return artifactFromYAML(y)
 }
 
+// pushKairosImageToNoAuthRegistry builds a small kairos image (FROM Hadron with a marker baked in)
+// and pushes it to the no-auth in-cluster registry (HTTP-only). Returns the image ref, the
+// squashfs-relative path of the marker, and the marker content. Used by the insecure-registry
+// tests (image.ref and bundles), which differ only in whether pullInsecureRegistry is set when
+// auroraboot unpacks this HTTP-only image.
+func pushKairosImageToNoAuthRegistry(tc *TestClients, suffix string) (ref, markerRelPath, markerContent string) {
+	repo := "e2e/insecure-" + suffix
+	markerRelPath = "etc/e2e-insecure-marker.txt"
+	markerContent = "insecure-marker"
+
+	ociSpecSecret := createOCISpecSecret("insecure-ocispec-", HadronPreKairosified, "/"+markerRelPath, markerContent)
+	DeferCleanup(func() {
+		_ = clientset.CoreV1().Secrets("default").Delete(context.TODO(), ociSpecSecret.Name, metav1.DeleteOptions{})
+	})
+
+	pushArtifact := ociPushArtifactNoCredentials(suffix, ociSpecSecret.Name, RegistryNoAuthHost, repo)
+	runBuildAndPushOnly(tc, pushArtifact, "insecure-push-"+suffix+"-")
+
+	return RegistryNoAuthHost + "/" + repo + ":latest", markerRelPath, markerContent
+}
+
 // runBuildAndPushOnly creates the artifact and runs build-only (no export phase).
 func runBuildAndPushOnly(tc *TestClients, artifact *buildv1alpha2.OSArtifact, namePrefix string) {
 	artifactName, artifactLabelSelector := createArtifactNoExporters(tc, artifact, namePrefix)
@@ -642,6 +663,135 @@ spec:
       name: %s
 `, suffix, ociSpecForPull.Name, registryCredsSecret.Name))
 			runBuildAndPushOnly(tc, buildArtifact, "buildah-pull-build-"+suffix+"-")
+		})
+	})
+
+	Describe("Insecure registry pull (HTTP image.ref)", func() {
+		// These two specs exercise the auroraboot unpack path for spec.image.ref against the no-auth
+		// in-cluster registry (HTTP-only). They are identical except for pullInsecureRegistry, which
+		// proves the flag is load-bearing: with it the unpack adds --allow-insecure-registries and the
+		// build succeeds; without it auroraboot rejects the plain-HTTP registry and the build errors.
+		// The no-auth registry isolates this to the insecure-pull behavior alone (no credentials).
+
+		It("unpacks image.ref from the HTTP registry when pullInsecureRegistry is set and produces an ISO", func() {
+			suffix := uniqueTestSuffix()
+			ref, markerRelPath, markerContent := pushKairosImageToNoAuthRegistry(tc, suffix)
+
+			// auroraboot unpack runs with --allow-insecure-registries, so the plain-HTTP pull succeeds.
+			// The marker baked into the image must appear in the resulting squashfs, proving the right
+			// image was pulled over HTTP and unpacked.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: insecure-ref-%s
+  namespace: default
+spec:
+  image:
+    ref: %s
+    pullInsecureRegistry: true
+  artifacts:
+    arch: amd64
+    iso: true
+`, suffix, ref)
+			artifact := artifactFromYAML(y)
+			verifyScript := verifyFilesInSquashfs(map[string]string{markerRelPath: markerContent})
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "insecure-ref-"+suffix+"-", verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+
+		It("fails to unpack the same HTTP image.ref when pullInsecureRegistry is not set", func() {
+			suffix := uniqueTestSuffix()
+			ref, _, _ := pushKairosImageToNoAuthRegistry(tc, suffix)
+
+			// Same image.ref, same HTTP-only registry, but no pullInsecureRegistry: auroraboot unpack
+			// runs without --allow-insecure-registries, rejects the plain-HTTP registry, and the artifact
+			// enters the Error phase. Asserting the specific message ensures the build fails for this
+			// reason and not, say, a missing image.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: insecure-ref-noflag-%s
+  namespace: default
+spec:
+  image:
+    ref: %s
+  artifacts:
+    arch: amd64
+    iso: true
+`, suffix, ref)
+			artifact := artifactFromYAML(y)
+			artifactName, artifactLabelSelector := tc.CreateArtifact(artifact)
+			DeferCleanup(func() { tc.Cleanup(artifactName, artifactLabelSelector) })
+			logs := tc.WaitForBuildFailure(artifactName, artifactLabelSelector)
+			Expect(logs).To(ContainSubstring("server gave HTTP response to HTTPS client"),
+				"build should fail because auroraboot rejected the plain-HTTP registry without --allow-insecure-registries")
+		})
+	})
+
+	Describe("Insecure registry pull (HTTP artifacts.bundles)", func() {
+		// Same proof for the artifacts.bundles unpack path, which uses the same auroraboot unpack and
+		// the same pullInsecureRegistry flag. The base image.ref is the public Hadron image (HTTPS), so
+		// the only pull that needs the flag is the HTTP bundle: the flag is therefore what the bundle
+		// unpack depends on.
+
+		It("unpacks a bundle from the HTTP registry when pullInsecureRegistry is set and produces an ISO", func() {
+			suffix := uniqueTestSuffix()
+			bundleRef, markerRelPath, markerContent := pushKairosImageToNoAuthRegistry(tc, suffix)
+
+			// The bundle is unpacked onto /rootfs over plain HTTP thanks to --allow-insecure-registries.
+			// Its marker (absent from the Hadron base) must appear in the squashfs, proving the bundle
+			// was pulled over HTTP and overlaid.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: insecure-bundle-%s
+  namespace: default
+spec:
+  image:
+    ref: %s
+    pullInsecureRegistry: true
+  artifacts:
+    arch: amd64
+    iso: true
+    bundles:
+      - %s
+`, suffix, HadronPreKairosified, bundleRef)
+			artifact := artifactFromYAML(y)
+			verifyScript := verifyFilesInSquashfs(map[string]string{markerRelPath: markerContent})
+			artifactName, artifactLabelSelector := createExampleArtifact(tc, artifact, "insecure-bundle-"+suffix+"-", verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+
+		It("fails to unpack the same HTTP bundle when pullInsecureRegistry is not set", func() {
+			suffix := uniqueTestSuffix()
+			bundleRef, _, _ := pushKairosImageToNoAuthRegistry(tc, suffix)
+
+			// Base (Hadron) unpacks fine over HTTPS, then the HTTP bundle unpack runs without
+			// --allow-insecure-registries, is rejected, and the artifact enters the Error phase.
+			y := fmt.Sprintf(`
+apiVersion: build.kairos.io/v1alpha2
+kind: OSArtifact
+metadata:
+  name: insecure-bundle-noflag-%s
+  namespace: default
+spec:
+  image:
+    ref: %s
+  artifacts:
+    arch: amd64
+    iso: true
+    bundles:
+      - %s
+`, suffix, HadronPreKairosified, bundleRef)
+			artifact := artifactFromYAML(y)
+			artifactName, artifactLabelSelector := tc.CreateArtifact(artifact)
+			DeferCleanup(func() { tc.Cleanup(artifactName, artifactLabelSelector) })
+			logs := tc.WaitForBuildFailure(artifactName, artifactLabelSelector)
+			Expect(logs).To(ContainSubstring("server gave HTTP response to HTTPS client"),
+				"bundle unpack should fail because auroraboot rejected the plain-HTTP registry without --allow-insecure-registries")
 		})
 	})
 
