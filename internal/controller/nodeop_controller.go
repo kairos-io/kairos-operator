@@ -452,6 +452,12 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						Name:    "nodeop",
 						Image:   getNodeOpImage(nodeOp),
 						Command: nodeOp.Spec.Command,
+						Env: []corev1.EnvVar{
+							{
+								Name:  "KAIROS_OCI_IMAGE",
+								Value: nodeOp.Spec.Image,
+							},
+						},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
@@ -535,6 +541,12 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 							{
 								Name:      hostRootVolumeName,
 								MountPath: "/host", //nolint:goconst // FHS default mount; not worth a constant
+							},
+						},
+						Env: []corev1.EnvVar{
+							{
+								Name:  "KAIROS_OCI_IMAGE",
+								Value: nodeOp.Spec.Image,
 							},
 						},
 					},
