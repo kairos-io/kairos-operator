@@ -17,6 +17,7 @@ const (
 	UpgradeActiveDefault   = true
 	UpgradeRecoveryDefault = false
 	UpgradeForceDefault    = false
+	UpgradeDebugDefault    = false
 )
 
 // Helper functions for handling pointer to bool fields

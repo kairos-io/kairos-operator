@@ -273,32 +273,39 @@ mount --rbind ` + hostMountPath + `/run /run
 	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
 	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
+	// --debug is a global flag on the kairos-agent CLI, so it must precede the
+	// upgrade subcommand.
+	agent := "kairos-agent"
+	if getBool(nodeOpUpgrade.Spec.Debug, UpgradeDebugDefault) {
+		agent += " --debug"
+	}
+
 	// Add upgrade logic based on spec
 	if upgradeRecovery && upgradeActive {
 		// Both recovery and active
 		script += `# Upgrade recovery partition
-kairos-agent upgrade --recovery --source dir:/
+` + agent + ` upgrade --recovery --source dir:/
 
 # Upgrade active partition
-kairos-agent upgrade --source dir:/
+` + agent + ` upgrade --source dir:/
 exit 0
 `
 	} else if upgradeRecovery {
 		// Recovery only
 		script += `# Upgrade recovery partition only
-kairos-agent upgrade --recovery --source dir:/
+` + agent + ` upgrade --recovery --source dir:/
 exit 0
 `
 	} else if upgradeActive {
 		// Active only (default behavior)
 		script += `# Upgrade active partition
-kairos-agent upgrade --source dir:/
+` + agent + ` upgrade --source dir:/
 exit 0
 `
 	} else {
 		// Neither specified - default to active
 		script += `# Upgrade active partition (default)
-kairos-agent upgrade --source dir:/
+` + agent + ` upgrade --source dir:/
 exit 0
 `
 	}
