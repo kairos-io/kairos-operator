@@ -464,6 +464,75 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(script).NotTo(ContainSubstring("export FORCE=true"))
 		})
 
+		It("should generate upgrade command with --debug when debug is enabled", func() {
+			By("Creating the NodeOpUpgrade resource with debug enabled")
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+			nodeOpUpgrade.Spec.Debug = asBool(true)
+
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the generated command uses the global --debug flag")
+			script := nodeOp.Spec.Command[2]
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source dir:/"))
+		})
+
+		It("should generate recovery upgrade command with --debug when debug is enabled", func() {
+			By("Creating the NodeOpUpgrade resource with debug enabled and recovery only")
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(false)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+			nodeOpUpgrade.Spec.Debug = asBool(true)
+
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the generated command uses the global --debug flag")
+			script := nodeOp.Spec.Command[2]
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source dir:/"))
+		})
+
+		It("should generate both-partition upgrade command with --debug on each invocation", func() {
+			By("Creating the NodeOpUpgrade resource with debug enabled and both partitions")
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+			nodeOpUpgrade.Spec.Debug = asBool(true)
+
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the generated command uses the global --debug flag on both invocations")
+			script := nodeOp.Spec.Command[2]
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source dir:/"))
+		})
+
+		It("should not add --debug to the upgrade command when debug is unset", func() {
+			By("Creating the NodeOpUpgrade resource without debug set")
+			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+			nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the generated command does not include --debug")
+			script := nodeOp.Spec.Command[2]
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).NotTo(ContainSubstring("--debug"))
+		})
+
 		It("should update NodeOpUpgrade status when NodeOp status changes", func() {
 			By("Creating the NodeOpUpgrade resource")
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())

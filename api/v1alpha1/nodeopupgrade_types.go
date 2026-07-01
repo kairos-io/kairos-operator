@@ -61,6 +61,11 @@ type NodeOpUpgradeSpec struct {
 	// matches the target version. When true, the upgrade will proceed regardless of version comparison.
 	// +optional
 	Force *bool `json:"force,omitempty"`
+
+	// Debug specifies whether to run the upgrade with kairos-agent's --debug flag,
+	// producing verbose output to help diagnose upgrade failures.
+	// +optional
+	Debug *bool `json:"debug,omitempty"`
 }
 
 // NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.

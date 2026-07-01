@@ -31,6 +31,8 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              debug:
+                type: boolean
               force:
                 type: boolean
               image:
