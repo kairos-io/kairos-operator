@@ -350,6 +350,46 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.NodeSelector).To(Equal(nodeOpUpgradeWithSecrets.Spec.NodeSelector))
 		})
 
+		It("should pass UncordonOnFailure from NodeOpUpgrade to created NodeOp", func() {
+			By("Creating a NodeOpUpgrade with UncordonOnFailure enabled")
+			nodeOpUpgradeWithUncordon := &kairosiov1alpha1.NodeOpUpgrade{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-uncordon", nodeOpUpgradeName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+					Image:             "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+					UncordonOnFailure: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOpUpgradeWithUncordon)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, nodeOpUpgradeWithUncordon)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeWithUncordon.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the NodeOp carries the same UncordonOnFailure value")
+			Expect(nodeOp.Spec.UncordonOnFailure).NotTo(BeNil())
+			Expect(*nodeOp.Spec.UncordonOnFailure).To(BeTrue())
+		})
+
+		It("should default UncordonOnFailure to false on the NodeOp when not set on the NodeOpUpgrade", func() {
+			By("Creating a NodeOpUpgrade without UncordonOnFailure")
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the created NodeOpUpgrade")
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the NodeOp resolves UncordonOnFailure to false (preserving the safe default)")
+			Expect(getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault)).To(BeFalse())
+		})
+
 		It("should generate correct upgrade command for active partition only", func() {
 			By("Creating the NodeOpUpgrade resource with active upgrade only")
 			nodeOpUpgrade.Spec.UpgradeActive = asBool(true)

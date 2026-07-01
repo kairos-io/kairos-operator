@@ -74,6 +74,8 @@ spec:
                 x-kubernetes-map-type: atomic
               stopOnFailure:
                 type: boolean
+              uncordonOnFailure:
+                type: boolean
               upgradeActive:
                 type: boolean
               upgradeRecovery:
