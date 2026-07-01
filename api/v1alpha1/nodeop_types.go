@@ -51,6 +51,15 @@ type NodeOpSpec struct {
 	// +kubebuilder:default=false
 	Cordon *bool `json:"cordon,omitempty"`
 
+	// UncordonOnFailure specifies whether to uncordon the node if its operation fails.
+	// Only takes effect when Cordon is true, and only uncordons nodes this NodeOp cordoned.
+	// When false (the default), a node whose operation failed stays cordoned so it can be
+	// inspected. Set this to true to have the operator uncordon failed nodes automatically,
+	// which addresses upgrades leaving nodes unschedulable after a failure.
+	// +optional
+	// +kubebuilder:default=false
+	UncordonOnFailure *bool `json:"uncordonOnFailure,omitempty"`
+
 	// DrainOptions specifies the options for draining the node before running the operation.
 	// When enabled, pods will be evicted from the node before the operation starts.
 	// This requires the Cordon field to be true.

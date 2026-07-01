@@ -137,6 +137,11 @@ func (in *NodeOpSpec) DeepCopyInto(out *NodeOpSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.UncordonOnFailure != nil {
+		in, out := &in.UncordonOnFailure, &out.UncordonOnFailure
+		*out = new(bool)
+		**out = **in
+	}
 	if in.DrainOptions != nil {
 		in, out := &in.DrainOptions, &out.DrainOptions
 		*out = new(DrainOptions)
@@ -291,6 +296,11 @@ func (in *NodeOpUpgradeSpec) DeepCopyInto(out *NodeOpUpgradeSpec) {
 	}
 	if in.Debug != nil {
 		in, out := &in.Debug, &out.Debug
+		*out = new(bool)
+		**out = **in
+	}
+	if in.UncordonOnFailure != nil {
+		in, out := &in.UncordonOnFailure, &out.UncordonOnFailure
 		*out = new(bool)
 		**out = **in
 	}

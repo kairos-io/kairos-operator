@@ -711,6 +711,22 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Count failed jobs
 		if status.Phase == phaseFailed {
 			anyFailed = true
+
+			// Uncordon the node when the operation failed, if opted in. uncordonNode
+			// only acts on nodes this NodeOp cordoned, so out-of-band cordons are
+			// left alone. Failed jobs do not reboot, so it is safe to uncordon now.
+			if getBool(nodeOp.Spec.Cordon, CordonDefault) &&
+				getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault) {
+				node := &corev1.Node{}
+				if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+					log.Error(err, "Failed to get node for uncordoning after job failure", "node", nodeName)
+					return err
+				}
+				if err := r.uncordonNode(ctx, nodeOp, node); err != nil {
+					log.Error(err, "Failed to uncordon node after job failure", "node", nodeName)
+					return err
+				}
+			}
 		}
 
 		// Count completed nodes based on whether reboot is required
