@@ -302,10 +302,6 @@ type OSArtifactList struct {
 	Items           []OSArtifact `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&OSArtifact{}, &OSArtifactList{})
-}
-
 func (s *OSArtifactSpec) ArchSanitized() (string, error) {
 	arch := ""
 	if s.Artifacts != nil {

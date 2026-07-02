@@ -120,7 +120,3 @@ type NodeOpUpgradeList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NodeOpUpgrade `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&NodeOpUpgrade{}, &NodeOpUpgradeList{})
-}
