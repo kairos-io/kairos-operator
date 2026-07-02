@@ -222,7 +222,3 @@ type NodeOpList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NodeOp `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&NodeOp{}, &NodeOpList{})
-}
