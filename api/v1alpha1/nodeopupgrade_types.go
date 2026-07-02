@@ -66,6 +66,13 @@ type NodeOpUpgradeSpec struct {
 	// producing verbose output to help diagnose upgrade failures.
 	// +optional
 	Debug *bool `json:"debug,omitempty"`
+
+	// UncordonOnFailure specifies whether to uncordon a node if its upgrade fails.
+	// When false (the default), a node whose upgrade failed stays cordoned so it can be
+	// inspected. Set this to true to have the operator uncordon failed nodes automatically.
+	// This value is passed through to the underlying NodeOp.
+	// +optional
+	UncordonOnFailure *bool `json:"uncordonOnFailure,omitempty"`
 }
 
 // NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.

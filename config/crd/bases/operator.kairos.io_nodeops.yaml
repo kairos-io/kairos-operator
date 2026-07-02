@@ -123,6 +123,9 @@ spec:
               stopOnFailure:
                 default: false
                 type: boolean
+              uncordonOnFailure:
+                default: false
+                type: boolean
             required:
             - command
             type: object

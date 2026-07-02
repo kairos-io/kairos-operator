@@ -275,12 +275,14 @@ func (r *NodeOpReconciler) cordonNode(ctx context.Context, nodeOp *kairosiov1alp
 // operator did not cordon — including nodes that were already cordoned when
 // the NodeOp started, and nodes manually re-cordoned after the operator
 // uncordoned them once — are left alone.
-func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node *corev1.Node) error {
+func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
 	log := logf.FromContext(ctx)
 
+	// This helper always re-reads the latest node state, so callers only need to
+	// supply the node name rather than a fully-populated Node object.
 	latestNode := &corev1.Node{}
-	if err := r.Get(ctx, types.NamespacedName{Name: node.Name}, latestNode); err != nil {
-		log.Error(err, "Failed to get latest node state", "node", node.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, latestNode); err != nil {
+		log.Error(err, "Failed to get latest node state", "node", nodeName)
 		return err
 	}
 
@@ -291,7 +293,7 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 		if _, hasAnn := latestNode.Annotations[cordonedByAnnotation]; hasAnn {
 			delete(latestNode.Annotations, cordonedByAnnotation)
 			if err := r.Update(ctx, latestNode); err != nil {
-				log.Error(err, "Failed to clear stale cordoned-by annotation", "node", node.Name)
+				log.Error(err, "Failed to clear stale cordoned-by annotation", "node", nodeName)
 				return err
 			}
 		}
@@ -300,12 +302,12 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 
 	owner, hasAnn := latestNode.Annotations[cordonedByAnnotation]
 	if !hasAnn {
-		log.Info("Node is cordoned but not by this operator; leaving it alone", "node", node.Name)
+		log.Info("Node is cordoned but not by this operator; leaving it alone", "node", nodeName)
 		return nil
 	}
 	if owner != nodeOpOwnerRef(nodeOp) {
 		log.Info("Node was cordoned by a different NodeOp; leaving it alone",
-			"node", node.Name, "cordonedBy", owner, "thisNodeOp", nodeOpOwnerRef(nodeOp))
+			"node", nodeName, "cordonedBy", owner, "thisNodeOp", nodeOpOwnerRef(nodeOp))
 		return nil
 	}
 
@@ -315,11 +317,11 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 	// the node was modified between Get and Update, and the error propagates up
 	// so Reconcile can requeue and re-evaluate.
 	if err := r.Update(ctx, latestNode); err != nil {
-		log.Error(err, "Failed to uncordon node", "node", node.Name)
+		log.Error(err, "Failed to uncordon node", "node", nodeName)
 		return err
 	}
 
-	log.Info("Successfully uncordoned node", "node", node.Name, "nodeOp", nodeOpOwnerRef(nodeOp))
+	log.Info("Successfully uncordoned node", "node", nodeName, "nodeOp", nodeOpOwnerRef(nodeOp))
 	return nil
 }
 
@@ -570,7 +572,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			if err := r.drainNode(ctx, &node, nodeOp.Spec.DrainOptions); err != nil {
 				log.Error(err, "Failed to drain node", "node", node.Name)
 				// If draining fails, uncordon the node
-				if uncordonErr := r.uncordonNode(ctx, nodeOp, &node); uncordonErr != nil {
+				if uncordonErr := r.uncordonNode(ctx, nodeOp, node.Name); uncordonErr != nil {
 					log.Error(uncordonErr, "Failed to uncordon node after drain failure", "node", node.Name)
 				}
 				return err
@@ -696,12 +698,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			rebootOnSuccess := getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault)
 
 			if (rebootOnSuccess && status.RebootStatus == rebootStatusCompleted) || !rebootOnSuccess {
-				node := &corev1.Node{}
-				if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
-					log.Error(err, "Failed to get node for uncordoning after reboot completion", "node", nodeName)
-					return err
-				}
-				if err := r.uncordonNode(ctx, nodeOp, node); err != nil {
+				if err := r.uncordonNode(ctx, nodeOp, nodeName); err != nil {
 					log.Error(err, "Failed to uncordon node after reboot completion", "node", nodeName)
 					return err
 				}
@@ -711,6 +708,18 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Count failed jobs
 		if status.Phase == phaseFailed {
 			anyFailed = true
+
+			// Uncordon the node when the operation failed, if opted in. The
+			// uncordonNode helper only acts on nodes this NodeOp cordoned, so
+			// out-of-band cordons are left alone. Failed jobs do not reboot, so it
+			// is safe to uncordon now.
+			if getBool(nodeOp.Spec.Cordon, CordonDefault) &&
+				getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault) {
+				if err := r.uncordonNode(ctx, nodeOp, nodeName); err != nil {
+					log.Error(err, "Failed to uncordon node after job failure", "node", nodeName)
+					return err
+				}
+			}
 		}
 
 		// Count completed nodes based on whether reboot is required

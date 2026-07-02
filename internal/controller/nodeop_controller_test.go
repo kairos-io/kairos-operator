@@ -986,6 +986,205 @@ var _ = Describe("NodeOp Controller", func() {
 				"Node should remain cordoned; a same-name/different-UID NodeOp must not claim a stale annotation")
 		})
 
+		It("should uncordon a node whose job failed when UncordonOnFailure is true", func() {
+			By("Creating a NodeOp with Cordon and UncordonOnFailure enabled")
+			uncordonNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-uncordon-fail", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:           []string{"echo", "test"},
+					Cordon:            asBool(true),
+					UncordonOnFailure: asBool(true),
+					RebootOnSuccess:   asBool(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, uncordonNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, uncordonNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling to cordon the node and create the Job")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      uncordonNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the operator cordoned the node")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(), "Node should be cordoned by the operator")
+
+			By("Failing the Job")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{"kairos.io/nodeop": uncordonNodeOp.Name}),
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(markJobAsFailed(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+			By("Reconciling again to process the job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      uncordonNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the node is uncordoned and the ownership annotation is cleared")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after job failure")
+			Expect(node.Annotations).NotTo(HaveKey("operator.kairos.io/cordoned-by"))
+		})
+
+		It("should leave a failed node cordoned when UncordonOnFailure is not set", func() {
+			By("Creating a NodeOp with Cordon enabled but UncordonOnFailure unset")
+			stayCordonedNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-stay-cordoned", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					Cordon:          asBool(true),
+					RebootOnSuccess: asBool(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, stayCordonedNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, stayCordonedNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling to cordon the node and create the Job")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      stayCordonedNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Failing the Job")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{"kairos.io/nodeop": stayCordonedNodeOp.Name}),
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(markJobAsFailed(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+			By("Reconciling again to process the job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      stayCordonedNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the node remains cordoned")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(), "Node should remain cordoned when UncordonOnFailure is not set")
+		})
+
+		It("should not uncordon a failed node cordoned out-of-band even when UncordonOnFailure is true", func() {
+			By("Manually cordoning the node before any NodeOp activity (no ownership annotation)")
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			node.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			By("Creating a NodeOp with Cordon and UncordonOnFailure enabled")
+			outOfBandNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-outofband", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:           []string{"echo", "test"},
+					Cordon:            asBool(true),
+					UncordonOnFailure: asBool(true),
+					RebootOnSuccess:   asBool(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, outOfBandNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, outOfBandNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling to create the Job (node already cordoned, so cordonNode does not claim ownership)")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      outOfBandNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Failing the Job")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{"kairos.io/nodeop": outOfBandNodeOp.Name}),
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(markJobAsFailed(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+			By("Reconciling again to process the job failure")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      outOfBandNodeOp.Name,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the node remains cordoned because the operator did not cordon it")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(),
+				"Node cordoned out-of-band must not be uncordoned by UncordonOnFailure")
+		})
+
 		It("should create a reboot pod when RebootOnSuccess is true and job completes successfully", func() {
 			By("Creating a NodeOp with RebootOnSuccess=true")
 			rebootNodeOp := &kairosiov1alpha1.NodeOp{
