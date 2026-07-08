@@ -1,0 +1,53 @@
+name: Helm Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  release-helm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4
+
+      - name: Login to GHCR (OCI)
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package chart
+        run: |
+          CHART_VERSION="${{ inputs.version }}"
+          # strip leading 'v' for SemVer chart version field
+          SEMVER="${CHART_VERSION#v}"
+          helm package charts/kairos-operator \
+            --version "${SEMVER}" \
+            --app-version "${{ inputs.version }}" \
+            --destination .chart-output
+
+      - name: Publish to GitHub Pages (Helm repo)
+        uses: stefanprodan/helm-gh-pages@0ad98f1d1035590869c9ce9b1e24de7f8a4f458f # v1.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: charts
+          chart_version: ${{ inputs.version }}
+          app_version: ${{ inputs.version }}
+          target_dir: charts
+
+      - name: Push chart to GHCR (OCI)
+        run: |
+          helm push .chart-output/kairos-operator-*.tgz oci://ghcr.io/${{ github.repository_owner }}/helm-charts

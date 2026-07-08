@@ -192,11 +192,18 @@ jobs:
           # Update node-labeler image version
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
 
+      - name: Update Helm chart version
+        run: |
+          SEMVER="${{ inputs.version }}"
+          SEMVER="${SEMVER#v}"
+          sed -i "s/^version: .*/version: ${SEMVER}/" charts/kairos-operator/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${{ inputs.version }}\"/" charts/kairos-operator/Chart.yaml
+
       - name: Commit and push changes
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'github-actions@github.com'
-          git add config/default/kustomization.yaml
+          git add config/default/kustomization.yaml charts/kairos-operator/Chart.yaml
           git commit -m "chore: bump version to ${{ inputs.version }}"
           git push origin "chore/bump-version-${{ inputs.version }}"
 
