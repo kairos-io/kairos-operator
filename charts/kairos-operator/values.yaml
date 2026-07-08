@@ -1,0 +1,40 @@
+replicaCount: 1
+
+image:
+  operator:
+    repository: quay.io/kairos/operator
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  nodeLabeler:
+    repository: quay.io/kairos/operator-node-labeler
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  create: true
+  name: kairos-operator
+
+serviceAccount:
+  name: kairos-operator
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+metrics:
+  enabled: true
+  port: 8443
+
+nodeops:
+  defaultImage: "busybox:latest"
+
+sentinelImage: ""
