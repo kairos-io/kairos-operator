@@ -26,29 +26,26 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      {{- with .Values.tolerations }}
       tolerations:
-        - key: "CriticalAddonsOnly"
-          operator: "Exists"
-        - key: "node-role.kubernetes.io/master"
-          operator: "Exists"
-          effect: "NoSchedule"
-        - key: "node-role.kubernetes.io/controlplane"
-          operator: "Exists"
-          effect: "NoSchedule"
-        - key: "node-role.kubernetes.io/control-plane"
-          operator: "Exists"
-          effect: "NoSchedule"
-        - key: "node-role.kubernetes.io/etcd"
-          operator: "Exists"
-          effect: "NoExecute"
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: manager
         image: {{ include "kairos-operator.operatorImage" . }}
         imagePullPolicy: {{ .Values.image.operator.pullPolicy }}
         command: [/manager]
         args:
+          {{- if .Values.leaderElect }}
           - --leader-elect
+          {{- end }}
           - --health-probe-bind-address=:8081
+          {{- if .Values.toolImage }}
+          - --tool-image={{ .Values.toolImage }}
+          {{- end }}
+          {{- if .Values.buildahImage }}
+          - --buildah-image={{ .Values.buildahImage }}
+          {{- end }}
         env:
         - name: CONTROLLER_POD_NAME
           valueFrom:
