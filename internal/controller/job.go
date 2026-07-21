@@ -713,6 +713,7 @@ func ociBuildArgPairs(artifact *buildv1alpha2.OSArtifact) []string {
 	addPair("MODEL", opts.Model)
 	addPair("KUBERNETES_DISTRO", opts.KubernetesDistro)
 	addPair("KUBERNETES_VERSION", opts.KubernetesVersion)
+	addPair("KAIROS_INIT_IMAGE", opts.KairosInitImage)
 	if opts.TrustedBoot {
 		addPair("TRUSTED_BOOT", "true")
 	}

@@ -129,6 +129,14 @@ type BuildOptions struct {
 
 	// FIPS enables FIPS mode.
 	FIPS bool `json:"fips,omitempty"`
+
+	// KairosInitImage overrides the container image used for the kairos-init
+	// build stage. When empty, the built-in default is used
+	// (quay.io/kairos/kairos-init:<default-tag>). Setting this lets an
+	// operator pin the exact kairos-init image tag or replace the ref
+	// entirely (for example, an air-gapped mirror).
+	// +optional
+	KairosInitImage string `json:"kairosInitImage,omitempty"`
 }
 
 // OCISpec describes building with a custom OCI build definition (Stage 1).

@@ -4556,6 +4556,8 @@ spec:
                         type: string
                       fips:
                         type: boolean
+                      kairosInitImage:
+                        type: string
                       kubernetesDistro:
                         type: string
                       kubernetesVersion:
