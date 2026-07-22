@@ -119,6 +119,19 @@ var _ = Describe("buildahBuildContainer", func() {
 		It("omits --build-arg for empty options", func() {
 			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 			Expect(c.Args[0]).ToNot(ContainSubstring("KUBERNETES_VERSION"))
+			Expect(c.Args[0]).ToNot(ContainSubstring("KAIROS_INIT_IMAGE"))
+		})
+	})
+
+	When("BuildOptions.KairosInitImage is set", func() {
+		It("adds --build-arg KAIROS_INIT_IMAGE=<ref>", func() {
+			artifact.Spec.Image.BuildOptions = &buildv1alpha2.BuildOptions{
+				Version:         "v3.6.0",
+				BaseImage:       "ubuntu:22.04",
+				KairosInitImage: "mirror.example/kairos/kairos-init:v0.8.0",
+			}
+			c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+			Expect(c.Args[0]).To(ContainSubstring("--build-arg KAIROS_INIT_IMAGE=mirror.example/kairos/kairos-init:v0.8.0"))
 		})
 	})
 
