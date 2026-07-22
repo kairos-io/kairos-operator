@@ -63,6 +63,20 @@ var _ = Describe("getSentinelImage", func() {
 	})
 })
 
+var _ = Describe("getHostMountPath", func() {
+	nodeOp := &kairosiov1alpha1.NodeOp{}
+
+	It("should return Spec.HostMountPath when set", func() {
+		nodeOp.Spec.HostMountPath = "/mnt/dir"
+		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
+		Expect(getHostMountPath(nodeOp)).To(Equal("/mnt/dir"))
+	})
+
+	It("should return /host when Spec.HostMountPath is empty", func() {
+		Expect(getHostMountPath(nodeOp)).To(Equal("/host"))
+	})
+})
+
 var _ = Describe("findNodeOpsForPreflightPod", func() {
 	r := &NodeOpReconciler{}
 

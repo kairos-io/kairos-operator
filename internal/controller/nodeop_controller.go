@@ -70,8 +70,10 @@ const (
 	// is nil; the CRD's kubebuilder:default applies the same value at admission).
 	preflightDefaultActiveDeadlineSeconds = int64(120)
 	// Volume constants
-	hostRootVolumeName = "host-root"
-	sentinelVolumeName = "sentinel-volume"
+	hostRootVolumeName   = "host-root"
+	defaultHostMountPath = "/host"
+	hostDirEnv           = "HOST_DIR"
+	sentinelVolumeName   = "sentinel-volume"
 )
 
 // NodeOpReconciler reconciles a NodeOp object
@@ -441,8 +443,18 @@ func getSentinelImage(nodeOp *kairosiov1alpha1.NodeOp) string {
 	return "busybox:latest"
 }
 
+// getHostMountPath returns the host mount path for node operation.
+// Defaults to /host if spec.HostMountPath is not set
+func getHostMountPath(nodeOp *kairosiov1alpha1.NodeOp) string {
+	if nodeOp.Spec.HostMountPath != "" {
+		return nodeOp.Spec.HostMountPath
+	}
+	return defaultHostMountPath
+}
+
 // createRebootJobSpec creates a JobSpec for nodes that will reboot after job completion
 func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, backoffLimit int32) batchv1.JobSpec {
+	hostMount := getHostMountPath(nodeOp)
 	return batchv1.JobSpec{
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
@@ -457,10 +469,16 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
+						Env: []corev1.EnvVar{
+							{
+								Name:  hostDirEnv,
+								Value: hostMount,
+							},
+						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      hostRootVolumeName,
-								MountPath: "/host", //nolint:goconst // FHS default mount; not worth a constant
+								MountPath: hostMount,
 							},
 						},
 					},
@@ -482,6 +500,10 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 										FieldPath: "metadata.labels['batch.kubernetes.io/job-name']",
 									},
 								},
+							},
+							{
+								Name:  hostDirEnv,
+								Value: hostMount,
 							},
 						},
 						VolumeMounts: []corev1.VolumeMount{
@@ -519,6 +541,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 
 // createStandardJobSpec creates a JobSpec for standard node operations without reboot
 func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, backoffLimit int32) batchv1.JobSpec {
+	hostMount := getHostMountPath(nodeOp)
 	return batchv1.JobSpec{
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
@@ -533,10 +556,16 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
+						Env: []corev1.EnvVar{
+							{
+								Name:  hostDirEnv,
+								Value: hostMount,
+							},
+						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      hostRootVolumeName,
-								MountPath: "/host", //nolint:goconst // FHS default mount; not worth a constant
+								MountPath: hostMount,
 							},
 						},
 					},
@@ -1161,7 +1190,8 @@ func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *
 
 	// Get the reboot pod for the failed job
 	podList := &corev1.PodList{}
-	err := r.List(ctx, podList,
+	err := r.List(
+		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels(map[string]string{
 			labelKeyNodeOp: nodeOp.Name,
@@ -1192,7 +1222,8 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 
 	// Get the reboot pod for the node
 	podList := &corev1.PodList{}
-	err := r.List(ctx, podList,
+	err := r.List(
+		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels(map[string]string{
 			labelKeyNodeOp: nodeOp.Name,
@@ -1622,7 +1653,8 @@ func preflightFailureReason(pod *corev1.Pod) string {
 // given node, or nil if none exists.
 func (r *NodeOpReconciler) findPreflightPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (*corev1.Pod, error) {
 	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList,
+	if err := r.List(
+		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels{
 			labelKeyNodeOp:    nodeOp.Name,
@@ -1656,10 +1688,7 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 		deadline = int64(*nodeOp.Spec.Preflight.ActiveDeadlineSeconds)
 	}
 
-	hostMount := nodeOp.Spec.HostMountPath
-	if hostMount == "" {
-		hostMount = "/host" //nolint:goconst // default fallback; not worth a constant
-	}
+	hostMount := getHostMountPath(nodeOp)
 
 	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
 	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
@@ -1685,6 +1714,12 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 				Image:                    image,
 				Command:                  nodeOp.Spec.Preflight.Command,
 				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+				Env: []corev1.EnvVar{
+					{
+						Name:  hostDirEnv,
+						Value: hostMount,
+					},
+				},
 				VolumeMounts: []corev1.VolumeMount{{
 					Name:      hostRootVolumeName,
 					MountPath: hostMount,
