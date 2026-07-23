@@ -22,7 +22,6 @@ import (
 const (
 	kindNodeOpUpgrade     = "NodeOpUpgrade"
 	phaseInitializing     = "Initializing"
-	hostMountPath         = "/host"
 	labelKeyNodeOpUpgrade = "nodeopupgrade.kairos.io/name"
 )
 
@@ -127,7 +126,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			Concurrency:       nodeOpUpgrade.Spec.Concurrency,
 			StopOnFailure:     nodeOpUpgrade.Spec.StopOnFailure,
 			Command:           upgradeCommand,
-			HostMountPath:     hostMountPath,
+			HostMountPath:     defaultHostMountPath,
 			Cordon:            asBool(true), // Always cordon for upgrades
 			UncordonOnFailure: nodeOpUpgrade.Spec.UncordonOnFailure,
 			RebootOnSuccess:   &shouldReboot,
@@ -152,7 +151,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 //
 // The preflight script reads /etc/kairos-release inside the upgrade image and
 // compares the resulting version triple against the host's /etc/kairos-release
-// (mounted read-only at Spec.HostMountPath). When the versions match it writes
+// (mounted read-only at Spec.defaultHostMountPath). When the versions match it writes
 // a one-line reason to /dev/termination-log so the NodeOp controller records
 // the node as Completed (skipped). When the versions differ it stays silent
 // and exits 0, which the controller treats as "proceed".
@@ -186,8 +185,8 @@ func upgradePreflightScript() string {
 	return `set -e
 : "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
 : "${TARGET_OS_RELEASE:=/etc/os-release}"
-: "${HOST_KAIROS_RELEASE:=` + hostMountPath + `/etc/kairos-release}"
-: "${HOST_OS_RELEASE:=` + hostMountPath + `/etc/os-release}"
+: "${HOST_KAIROS_RELEASE:=` + defaultHostMountPath + `/etc/kairos-release}"
+: "${HOST_OS_RELEASE:=` + defaultHostMountPath + `/etc/os-release}"
 : "${TERMINATION_LOG:=/dev/termination-log}"
 
 get_version() {
@@ -247,12 +246,12 @@ if [ -f "/etc/kairos-release" ]; then
       UPDATE_VERSION=$(get_version "/etc/os-release" )
     fi
 
-    if [ -f "` + hostMountPath + `/etc/kairos-release" ]; then
+    if [ -f "` + defaultHostMountPath + `/etc/kairos-release" ]; then
       # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + hostMountPath + `/etc/kairos-release" )
+      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/kairos-release" )
     else
       # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + hostMountPath + `/etc/os-release" )
+      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/os-release" )
     fi
 
     if [ "$CURRENT_VERSION" = "$UPDATE_VERSION" ]; then
@@ -266,8 +265,8 @@ if [ -f "/etc/kairos-release" ]; then
 	}
 
 	// Add mount operations
-	script += `mount --rbind ` + hostMountPath + `/dev /dev
-mount --rbind ` + hostMountPath + `/run /run
+	script += `mount --rbind ` + defaultHostMountPath + `/dev /dev
+mount --rbind ` + defaultHostMountPath + `/run /run
 
 `
 

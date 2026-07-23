@@ -70,10 +70,9 @@ const (
 	// is nil; the CRD's kubebuilder:default applies the same value at admission).
 	preflightDefaultActiveDeadlineSeconds = int64(120)
 	// Volume constants
-	hostRootVolumeName   = "host-root"
-	defaultHostMountPath = "/host"
-	hostDirEnv           = "HOST_DIR"
-	sentinelVolumeName   = "sentinel-volume"
+	hostRootVolumeName = "host-root"
+	hostDirEnv         = "HOST_DIR"
+	sentinelVolumeName = "sentinel-volume"
 )
 
 // NodeOpReconciler reconciles a NodeOp object
@@ -500,10 +499,6 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 										FieldPath: "metadata.labels['batch.kubernetes.io/job-name']",
 									},
 								},
-							},
-							{
-								Name:  hostDirEnv,
-								Value: hostMount,
 							},
 						},
 						VolumeMounts: []corev1.VolumeMount{

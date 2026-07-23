@@ -66,10 +66,13 @@ var _ = Describe("getSentinelImage", func() {
 var _ = Describe("getHostMountPath", func() {
 	nodeOp := &kairosiov1alpha1.NodeOp{}
 
+	BeforeEach(func() {
+		nodeOp = &kairosiov1alpha1.NodeOp{}
+	})
+
 	It("should return Spec.HostMountPath when set", func() {
-		nodeOp.Spec.HostMountPath = "/mnt/dir"
-		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
-		Expect(getHostMountPath(nodeOp)).To(Equal("/mnt/dir"))
+		nodeOp.Spec.HostMountPath = "/mnt/kairos-host"
+		Expect(getHostMountPath(nodeOp)).To(Equal("/mnt/kairos-host"))
 	})
 
 	It("should return /host when Spec.HostMountPath is empty", func() {
@@ -3123,7 +3126,7 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 			Spec: kairosiov1alpha1.NodeOpSpec{
 				Image:         preflightCtxImage,
 				Command:       []string{"echo", "test"},
-				HostMountPath: "/host",
+				HostMountPath: defaultHostMountPath,
 				Preflight: &kairosiov1alpha1.PreflightSpec{
 					Command:               []string{"/bin/sh", "-c", "echo nope > /dev/termination-log"},
 					ActiveDeadlineSeconds: &deadline,
@@ -3175,8 +3178,19 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 				}
 			}
 			Expect(hostMount).NotTo(BeNil())
-			Expect(hostMount.MountPath).To(Equal("/host"))
+			Expect(hostMount.MountPath).To(Equal(defaultHostMountPath))
 			Expect(hostMount.ReadOnly).To(BeTrue())
+
+			// Verify HOST_DIR env var falls back to default "/host"
+			var foundEnv *corev1.EnvVar
+			for i := range c.Env {
+				if c.Env[i].Name == "HOST_DIR" {
+					foundEnv = &c.Env[i]
+					break
+				}
+			}
+			Expect(foundEnv).NotTo(BeNil(), "HOST_DIR env var must be set on the preflight container")
+			Expect(foundEnv.Value).To(Equal(defaultHostMountPath), "HOST_DIR env var must fall back to the default '/host' when HostMountPath is empty")
 
 			By("Verifying labels and owner ref")
 			Expect(pod.Labels).To(HaveKeyWithValue("kairos.io/preflight", "true"))
@@ -3203,6 +3217,70 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)).To(Succeed())
 			Expect(node.Spec.Unschedulable).To(BeFalse(),
 				fmt.Sprintf("node %s must NOT be cordoned during preflight", name))
+		}
+	})
+
+	It("propagates a user-set HostMountPath to the preflight Pod's mount and HOST_DIR env var", func() {
+		By("Creating a NodeOp with a non-default HostMountPath")
+		userSetMount := "/mnt/kairos-host"
+		deadline := int32(45)
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:         preflightCtxImage,
+				Command:       []string{"echo", "test"},
+				HostMountPath: userSetMount, // non-empty — triggers getHostMountPath if branch
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command:               []string{"/bin/sh", "-c", "echo preflight-custom"},
+					ActiveDeadlineSeconds: &deadline,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+
+		By("Verifying preflight Pods use the custom HostMountPath for both mount and env var")
+		pods := listPreflightPods()
+		Expect(pods).To(HaveLen(len(nodeNames)))
+
+		for _, pod := range pods {
+			Expect(pod.Spec.Containers).To(HaveLen(1))
+			c := pod.Spec.Containers[0]
+
+			// Verify HOST_DIR env var matches the custom path
+			var foundEnv *corev1.EnvVar
+			for i := range c.Env {
+				if c.Env[i].Name == "HOST_DIR" {
+					foundEnv = &c.Env[i]
+					break
+				}
+			}
+			Expect(foundEnv).NotTo(BeNil(), "HOST_DIR env var must be set on the preflight container")
+			Expect(foundEnv.Value).To(Equal(userSetMount), "HOST_DIR env var must match the user-set HostMountPath")
+
+			// Verify the volume mount path matches the custom path
+			var foundMount *corev1.VolumeMount
+			for i := range c.VolumeMounts {
+				if c.VolumeMounts[i].Name == "host-root" {
+					foundMount = &c.VolumeMounts[i]
+					break
+				}
+			}
+			Expect(foundMount).NotTo(BeNil(), "host-root volume mount must exist on the preflight container")
+			Expect(foundMount.MountPath).To(Equal(userSetMount), "container mount path must match the user-set HostMountPath")
+			Expect(foundMount.ReadOnly).To(BeTrue())
+
+			// Verify the volume itself still points at "/"
+			var foundVol *corev1.Volume
+			for i := range pod.Spec.Volumes {
+				if pod.Spec.Volumes[i].Name == "host-root" {
+					foundVol = &pod.Spec.Volumes[i]
+					break
+				}
+			}
+			Expect(foundVol).NotTo(BeNil())
+			Expect(foundVol.HostPath.Path).To(Equal("/"))
 		}
 	})
 
