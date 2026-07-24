@@ -21,6 +21,10 @@ const (
 	UpgradeDebugDefault    = false
 )
 
+const (
+	defaultHostMountPath = "/host"
+)
+
 // Helper functions for handling pointer to bool fields
 
 // getBool returns the value with default fallback for boolean fields
