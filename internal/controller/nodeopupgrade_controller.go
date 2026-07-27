@@ -226,7 +226,10 @@ exit 0
 // buildExcludePathFlags returns a shell fragment of `--exclude-path` flags to
 // append after `--source dir:/`. The always-excluded paths come first, then
 // any user-configured paths. Each path is single-quoted so spaces and shell
-// metacharacters stay literal; embedded single quotes are escaped as `'\”`.
+// metacharacters stay literal; embedded single quotes are handled with the
+// POSIX close-escape-reopen idiom (close the quote, emit an escaped literal
+// single quote, reopen the quote), which is the raw-string literal used in
+// the ReplaceAll call below.
 func buildExcludePathFlags(userPaths []string) string {
 	all := make([]string, 0, len(upgradeAlwaysExcludePaths)+len(userPaths))
 	all = append(all, upgradeAlwaysExcludePaths...)
