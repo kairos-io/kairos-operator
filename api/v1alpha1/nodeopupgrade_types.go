@@ -83,6 +83,11 @@ type NodeOpUpgradeSpec struct {
 	// are injected by Kubernetes and would overwrite the node's real ones.
 	// To overwrite them intentionally, author a manual NodeOp with an OCI
 	// source instead.
+	//
+	// Requires kairos-agent v3.6.0+ in Spec.Image. Older kairos-agent
+	// versions do not recognize --exclude-path and the upgrade Job will fail
+	// with "unknown flag". Since Kairos is an atomic-upgrade OS, this only
+	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`
 }
