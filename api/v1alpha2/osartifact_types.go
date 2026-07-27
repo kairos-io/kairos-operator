@@ -260,6 +260,48 @@ type OSArtifactSpec struct {
 	// Importers are init containers that run before the build phase on the builder Pod.
 	// +optional
 	Importers []corev1.Container `json:"importers,omitempty"`
+
+	// NameOverride allows to override the artifact name. Default to metadata.name
+	// +optional
+	NameOverride NameOverrideSpec `json:"nameOverride,omitempty"`
+}
+
+type NameOverrideSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	ISO string `json:"iso,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	CloudImage string `json:"cloudImage,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	AzureImage string `json:"azureImage,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	GCEImage string `json:"gceImage,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	Netboot string `json:"netboot,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	UKI string `json:"uki,omitempty"`
 }
 
 type SecretKeySelector struct {
@@ -434,4 +476,34 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 		}
 	}
 	return nil
+}
+
+func (s *OSArtifact) ArtifactNameFor(kind string) string {
+	switch kind {
+	case "iso":
+		if s.Spec.NameOverride.ISO != "" {
+			return s.Spec.NameOverride.ISO
+		}
+	case "cloud":
+		if s.Spec.NameOverride.CloudImage != "" {
+			return s.Spec.NameOverride.CloudImage
+		}
+	case "azure":
+		if s.Spec.NameOverride.AzureImage != "" {
+			return s.Spec.NameOverride.AzureImage
+		}
+	case "gce":
+		if s.Spec.NameOverride.GCEImage != "" {
+			return s.Spec.NameOverride.GCEImage
+		}
+	case "netboot":
+		if s.Spec.NameOverride.Netboot != "" {
+			return s.Spec.NameOverride.Netboot
+		}
+	case "uki":
+		if s.Spec.NameOverride.UKI != "" {
+			return s.Spec.NameOverride.UKI
+		}
+	}
+	return s.Name
 }
