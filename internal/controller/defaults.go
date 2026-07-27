@@ -25,6 +25,14 @@ const (
 	defaultHostMountPath = "/host"
 )
 
+// upgradeAlwaysExcludePaths are the paths the operator always passes to
+// `kairos-agent upgrade` as `--exclude-path` in the NodeOpUpgrade flow. This
+// flow uses `--source dir:/` which rsyncs the pod's rootfs onto the host, and
+// Kubernetes injects a pod-specific /etc/hostname and /etc/hosts into every
+// pod. Copying those over the real host files breaks the node's identity
+// after the post-upgrade reboot.
+var upgradeAlwaysExcludePaths = []string{"/etc/hostname", "/etc/hosts"}
+
 // Helper functions for handling pointer to bool fields
 
 // getBool returns the value with default fallback for boolean fields

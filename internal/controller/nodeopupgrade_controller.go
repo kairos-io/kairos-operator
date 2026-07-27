@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -222,8 +223,28 @@ exit 0
 `
 }
 
+// buildExcludePathFlags returns a shell fragment of `--exclude-path` flags to
+// append after `--source dir:/`. The always-excluded paths come first, then
+// any user-configured paths. Each path is single-quoted so spaces and shell
+// metacharacters stay literal; embedded single quotes are escaped as `'\”`.
+func buildExcludePathFlags(userPaths []string) string {
+	all := make([]string, 0, len(upgradeAlwaysExcludePaths)+len(userPaths))
+	all = append(all, upgradeAlwaysExcludePaths...)
+	all = append(all, userPaths...)
+
+	var b strings.Builder
+	for _, p := range all {
+		b.WriteString(" --exclude-path '")
+		b.WriteString(strings.ReplaceAll(p, "'", `'\''`))
+		b.WriteString("'")
+	}
+	return b.String()
+}
+
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
 func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) []string {
+	excludes := buildExcludePathFlags(nodeOpUpgrade.Spec.ExcludePaths)
+
 	script := `set -x -e
 
 `
@@ -284,28 +305,28 @@ mount --rbind ` + defaultHostMountPath + `/run /run
 	if upgradeRecovery && upgradeActive {
 		// Both recovery and active
 		script += `# Upgrade recovery partition
-` + agent + ` upgrade --recovery --source dir:/
+` + agent + ` upgrade --recovery --source dir:/` + excludes + `
 
 # Upgrade active partition
-` + agent + ` upgrade --source dir:/
+` + agent + ` upgrade --source dir:/` + excludes + `
 exit 0
 `
 	} else if upgradeRecovery {
 		// Recovery only
 		script += `# Upgrade recovery partition only
-` + agent + ` upgrade --recovery --source dir:/
+` + agent + ` upgrade --recovery --source dir:/` + excludes + `
 exit 0
 `
 	} else if upgradeActive {
 		// Active only (default behavior)
 		script += `# Upgrade active partition
-` + agent + ` upgrade --source dir:/
+` + agent + ` upgrade --source dir:/` + excludes + `
 exit 0
 `
 	} else {
 		// Neither specified - default to active
 		script += `# Upgrade active partition (default)
-` + agent + ` upgrade --source dir:/
+` + agent + ` upgrade --source dir:/` + excludes + `
 exit 0
 `
 	}
