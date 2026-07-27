@@ -24,17 +24,20 @@ import (
 )
 
 var _ = Describe("getNodeOpImage", func() {
-	var nodeOp = &kairosiov1alpha1.NodeOp{}
+	var nodeOp *kairosiov1alpha1.NodeOp
+
+	BeforeEach(func() {
+		nodeOp = &kairosiov1alpha1.NodeOp{}
+		Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed())
+	})
 
 	It("should return Spec.Image when set", func() {
 		nodeOp.Spec.Image = "spec-image"
-		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
 		Expect(getNodeOpImage(nodeOp)).To(Equal("spec-image"))
 	})
 
 	It("should return the value of NODEOP_DEFAULT_IMAGE when it is set and Spec.Image is empty", func() {
 		Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "nodeop-env-image")).To(Succeed())
-		defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 		Expect(getNodeOpImage(nodeOp)).To(Equal("nodeop-env-image"))
 	})
 
@@ -44,17 +47,20 @@ var _ = Describe("getNodeOpImage", func() {
 })
 
 var _ = Describe("getSentinelImage", func() {
-	var nodeOp = &kairosiov1alpha1.NodeOp{}
+	var nodeOp *kairosiov1alpha1.NodeOp
+
+	BeforeEach(func() {
+		nodeOp = &kairosiov1alpha1.NodeOp{}
+		Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed())
+	})
 
 	It("should return the value of SENTINEL_IMAGE when it is set", func() {
 		Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
-		defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
 		Expect(getSentinelImage(nodeOp)).To(Equal("sentinel-env-image"))
 	})
 
 	It("should return Spec.Image when SENTINEL_IMAGE is empty", func() {
 		nodeOp.Spec.Image = "spec-image"
-		defer func() { nodeOp = &kairosiov1alpha1.NodeOp{} }()
 		Expect(getSentinelImage(nodeOp)).To(Equal("spec-image"))
 	})
 
@@ -64,7 +70,7 @@ var _ = Describe("getSentinelImage", func() {
 })
 
 var _ = Describe("getHostMountPath", func() {
-	nodeOp := &kairosiov1alpha1.NodeOp{}
+	var nodeOp *kairosiov1alpha1.NodeOp
 
 	BeforeEach(func() {
 		nodeOp = &kairosiov1alpha1.NodeOp{}
@@ -119,9 +125,7 @@ var _ = Describe("NodeOp Controller", func() {
 		interval        = time.Millisecond * 250
 		kindNodeOp      = "NodeOp"
 	)
-	var (
-		NodeOpName string
-	)
+	var NodeOpName string
 
 	Context("When creating a NodeOp", func() {
 		BeforeEach(func() {
@@ -181,6 +185,8 @@ var _ = Describe("NodeOp Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).Should(Succeed())
+			Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed())
+			Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed())
 		})
 
 		AfterEach(func() {
@@ -237,7 +243,6 @@ var _ = Describe("NodeOp Controller", func() {
 
 		It("should use Spec.Image for NodeOp container, taking precedence over NODEOP_DEFAULT_IMAGE", func() {
 			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
-			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command: []string{"echo", "test"},
@@ -248,7 +253,6 @@ var _ = Describe("NodeOp Controller", func() {
 
 		It("should use NODEOP_DEFAULT_IMAGE for NodeOp container when Spec.Image is empty", func() {
 			Expect(os.Setenv("NODEOP_DEFAULT_IMAGE", "env-image")).To(Succeed())
-			defer func() { Expect(os.Unsetenv("NODEOP_DEFAULT_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command: []string{"echo", "test"},
@@ -265,7 +269,6 @@ var _ = Describe("NodeOp Controller", func() {
 
 		It("should use value of SENTINEL_IMAGE for sentinel container when it is set", func() {
 			Expect(os.Setenv("SENTINEL_IMAGE", "sentinel-env-image")).To(Succeed())
-			defer func() { Expect(os.Unsetenv("SENTINEL_IMAGE")).To(Succeed()) }()
 
 			image := reconcileAndGetMainContainerImage(kairosiov1alpha1.NodeOpSpec{
 				Command:         []string{"echo", "test"},
@@ -427,7 +430,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify Jobs were created
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -528,7 +532,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Job was created with correct ImagePullSecrets")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": imagePullSecretsNodeOp.Name,
@@ -587,7 +592,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Job was created with correct ImagePullSecrets even with reboot enabled")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": imagePullSecretsRebootNodeOp.Name,
@@ -721,7 +727,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying job was created")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": cordonDrainNodeOp.Name,
@@ -745,7 +752,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating reboot pod completion")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": cordonDrainNodeOp.Name,
@@ -823,7 +831,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Completing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": preCordonedNodeOp.Name}),
 			)).To(Succeed())
@@ -889,7 +898,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Completing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": repeatedUncordonNodeOp.Name}),
 			)).To(Succeed())
@@ -981,7 +991,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Completing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": recreatedNodeOp.Name}),
 			)).To(Succeed())
@@ -1049,7 +1060,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Failing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": uncordonNodeOp.Name}),
 			)).To(Succeed())
@@ -1111,7 +1123,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Failing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": stayCordonedNodeOp.Name}),
 			)).To(Succeed())
@@ -1180,7 +1193,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Failing the Job")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{"kairos.io/nodeop": outOfBandNodeOp.Name}),
 			)).To(Succeed())
@@ -1250,7 +1264,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify Job was created
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": rebootNodeOp.Name,
@@ -1274,7 +1289,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			// Verify reboot pod was created
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": rebootNodeOp.Name,
@@ -1404,7 +1420,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying no reboot pods were created")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": noRebootNodeOp.Name,
@@ -1416,7 +1433,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying regular Job was created")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": noRebootNodeOp.Name,
@@ -1499,7 +1517,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying reboot pods are created immediately")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": rebootFirstNodeOp.Name,
@@ -1511,7 +1530,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Jobs are also created in the same reconciliation")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": rebootFirstNodeOp.Name,
@@ -1583,7 +1603,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Looking up the Job and the reboot Pod that were created for the same node")
 			jobList := &batchv1.JobList{}
-			Expect(k8sClient.List(ctx, jobList,
+			Expect(k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name},
 			)).To(Succeed())
@@ -1591,7 +1612,8 @@ var _ = Describe("NodeOp Controller", func() {
 			job := jobList.Items[0]
 
 			podList := &corev1.PodList{}
-			Expect(k8sClient.List(ctx, podList,
+			Expect(k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels{"kairos.io/nodeop": uniqueIDNodeOp.Name, "kairos.io/reboot": "true"},
 			)).To(Succeed())
@@ -1636,7 +1658,8 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			podList := &corev1.PodList{}
-			Expect(k8sClient.List(ctx, podList,
+			Expect(k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels{"kairos.io/nodeop": noCleanupNodeOp.Name, "kairos.io/reboot": "true"},
 			)).To(Succeed())
@@ -1705,7 +1728,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating job completion - rebootStatus should remain 'pending'")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": statusNodeOp.Name,
@@ -1741,7 +1765,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating reboot pod completion - rebootStatus should become 'completed'")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": statusNodeOp.Name,
@@ -1823,7 +1848,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying reboot pod was created")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": failedJobNodeOp.Name,
@@ -1835,7 +1861,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating job failure")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": failedJobNodeOp.Name,
@@ -1870,7 +1897,8 @@ var _ = Describe("NodeOp Controller", func() {
 			}
 
 			By("Verifying reboot pod was marked for deletion")
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": failedJobNodeOp.Name,
@@ -1923,7 +1951,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying no reboot pod was created")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": noRebootFailedJobNodeOp.Name,
@@ -1935,7 +1964,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Simulating job failure")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": noRebootFailedJobNodeOp.Name,
@@ -2012,7 +2042,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Job was created with custom BackoffLimit")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": backoffNodeOp.Name,
@@ -2067,7 +2098,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Job was created with Kubernetes default BackoffLimit (6)")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": defaultBackoffNodeOp.Name,
@@ -2142,7 +2174,8 @@ var _ = Describe("NodeOp Controller", func() {
 
 			By("Verifying Job was created with custom BackoffLimit even with reboot enabled")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": rebootBackoffNodeOp.Name,
@@ -2180,7 +2213,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 	// testConcurrencyLimit is a helper function to test concurrency limits
 	testConcurrencyLimit := func(ctx context.Context, k8sClient client.Client,
 		controllerReconciler *NodeOpReconciler, resourceName string,
-		concurrency, expectedInitialJobs, expectedAfterCompletion int) {
+		concurrency, expectedInitialJobs, expectedAfterCompletion int,
+	) {
 		By(fmt.Sprintf("Creating a NodeOp with concurrency=%d", concurrency))
 		nodeOp := &kairosiov1alpha1.NodeOp{
 			TypeMeta: metav1.TypeMeta{
@@ -2209,7 +2243,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 		By(fmt.Sprintf("Verifying %d job(s) were created initially", expectedInitialJobs))
 		jobList := &batchv1.JobList{}
-		err = k8sClient.List(ctx, jobList,
+		err = k8sClient.List(
+			ctx, jobList,
 			client.InNamespace("default"),
 			client.MatchingLabels(map[string]string{
 				"kairos.io/nodeop": resourceName,
@@ -2233,7 +2268,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By(fmt.Sprintf("Verifying %d job(s) exist after completion", expectedAfterCompletion))
-		err = k8sClient.List(ctx, jobList,
+		err = k8sClient.List(
+			ctx, jobList,
 			client.InNamespace("default"),
 			client.MatchingLabels(map[string]string{
 				"kairos.io/nodeop": resourceName,
@@ -2357,7 +2393,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying jobs were created for all nodes")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2419,7 +2456,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying one job was created")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2442,7 +2480,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying no additional jobs were created")
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2490,7 +2529,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying one job was created")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2513,7 +2553,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying second job was created despite failure")
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2569,7 +2610,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying jobs were created only for target nodes")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2636,7 +2678,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying only one job was created initially")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2659,7 +2702,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying second job was created")
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2687,7 +2731,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Should still have only 2 jobs (no third one for nodeNames[2])
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2729,7 +2774,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Verifying one job was created initially")
 			jobList := &batchv1.JobList{}
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2777,7 +2823,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying no additional jobs were created while reboot is pending")
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2788,7 +2835,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 
 			By("Simulating reboot completion")
 			podList := &corev1.PodList{}
-			err = k8sClient.List(ctx, podList,
+			err = k8sClient.List(
+				ctx, podList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2837,7 +2885,8 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying new job can now be created for other nodes")
-			err = k8sClient.List(ctx, jobList,
+			err = k8sClient.List(
+				ctx, jobList,
 				client.InNamespace("default"),
 				client.MatchingLabels(map[string]string{
 					"kairos.io/nodeop": resourceName,
@@ -2998,7 +3047,8 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 
 		// Delete preflight Pods we may have created for this NodeOp.
 		podList := &corev1.PodList{}
-		Expect(k8sClient.List(ctx, podList,
+		Expect(k8sClient.List(
+			ctx, podList,
 			client.InNamespace("default"),
 			client.MatchingLabels{"kairos.io/preflight": "true", "kairos.io/nodeop": resourceName},
 		)).To(Succeed())
@@ -3021,7 +3071,8 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 
 	listPreflightPods := func() []corev1.Pod {
 		podList := &corev1.PodList{}
-		Expect(k8sClient.List(ctx, podList,
+		Expect(k8sClient.List(
+			ctx, podList,
 			client.InNamespace("default"),
 			client.MatchingLabels{"kairos.io/preflight": "true", "kairos.io/nodeop": resourceName},
 		)).To(Succeed())
@@ -3043,7 +3094,8 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 
 	listOwnedJobs := func() []batchv1.Job {
 		jl := &batchv1.JobList{}
-		Expect(k8sClient.List(ctx, jl,
+		Expect(k8sClient.List(
+			ctx, jl,
 			client.InNamespace("default"),
 			client.MatchingLabels{"kairos.io/nodeop": resourceName},
 		)).To(Succeed())
