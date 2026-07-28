@@ -33,6 +33,10 @@ spec:
                 type: integer
               debug:
                 type: boolean
+              excludePaths:
+                items:
+                  type: string
+                type: array
               force:
                 type: boolean
               image:

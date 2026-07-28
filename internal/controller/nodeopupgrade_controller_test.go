@@ -1033,6 +1033,123 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			By("Verifying Spec.Preflight is nil so the upgrade runs everywhere with no preflight check")
 			Expect(nodeOp.Spec.Preflight).To(BeNil())
 		})
+
+		Context("--exclude-path propagation", func() {
+			// The always-excluded paths are a hard invariant of the `dir:/` flow:
+			// kubernetes injects a pod-specific /etc/hostname and /etc/hosts into
+			// every pod, and rsyncing those onto the host breaks the node's
+			// identity after reboot. The user's ExcludePaths is purely additive.
+
+			safeDefaults := []string{"/etc/hostname", "/etc/hosts"}
+
+			expectExcludesAfter := func(script, sourceFlag string, expectedPaths []string) {
+				needle := "kairos-agent upgrade " + sourceFlag
+				idx := strings.Index(script, needle)
+				Expect(idx).To(BeNumerically(">=", 0), "expected to find %q in script", needle)
+				line := script[idx:]
+				if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+					line = line[:nl]
+				}
+				for _, p := range expectedPaths {
+					Expect(line).To(ContainSubstring("--exclude-path '"+p+"'"),
+						"line was: %s", line)
+				}
+			}
+
+			It("emits the safe defaults on the active-only upgrade even when ExcludePaths is unset", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				expectExcludesAfter(nodeOp.Spec.Command[2], "--source dir:/", safeDefaults)
+			})
+
+			It("appends user-configured ExcludePaths after the safe defaults", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/var/lib/mystuff", "/opt/keep"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				script := nodeOp.Spec.Command[2]
+				expectExcludesAfter(script, "--source dir:/",
+					append(append([]string{}, safeDefaults...), "/var/lib/mystuff", "/opt/keep"))
+
+				By("preserving the order: safe defaults first, then user paths")
+				hostnameIdx := strings.Index(script, "--exclude-path '"+safeDefaults[0]+"'")
+				userIdx := strings.Index(script, "--exclude-path '/var/lib/mystuff'")
+				Expect(hostnameIdx).To(BeNumerically("<", userIdx))
+			})
+
+			It("still emits the safe defaults when ExcludePaths is explicitly empty", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				expectExcludesAfter(nodeOp.Spec.Command[2], "--source dir:/", safeDefaults)
+			})
+
+			It("emits excludes on the recovery-only invocation", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(false)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/var/lib/mystuff"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				expectExcludesAfter(nodeOp.Spec.Command[2], "--recovery --source dir:/",
+					append(append([]string{}, safeDefaults...), "/var/lib/mystuff"))
+			})
+
+			It("emits excludes on both invocations when upgrading both partitions", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(true)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/var/lib/mystuff"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				script := nodeOp.Spec.Command[2]
+				expected := append(append([]string{}, safeDefaults...), "/var/lib/mystuff")
+				expectExcludesAfter(script, "--recovery --source dir:/", expected)
+				expectExcludesAfter(script, "--source dir:/", expected)
+			})
+
+			It("wraps each path in single quotes so shell metacharacters are literal", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/tmp/with space/keep"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(nodeOp.Spec.Command[2]).To(ContainSubstring(
+					"--exclude-path '/tmp/with space/keep'"))
+			})
+
+			It("escapes embedded single quotes with the '\\'' pattern", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/tmp/it's/keep"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(nodeOp.Spec.Command[2]).To(ContainSubstring(
+					`--exclude-path '/tmp/it'\''s/keep'`))
+			})
+		})
 	})
 })
 
