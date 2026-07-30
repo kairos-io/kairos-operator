@@ -30,7 +30,7 @@ package controller
 // to swap the whole ref (e.g. an air-gapped mirror) set KAIROS_INIT_IMAGE.
 const DefaultOCISpecBaseImageSection = `# base image section
 ARG BASE_IMAGE
-ARG KAIROS_INIT=v0.7.0
+ARG KAIROS_INIT=v0.16.1
 ARG KAIROS_INIT_IMAGE=quay.io/kairos/kairos-init:${KAIROS_INIT}
 
 FROM ${KAIROS_INIT_IMAGE} AS kairos-init
