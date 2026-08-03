@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"fmt"
+
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	. "github.com/onsi/ginkgo/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -9,9 +11,14 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+const (
+	overrideName = "chronos"
+)
+
 // createArtifactWithExporter creates an OSArtifact with a custom exporter verification script
 func createArtifactWithExporter(tc *TestClients, namePrefix string, spec buildv1alpha2.OSArtifactSpec,
-	verifyScript string) (string, labels.Selector) {
+	verifyScript string,
+) (string, labels.Selector) {
 	spec.Exporters = []batchv1.JobSpec{
 		{
 			Template: corev1.PodTemplateSpec{
@@ -58,14 +65,226 @@ func runArtifactTest(tc *TestClients, artifactName string, artifactLabelSelector
 	tc.WaitForExportCompletion(artifactLabelSelector)
 }
 
-var _ = Describe("OSArtifact Format Tests", func() {
+var _ = Describe("OSArtifact NameOverride Tests", func() {
 	var tc *TestClients
 
 	BeforeEach(func() {
 		tc = SetupTestClients()
 	})
 
-	Describe("CloudImage (Raw Disk)", func() {
+	Describe("NameOverride with ISO", func() {
+		It("produces an ISO with the override name instead of metadata.name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				iso_file=$(ls /artifacts/%s.iso 2>/dev/null | head -n1)
+				if [ -z "$iso_file" ]; then
+					echo "ERROR: expected /artifacts/%s.iso not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				if [ ! -s "$iso_file" ]; then
+					echo "ERROR: ISO is empty"
+					exit 1
+				fi
+				echo "PASS: ISO produced with nameOverride: $iso_file"
+			`, overrideName, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					ISO:  true,
+					Arch: "amd64",
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					ISO: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-iso-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("NameOverride with CloudImage (Raw)", func() {
+		It("produces a raw disk with the override name instead of metadata.name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				raw_file=$(ls /artifacts/%s.raw 2>/dev/null | head -n1)
+				if [ -z "$raw_file" ]; then
+					echo "ERROR: expected /artifacts/%s.raw not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				if [ ! -s "$raw_file" ]; then
+					echo "ERROR: Raw file is empty"
+					exit 1
+				fi
+				echo "PASS: Raw disk produced with nameOverride: $raw_file"
+			`, overrideName, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					CloudImage: true,
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					CloudImage: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-raw-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("NameOverride with Azure (VHD)", func() {
+		It("produces a VHD with the override name instead of metadata.name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				vhd_file=$(ls /artifacts/%s.vhd 2>/dev/null | head -n1)
+				if [ -z "$vhd_file" ]; then
+					echo "ERROR: expected /artifacts/%s.vhd not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				if [ ! -s "$vhd_file" ]; then
+					echo "ERROR: VHD file is empty"
+					exit 1
+				fi
+				tail -c 512 "$vhd_file" | grep -q "conectix" || {
+					echo "ERROR: VHD does not have valid footer"
+					exit 1
+				}
+				echo "PASS: VHD produced with nameOverride: $vhd_file"
+			`, overrideName, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					AzureImage: true,
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					AzureImage: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-azure-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("NameOverride with GCE", func() {
+		It("produces a GCE image with the override name instead of metadata.name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				gce_file=$(ls /artifacts/%s.gce.tar.gz 2>/dev/null | head -n1)
+				if [ -z "$gce_file" ]; then
+					echo "ERROR: expected /artifacts/%s.gce.tar.gz not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				if [ ! -s "$gce_file" ]; then
+					echo "ERROR: GCE tar.gz is empty"
+					exit 1
+				fi
+				temp_dir=$(mktemp -d)
+				tar -xzf "$gce_file" -C "$temp_dir"
+				if [ ! -f "$temp_dir/disk.raw" ]; then
+					echo "ERROR: GCE archive does not contain disk.raw"
+					exit 1
+				fi
+				if [ ! -s "$temp_dir/disk.raw" ]; then
+					echo "ERROR: disk.raw in archive is empty"
+					exit 1
+				fi
+				echo "PASS: GCE image produced with nameOverride: $gce_file"
+			`, overrideName, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					GCEImage: true,
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					GCEImage: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-gce-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("NameOverride with UKI", func() {
+		It("produces UKI artifacts with the override name instead of metadata.name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				# UKI produces <name>-uki.iso
+				uki_iso=$(ls /artifacts/%s-uki.iso 2>/dev/null | head -n1)
+				if [ -z "$uki_iso" ]; then
+					echo "ERROR: expected /artifacts/%s-uki.iso not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				if [ ! -s "$uki_iso" ]; then
+					echo "ERROR: UKI ISO is empty"
+					exit 1
+				fi
+				echo "PASS: UKI ISO produced with nameOverride: $uki_iso"
+			`, overrideName, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					Arch: "amd64",
+					UKI: &buildv1alpha2.UKISpec{
+						ISO:        true,
+						KeysVolume: "uki-keys",
+					},
+				},
+				Importers: []corev1.Container{
+					{
+						Name:  "generate-uki-keys",
+						Image: "quay.io/kairos/auroraboot:latest",
+						Command: []string{
+							"/bin/sh",
+							"-c",
+						},
+						Args: []string{
+							"auroraboot genkey my-uki -o keys",
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "uki-keys",
+								MountPath: "/keys",
+							},
+						},
+					},
+				},
+				Volumes: []corev1.Volume{
+					{
+						Name: "uki-keys",
+						VolumeSource: corev1.VolumeSource{
+							EmptyDir: &corev1.EmptyDirVolumeSource{},
+						},
+					},
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					UKI: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-uki-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
+	Describe("OSArtifact Format Tests", func() {
 		var artifactName string
 		var artifactLabelSelector labels.Selector
 

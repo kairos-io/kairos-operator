@@ -98,15 +98,16 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 	unpackCmd = fmt.Sprintf("%s %s %s", unpackCmd, artifact.Spec.Image.Ref, rootfsMountPath)
 
 	imageName := builtImageName(artifact)
+	artifactName := artifact.ArtifactNameFor("base")
 	packCmd := "luet util pack"
 	if arch != "" {
 		packCmd = fmt.Sprintf("%s --arch %s --os linux", packCmd, arch)
 	}
-	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifact.Name)
+	packCmd = fmt.Sprintf("%s %s test.tar %s.tar", packCmd, imageName, artifactName)
 
 	script := fmt.Sprintf(
 		"%s && tar -czvpf test.tar -C %s . && %s && chmod +r %s.tar && mv %s.tar %s",
-		unpackCmd, rootfsMountPath, packCmd, artifact.Name, artifact.Name, artifactsMountPath,
+		unpackCmd, rootfsMountPath, packCmd, artifactName, artifactName, artifactsMountPath,
 	)
 	volMounts := []corev1.VolumeMount{
 		{Name: rootfsVolumeName, MountPath: rootfsMountPath},
@@ -255,7 +256,8 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 
 	if artifacts != nil {
 		if hasOCISpecRef {
-			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifact.Name))
+			artifactName := artifact.ArtifactNameFor("base")
+			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifactName))
 		}
 		for i, bundle := range artifacts.Bundles {
 			inits = append(inits, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch, artifact.Spec.Image.PullInsecureRegistry))
@@ -394,8 +396,10 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 
 func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overlayRootfs string) string {
 	var cmd strings.Builder
+	artifactName := artifact.ArtifactNameFor("iso")
+
 	cmd.WriteString("auroraboot --debug build-iso")
-	fmt.Fprintf(&cmd, " --override-name %s", artifact.Name)
+	fmt.Fprintf(&cmd, " --override-name %s", artifactName)
 	cmd.WriteString(" --date=false")
 	cmd.WriteString(" --output /artifacts")
 	if arch != "" {
@@ -430,8 +434,10 @@ func ukiArtifactName(artifactName string) string {
 
 func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) string {
 	var cmd strings.Builder
+	artifactName := artifact.ArtifactNameFor("uki")
+
 	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
-	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifact.Name))
+	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifactName))
 	fmt.Fprintf(&cmd, " --output-dir %s", artifactsMountPath)
 	fmt.Fprintf(&cmd, " --output-type %s", outputType)
 	fmt.Fprintf(&cmd, " --public-keys %s", ukiKeysMountPath)
@@ -478,7 +484,7 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
-		artifact.Name)
+		artifact.ArtifactNameFor("cloud"))
 	return c.String()
 }
 
@@ -496,10 +502,11 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 
 // isoBasenameForNetboot returns the ISO basename (without .iso) so netboot finds the right file: use UKI name when the ISO was built by build-uki.
 func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
+	artifactName := artifact.ArtifactNameFor("netboot")
 	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
-		return ukiArtifactName(artifact.Name)
+		return ukiArtifactName(artifactName)
 	}
-	return artifact.Name
+	return artifactName
 }
 
 func buildNetbootCmd(isoBasename string) string {
@@ -548,7 +555,7 @@ func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *b
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
-		artifact.Name)
+		artifact.ArtifactNameFor("azure"))
 	return c.String()
 }
 
@@ -581,7 +588,7 @@ func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *bui
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
 			"mv \"$file\" /artifacts/%s.gce.tar.gz",
-		artifact.Name)
+		artifact.ArtifactNameFor("gce"))
 	return c.String()
 }
 
@@ -624,7 +631,8 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 		}
 	}
 
-	return append([]corev1.Volume{artifactsVol},
+	return append(
+		[]corev1.Volume{artifactsVol},
 		corev1.Volume{
 			Name:         rootfsVolumeName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
@@ -764,8 +772,9 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		env = append(env, artifact.Spec.Image.BuildEnv...)
 	}
 
-	localTag := fmt.Sprintf("localhost/%s:latest", artifact.Name)
-	tarPath := fmt.Sprintf("%s/%s.tar", artifactsMountPath, artifact.Name)
+	artifactName := artifact.ArtifactNameFor("base")
+	localTag := fmt.Sprintf("localhost/%s:latest", artifactName)
+	tarPath := fmt.Sprintf("%s/%s.tar", artifactsMountPath, artifactName)
 
 	// Build the bud command.
 	budArgs := []string{buildahCmd, "bud", "--layers=false", "-f", "/" + ocispecVolumeName + "/" + OCISpecSecretKey}

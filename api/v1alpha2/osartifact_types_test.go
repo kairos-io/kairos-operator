@@ -430,3 +430,112 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 })
+
+const (
+	nameOverride = "chronos"
+	defaultName  = "kairos"
+)
+
+var _ = Describe("OSArtifact.ArtifactNameFor", func() {
+	Describe("with name overrides set", func() {
+		It("returns nameOverride.ISO for kind 'iso'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						ISO: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("iso")).To(Equal(nameOverride))
+		})
+
+		It("returns nameOverride.CloudImage for kind 'cloud'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						CloudImage: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("cloud")).To(Equal(nameOverride))
+		})
+
+		It("returns nameOverride.AzureImage for kind 'azure'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						AzureImage: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("azure")).To(Equal(nameOverride))
+		})
+
+		It("returns nameOverride.GCEImage for kind 'gce'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						GCEImage: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("gce")).To(Equal(nameOverride))
+		})
+
+		It("returns nameOverride.Netboot for kind 'netboot'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						Netboot: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("netboot")).To(Equal(nameOverride))
+		})
+
+		It("returns nameOverride.UKI for kind 'uki'", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						UKI: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("uki")).To(Equal(nameOverride))
+		})
+
+		It("falls back to the resource name for unmatched kinds", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{
+					NameOverride: v1alpha2.NameOverrideSpec{
+						ISO: nameOverride,
+					},
+				},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("cloud")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("unknown")).To(Equal(defaultName))
+		})
+	})
+
+	Describe("without name overrides", func() {
+		It("returns the resource name for every kind when no overrides are set", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("iso")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("cloud")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("azure")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("gce")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("netboot")).To(Equal(defaultName))
+			Expect(artifact.ArtifactNameFor("uki")).To(Equal(defaultName))
+		})
+	})
+})
