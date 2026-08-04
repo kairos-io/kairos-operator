@@ -307,6 +307,17 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		mains = inits[len(inits)-1:]
 		inits = inits[:len(inits)-1]
 	}
+	// Apply resource requirements to all containers if set.
+	if artifact.Spec.Resources != nil {
+		res := *artifact.Spec.Resources
+		for i := range inits {
+			inits[i].Resources = res
+		}
+		for i := range mains {
+			mains[i].Resources = res
+		}
+	}
+
 	podSpec := corev1.PodSpec{
 		AutomountServiceAccountToken: ptr(false),
 		RestartPolicy:                corev1.RestartPolicyNever,

@@ -277,6 +277,11 @@ func (in *OSArtifactSpec) DeepCopyInto(out *OSArtifactSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Volumes != nil {
 		in, out := &in.Volumes, &out.Volumes
 		*out = make([]v1.Volume, len(*in))

@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -638,5 +639,95 @@ var _ = Describe("unpackContainer", func() {
 	It("adds --allow-insecure-registries when insecure is true", func() {
 		c := unpackContainer("0", "auroraboot:test", "localhost:5000/bundle:latest", "amd64", true)
 		Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack --arch amd64 --allow-insecure-registries localhost:5000/bundle:latest /rootfs"))
+	})
+})
+
+var _ = Describe("newBuilderPod resources", func() {
+	var r *OSArtifactReconciler
+	var artifact *buildv1alpha2.OSArtifact
+	var pvc *corev1.PersistentVolumeClaim
+
+	BeforeEach(func() {
+		r = &OSArtifactReconciler{ToolImage: "tool-image"}
+		artifact = &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image:     buildv1alpha2.ImageSpec{Ref: "myimage:latest"},
+				Artifacts: &buildv1alpha2.ArtifactSpec{ISO: true},
+			},
+		}
+		pvc = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pvc"},
+		}
+	})
+
+	It("applies resources to init containers", func() {
+		artifact.Spec.Resources = &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("1Gi"),
+			},
+		}
+		pod := r.newBuilderPod(context.Background(), artifact, pvc)
+		Expect(pod.Spec.InitContainers).To(HaveLen(1))
+		Expect(pod.Spec.InitContainers[0].Resources.Requests.Cpu().String()).To(Equal("500m"))
+		Expect(pod.Spec.InitContainers[0].Resources.Limits.Memory().String()).To(Equal("1Gi"))
+	})
+
+	It("applies resources to main containers", func() {
+		artifact.Spec.Resources = &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("250m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		}
+		artifact.Spec.Artifacts.CloudImage = true
+		pod := r.newBuilderPod(context.Background(), artifact, pvc)
+		Expect(pod.Spec.Containers).To(HaveLen(1))
+		Expect(pod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("250m"))
+		Expect(pod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("512Mi"))
+	})
+
+	It("applies resources to both init and main containers", func() {
+		artifact.Spec.Resources = &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("1Gi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("2"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			},
+		}
+		artifact.Spec.Artifacts.CloudImage = true
+		pod := r.newBuilderPod(context.Background(), artifact, pvc)
+		Expect(pod.Spec.InitContainers).ToNot(BeEmpty())
+		for _, c := range pod.Spec.InitContainers {
+			Expect(c.Resources.Requests.Cpu().String()).To(Equal("1"))
+			Expect(c.Resources.Limits.Cpu().String()).To(Equal("2"))
+		}
+		Expect(pod.Spec.Containers).ToNot(BeEmpty())
+		for _, c := range pod.Spec.Containers {
+			Expect(c.Resources.Requests.Cpu().String()).To(Equal("1"))
+			Expect(c.Resources.Limits.Cpu().String()).To(Equal("2"))
+		}
+	})
+
+	It("does not modify container resourcess when Resources is nil", func() {
+		artifact.Spec.Resources = nil
+		pod := r.newBuilderPod(context.Background(), artifact, pvc)
+		resorces := pod.Spec.InitContainers[0].Resources
+
+		Expect(pod.Spec.InitContainers).To(HaveLen(1))
+		Expect(resorces.Requests).To(BeNil())
+		Expect(resorces.Limits).To(BeNil())
 	})
 })

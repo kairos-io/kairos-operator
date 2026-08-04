@@ -252,6 +252,10 @@ type OSArtifactSpec struct {
 	// +optional
 	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
 
+	// Resources defines resource requests and limits for builder pods.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
 	// +optional

@@ -4,6 +4,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/kairos-io/kairos-operator/api/v1alpha2"
 )
@@ -537,5 +538,69 @@ var _ = Describe("OSArtifact.ArtifactNameFor", func() {
 			Expect(artifact.ArtifactNameFor("netboot")).To(Equal(defaultName))
 			Expect(artifact.ArtifactNameFor("uki")).To(Equal(defaultName))
 		})
+	})
+})
+
+var _ = Describe("OSArtifactSpec.Resources", func() {
+	It("should accept a nil Resources", func() {
+		spec := v1alpha2.OSArtifactSpec{
+			Image:     v1alpha2.ImageSpec{Ref: "img"},
+			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+			Resources: nil,
+		}
+		Expect(spec.Resources).To(BeNil())
+	})
+
+	It("should accept resources with requests and limits", func() {
+		resources := &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("1Gi"),
+			},
+		}
+		spec := v1alpha2.OSArtifactSpec{
+			Image:     v1alpha2.ImageSpec{Ref: "img"},
+			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+			Resources: resources,
+		}
+		Expect(spec.Resources).ToNot(BeNil())
+		Expect(spec.Resources.Requests).ToNot(BeNil())
+		Expect(spec.Resources.Limits).ToNot(BeNil())
+		Expect(spec.Resources.Requests.Cpu().String()).To(Equal("500m"))
+		Expect(spec.Resources.Limits.Memory().String()).To(Equal("1Gi"))
+	})
+
+	It("should accept resources with only limits", func() {
+		resources := &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("2"),
+			},
+		}
+		spec := v1alpha2.OSArtifactSpec{
+			Image:     v1alpha2.ImageSpec{Ref: "img"},
+			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+			Resources: resources,
+		}
+		Expect(spec.Resources.Limits.Cpu().String()).To(Equal("2"))
+		Expect(spec.Resources.Requests).To(BeNil())
+	})
+
+	It("should accept resources with only requests", func() {
+		resources := &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		}
+		spec := v1alpha2.OSArtifactSpec{
+			Image:     v1alpha2.ImageSpec{Ref: "img"},
+			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+			Resources: resources,
+		}
+		Expect(spec.Resources.Requests.Memory().String()).To(Equal("256Mi"))
+		Expect(spec.Resources.Limits).To(BeNil())
 	})
 })
