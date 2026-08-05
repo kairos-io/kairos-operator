@@ -56,8 +56,9 @@ Contributions are welcome! This repo follows the [main Kairos contributing guide
 
 ### Quick start
 
-1. Fork this repository and add it as `upstream`.
-2. Create a feature branch: `git checkout -b feat/rename-to-chronos`
+1. Fork the repository, then clone your fork locally. Configure your fork as the
+`origin` remote and the original repository as `upstream`.
+2. Create a feature branch: `git checkout -b feat/my-change`
 3. Make your changes (see **Operator-specific patterns** below).
 4. Run `make test` and `make lint` before submitting.
 5. Open a PR against `main`.
