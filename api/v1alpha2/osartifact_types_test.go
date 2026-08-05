@@ -542,65 +542,88 @@ var _ = Describe("OSArtifact.ArtifactNameFor", func() {
 })
 
 var _ = Describe("OSArtifactSpec.Resources", func() {
-	It("should accept a nil Resources", func() {
+	It("should have zero-value Resources when not set", func() {
 		spec := v1alpha2.OSArtifactSpec{
 			Image:     v1alpha2.ImageSpec{Ref: "img"},
 			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
-			Resources: nil,
 		}
-		Expect(spec.Resources).To(BeNil())
+		Expect(spec.Resources).To(Equal(v1alpha2.ResourcesSpec{}))
 	})
 
-	It("should accept resources with requests and limits", func() {
-		resources := &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("1"),
-				corev1.ResourceMemory: resource.MustParse("1Gi"),
+	It("should accept resources with requests and limits for a specific artifact kind", func() {
+		resources := &v1alpha2.ResourcesSpec{
+			ISO: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("1"),
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
 			},
 		}
 		spec := v1alpha2.OSArtifactSpec{
 			Image:     v1alpha2.ImageSpec{Ref: "img"},
 			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
-			Resources: resources,
+			Resources: *resources,
 		}
-		Expect(spec.Resources).ToNot(BeNil())
-		Expect(spec.Resources.Requests).ToNot(BeNil())
-		Expect(spec.Resources.Limits).ToNot(BeNil())
-		Expect(spec.Resources.Requests.Cpu().String()).To(Equal("500m"))
-		Expect(spec.Resources.Limits.Memory().String()).To(Equal("1Gi"))
+		Expect(spec.Resources.ISO).ToNot(BeNil())
+		Expect(spec.Resources.ISO.Requests).ToNot(BeNil())
+		Expect(spec.Resources.ISO.Limits).ToNot(BeNil())
+		Expect(spec.Resources.ISO.Requests.Cpu().String()).To(Equal("500m"))
+		Expect(spec.Resources.ISO.Limits.Memory().String()).To(Equal("1Gi"))
 	})
 
-	It("should accept resources with only limits", func() {
-		resources := &corev1.ResourceRequirements{
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU: resource.MustParse("2"),
+	It("should accept resources with only limits for a specific artifact kind", func() {
+		resources := &v1alpha2.ResourcesSpec{
+			CloudImage: &corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU: resource.MustParse("2"),
+				},
 			},
 		}
 		spec := v1alpha2.OSArtifactSpec{
 			Image:     v1alpha2.ImageSpec{Ref: "img"},
-			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
-			Resources: resources,
+			Artifacts: &v1alpha2.ArtifactSpec{CloudImage: true},
+			Resources: *resources,
 		}
-		Expect(spec.Resources.Limits.Cpu().String()).To(Equal("2"))
-		Expect(spec.Resources.Requests).To(BeNil())
+		Expect(spec.Resources.CloudImage.Limits.Cpu().String()).To(Equal("2"))
+		Expect(spec.Resources.CloudImage.Requests).To(BeNil())
 	})
 
-	It("should accept resources with only requests", func() {
-		resources := &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
+	It("should accept resources with only requests for a specific artifact kind", func() {
+		resources := &v1alpha2.ResourcesSpec{
+			Pod: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				},
 			},
 		}
 		spec := v1alpha2.OSArtifactSpec{
 			Image:     v1alpha2.ImageSpec{Ref: "img"},
 			Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
-			Resources: resources,
+			Resources: *resources,
 		}
-		Expect(spec.Resources.Requests.Memory().String()).To(Equal("256Mi"))
-		Expect(spec.Resources.Limits).To(BeNil())
+		Expect(spec.Resources.Pod.Requests.Memory().String()).To(Equal("256Mi"))
+		Expect(spec.Resources.Pod.Limits).To(BeNil())
+	})
+
+	It("should accept ResourcesSpec with multiple artifact kinds set", func() {
+		resources := &v1alpha2.ResourcesSpec{
+			ISO:        &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+			CloudImage: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}},
+			Pod:        &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")}},
+		}
+		spec := v1alpha2.OSArtifactSpec{
+			Image:     v1alpha2.ImageSpec{Ref: "img"},
+			Artifacts: &v1alpha2.ArtifactSpec{ISO: true, CloudImage: true},
+			Resources: *resources,
+		}
+		Expect(spec.Resources.ISO).ToNot(BeNil())
+		Expect(spec.Resources.CloudImage).ToNot(BeNil())
+		Expect(spec.Resources.Pod).ToNot(BeNil())
+		Expect(spec.Resources.Netboot).To(BeNil())
+		Expect(spec.Resources.UKI).To(BeNil())
 	})
 })

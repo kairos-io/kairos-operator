@@ -25,6 +25,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type OSArtifactKind string
+
+const (
+	OSArtifactKindISO     OSArtifactKind = "iso"
+	OSArtifactKindCloud   OSArtifactKind = "cloud"
+	OSArtifactKindAzure   OSArtifactKind = "azure"
+	OSArtifactKindGCE     OSArtifactKind = "gce"
+	OSArtifactKindNetboot OSArtifactKind = "netboot"
+	OSArtifactKindUKI     OSArtifactKind = "uki"
+)
+
 var reservedVolumeNames = map[string]bool{
 	"artifacts":   true,
 	"rootfs":      true,
@@ -254,7 +265,7 @@ type OSArtifactSpec struct {
 
 	// Resources defines resource requests and limits for builder pods.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources ResourcesSpec `json:"resources,omitempty"`
 
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
@@ -306,6 +317,37 @@ type NameOverrideSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	UKI string `json:"uki,omitempty"`
+}
+
+// ResourcesSpec defines resource requests and limits per artifact kind.
+type ResourcesSpec struct {
+	// ISO resource requirements for the ISO builder container.
+	// +optional
+	ISO *corev1.ResourceRequirements `json:"iso,omitempty"`
+
+	// CloudImage resource requirements for the cloud image builder container.
+	// +optional
+	CloudImage *corev1.ResourceRequirements `json:"cloudImage,omitempty"`
+
+	// AzureImage resource requirements for the Azure image builder container.
+	// +optional
+	AzureImage *corev1.ResourceRequirements `json:"azureImage,omitempty"`
+
+	// GCEImage resource requirements for the GCE image builder container.
+	// +optional
+	GCEImage *corev1.ResourceRequirements `json:"gceImage,omitempty"`
+
+	// Netboot resource requirements for the netboot container.
+	// +optional
+	Netboot *corev1.ResourceRequirements `json:"netboot,omitempty"`
+
+	// UKI resource requirements for the UKI (signed boot) builder containers.
+	// +optional
+	UKI *corev1.ResourceRequirements `json:"uki,omitempty"`
+
+	// Pod is a fallback resource spec applied when no specific artifact kind is matched.
+	// +optional
+	Pod *corev1.ResourceRequirements `json:"pod,omitempty"`
 }
 
 type SecretKeySelector struct {
@@ -482,32 +524,57 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 	return nil
 }
 
-func (s *OSArtifact) ArtifactNameFor(kind string) string {
+func (s *OSArtifact) ArtifactNameFor(kind OSArtifactKind) string {
 	switch kind {
-	case "iso":
+	case OSArtifactKindISO:
 		if s.Spec.NameOverride.ISO != "" {
 			return s.Spec.NameOverride.ISO
 		}
-	case "cloud":
+	case OSArtifactKindCloud:
 		if s.Spec.NameOverride.CloudImage != "" {
 			return s.Spec.NameOverride.CloudImage
 		}
-	case "azure":
+	case OSArtifactKindAzure:
 		if s.Spec.NameOverride.AzureImage != "" {
 			return s.Spec.NameOverride.AzureImage
 		}
-	case "gce":
+	case OSArtifactKindGCE:
 		if s.Spec.NameOverride.GCEImage != "" {
 			return s.Spec.NameOverride.GCEImage
 		}
-	case "netboot":
+	case OSArtifactKindNetboot:
 		if s.Spec.NameOverride.Netboot != "" {
 			return s.Spec.NameOverride.Netboot
 		}
-	case "uki":
+	case OSArtifactKindUKI:
 		if s.Spec.NameOverride.UKI != "" {
 			return s.Spec.NameOverride.UKI
 		}
 	}
 	return s.Name
+}
+
+func (s *OSArtifact) ResourcesFor(kind OSArtifactKind) corev1.ResourceRequirements {
+	var resources *corev1.ResourceRequirements
+
+	switch kind {
+	case OSArtifactKindISO:
+		resources = s.Spec.Resources.ISO
+	case OSArtifactKindCloud:
+		resources = s.Spec.Resources.CloudImage
+	case OSArtifactKindAzure:
+		resources = s.Spec.Resources.AzureImage
+	case OSArtifactKindGCE:
+		resources = s.Spec.Resources.GCEImage
+	case OSArtifactKindNetboot:
+		resources = s.Spec.Resources.Netboot
+	case OSArtifactKindUKI:
+		resources = s.Spec.Resources.UKI
+	}
+
+	if resources == nil {
+		return corev1.ResourceRequirements{}
+	}
+
+	return *resources
 }

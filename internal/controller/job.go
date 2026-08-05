@@ -307,16 +307,6 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		mains = inits[len(inits)-1:]
 		inits = inits[:len(inits)-1]
 	}
-	// Apply resource requirements to all containers if set.
-	if artifact.Spec.Resources != nil {
-		res := *artifact.Spec.Resources
-		for i := range inits {
-			inits[i].Resources = res
-		}
-		for i := range mains {
-			mains[i].Resources = res
-		}
-	}
 
 	podSpec := corev1.PodSpec{
 		AutomountServiceAccountToken: ptr(false),
@@ -328,6 +318,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		NodeSelector:                 artifact.Spec.NodeSelector,
 		Tolerations:                  artifact.Spec.Tolerations,
 		Affinity:                     artifact.Spec.Affinity,
+		Resources:                    builderPodLevelResources(artifact),
 	}
 
 	return &corev1.Pod{
@@ -339,6 +330,14 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		},
 		Spec: podSpec,
 	}
+}
+
+func builderPodLevelResources(artifact *buildv1alpha2.OSArtifact) *corev1.ResourceRequirements {
+	if artifact.Spec.Resources.Pod == nil {
+		return nil
+	}
+
+	return artifact.Spec.Resources.Pod.DeepCopy()
 }
 
 func ptr[T any](val T) *T {
@@ -407,7 +406,7 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 
 func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overlayRootfs string) string {
 	var cmd strings.Builder
-	artifactName := artifact.ArtifactNameFor("iso")
+	artifactName := artifact.ArtifactNameFor(isoKind)
 
 	cmd.WriteString("auroraboot --debug build-iso")
 	fmt.Fprintf(&cmd, " --override-name %s", artifactName)
@@ -433,6 +432,7 @@ func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 		Command:         bashCxeCommand(),
 		Args:            []string{buildISOCommand(artifact, arch, overlayISO, overlayRootfs)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(isoKind),
 	}
 }
 
@@ -445,7 +445,7 @@ func ukiArtifactName(artifactName string) string {
 
 func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) string {
 	var cmd strings.Builder
-	artifactName := artifact.ArtifactNameFor("uki")
+	artifactName := artifact.ArtifactNameFor(ukiKind)
 
 	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
 	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifactName))
@@ -473,6 +473,7 @@ func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 		Command:         bashCxeCommand(),
 		Args:            []string{buildUKICommand(artifact, outputType)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(ukiKind),
 	}
 }
 
@@ -495,7 +496,7 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
-		artifact.ArtifactNameFor("cloud"))
+		artifact.ArtifactNameFor(cloudKind))
 	return c.String()
 }
 
@@ -508,12 +509,13 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 		Command:         bashCxeCommand(),
 		Args:            []string{buildCloudImageCmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(cloudKind),
 	}
 }
 
 // isoBasenameForNetboot returns the ISO basename (without .iso) so netboot finds the right file: use UKI name when the ISO was built by build-uki.
 func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
-	artifactName := artifact.ArtifactNameFor("netboot")
+	artifactName := artifact.ArtifactNameFor(netbootKind)
 	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
 		return ukiArtifactName(artifactName)
 	}
@@ -547,6 +549,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
 		Args:            []string{buildNetbootCmd(isoBasename)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(netbootKind),
 	}
 }
 
@@ -566,7 +569,7 @@ func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *b
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
-		artifact.ArtifactNameFor("azure"))
+		artifact.ArtifactNameFor(azureKind))
 	return c.String()
 }
 
@@ -579,6 +582,7 @@ func makeAzureCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSAr
 		Command:         bashCxeCommand(),
 		Args:            []string{buildAzureCmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(azureKind),
 	}
 }
 
@@ -599,7 +603,7 @@ func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *bui
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
 			"mv \"$file\" /artifacts/%s.gce.tar.gz",
-		artifact.ArtifactNameFor("gce"))
+		artifact.ArtifactNameFor(gceKind))
 	return c.String()
 }
 
@@ -612,6 +616,7 @@ func makeGCECloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArti
 		Command:         bashCxeCommand(),
 		Args:            []string{buildGCECmd(artifact, arch, artifacts)},
 		VolumeMounts:    mounts,
+		Resources:       artifact.ResourcesFor(gceKind),
 	}
 }
 

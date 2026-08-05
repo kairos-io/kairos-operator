@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -163,7 +164,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 			schema.GroupVersionResource{
 				Group:    buildv1alpha2.GroupVersion.Group,
 				Version:  buildv1alpha2.GroupVersion.Version,
-				Resource: "osartifacts"}).Namespace(namespace)
+				Resource: "osartifacts",
+			},
+		).Namespace(namespace)
 
 		uArtifact := unstructured.Unstructured{}
 		uArtifact.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(artifact)
@@ -231,7 +234,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 					p, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
 					if buildahIsInit {
-						var allReady = len(p.Status.InitContainerStatuses) > 0
+						allReady := len(p.Status.InitContainerStatuses) > 0
 						for _, c := range p.Status.InitContainerStatuses {
 							allReady = allReady && c.Ready
 						}
@@ -1168,7 +1171,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				// The rendered Secret should exist
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1181,14 +1185,16 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				// Update the values Secret
 				valuesSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), valuesSecretName, metav1.GetOptions{})
+					context.TODO(), valuesSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 				valuesSecret.StringData = map[string]string{
 					"BaseImage":  "alpine:3.18",
 					"InstallCmd": "zypper install -y curl",
 				}
 				_, err = clientset.CoreV1().Secrets(namespace).Update(
-					context.TODO(), valuesSecret, metav1.UpdateOptions{})
+					context.TODO(), valuesSecret, metav1.UpdateOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Reset in-memory mutation to simulate a new reconciliation
@@ -1199,7 +1205,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1220,7 +1227,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1254,7 +1262,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1269,7 +1278,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1302,7 +1312,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 						schema.GroupVersionResource{
 							Group:    buildv1alpha2.GroupVersion.Group,
 							Version:  buildv1alpha2.GroupVersion.Version,
-							Resource: "osartifacts"}).Namespace(namespace)
+							Resource: "osartifacts",
+						},
+					).Namespace(namespace)
 					uOther := unstructured.Unstructured{}
 					uOther.Object, _ = runtime.DefaultUnstructuredConverter.ToUnstructured(otherArtifact)
 					resp, err := artifacts.Create(context.TODO(), &uOther, metav1.CreateOptions{})
@@ -1405,7 +1417,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 					Expect(err).ToNot(HaveOccurred())
 
 					renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-						context.TODO(), renderedSecretName, metav1.GetOptions{})
+						context.TODO(), renderedSecretName, metav1.GetOptions{},
+					)
 					Expect(err).ToNot(HaveOccurred())
 
 					rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1424,7 +1437,8 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
-					context.TODO(), renderedSecretName, metav1.GetOptions{})
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				rendered := string(renderedSecret.Data[OCISpecSecretKey])
@@ -1572,6 +1586,304 @@ var _ = Describe("OSArtifactReconciler", func() {
 				It("includes cloud-config flag in auroraboot command", func() {
 					testCloudConfigInclusion("build-gce-cloud-image")
 				})
+			})
+		})
+	})
+
+	Describe("Resources", func() {
+		When("spec.resources is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
+				artifact.Spec.Resources = buildv1alpha2.ResourcesSpec{
+					ISO: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("50m"),
+							corev1.ResourceMemory: resource.MustParse("256Mi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+						},
+					},
+					Pod: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("1"),
+						},
+					},
+				}
+			})
+
+			It("applies per-kind resources to the corresponding container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("1"))
+
+				// build-iso container should have ISO resources
+				buildISO := findContainerInPod(pod, "build-iso")
+				Expect(buildISO).ToNot(BeNil())
+				Expect(buildISO.Resources.Requests).ToNot(BeNil())
+				Expect(buildISO.Resources.Requests.Cpu().String()).To(Equal("50m"))
+				Expect(buildISO.Resources.Requests.Memory().String()).To(Equal("256Mi"))
+				Expect(buildISO.Resources.Limits.Cpu().String()).To(Equal("500m"))
+				Expect(buildISO.Resources.Limits.Memory().String()).To(Equal("512Mi"))
+			})
+
+			It("applies pod-level resources to the pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				// Pod-level resources are set via builderPodLevelResources
+				Expect(pod.Spec.Resources).ToNot(BeNil())
+				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("1"))
+			})
+		})
+
+		When("spec.resources.cloudImage is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{CloudImage: true}
+				artifact.Spec.Resources.CloudImage = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("500m"),
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("1"),
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+				}
+			})
+
+			It("applies cloudImage resources to the build-cloud-image container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				cloudImage := findContainerInPod(pod, "build-cloud-image")
+				Expect(cloudImage).ToNot(BeNil())
+				Expect(cloudImage.Resources.Requests.Cpu().String()).To(Equal("500m"))
+				Expect(cloudImage.Resources.Limits.Cpu().String()).To(Equal("1"))
+				Expect(cloudImage.Resources.Requests.Memory().String()).To(Equal("256Mi"))
+				Expect(cloudImage.Resources.Limits.Memory().String()).To(Equal("512Mi"))
+			})
+		})
+
+		When("spec.resources.azureImage is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{AzureImage: true}
+				artifact.Spec.Resources.AzureImage = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("500m"),
+					},
+				}
+			})
+
+			It("applies azureImage resources to the build-azure-cloud-image container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				azureImage := findContainerInPod(pod, "build-azure-cloud-image")
+				Expect(azureImage).ToNot(BeNil())
+				Expect(azureImage.Resources.Requests.Cpu().String()).To(Equal("500m"))
+			})
+		})
+
+		When("spec.resources.gceImage is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{GCEImage: true}
+				artifact.Spec.Resources.GCEImage = &corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+				}
+			})
+
+			It("applies gceImage resources to the build-gce-cloud-image container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				gceImage := findContainerInPod(pod, "build-gce-cloud-image")
+				Expect(gceImage).ToNot(BeNil())
+				Expect(gceImage.Resources.Limits.Memory().String()).To(Equal("256Mi"))
+			})
+		})
+
+		When("spec.resources.netboot is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{Netboot: true}
+				artifact.Spec.Resources.Netboot = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("250m"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("500m"),
+					},
+				}
+			})
+
+			It("applies netboot resources to the build-netboot container", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				netboot := findContainerInPod(pod, "build-netboot")
+				Expect(netboot).ToNot(BeNil())
+				Expect(netboot.Resources.Requests.Cpu().String()).To(Equal("250m"))
+				Expect(netboot.Resources.Limits.Cpu().String()).To(Equal("500m"))
+			})
+		})
+
+		When("spec.resources.uki is set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{
+					UKI: &buildv1alpha2.UKISpec{
+						ISO:        true,
+						Container:  true,
+						KeysVolume: ukiKeysVolumeName,
+					},
+				}
+				artifact.Spec.Volumes = []corev1.Volume{
+					{Name: ukiKeysVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				}
+				artifact.Spec.Resources.UKI = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("500m"),
+					},
+				}
+			})
+
+			It("applies uki resources to build-uki-* containers", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				ukiISO := findContainerInPod(pod, "build-uki-iso")
+				Expect(ukiISO).ToNot(BeNil())
+				Expect(ukiISO.Resources.Requests.Cpu().String()).To(Equal("500m"))
+
+				ukiContainer := findContainerInPod(pod, "build-uki-container")
+				Expect(ukiContainer).ToNot(BeNil())
+				Expect(ukiContainer.Resources.Requests.Cpu().String()).To(Equal("500m"))
+			})
+		})
+
+		When("spec.resources.pod is set without specific kind", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true}
+				artifact.Spec.Resources.Pod = &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("50m"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				}
+			})
+
+			It("applies pod resources when no specific kind is set", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(pod.Spec.Resources).ToNot(BeNil())
+				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("50m"))
+				Expect(pod.Spec.Resources.Limits.Memory().String()).To(Equal("128Mi"))
+			})
+		})
+
+		When("spec.resources is not set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true, CloudImage: true}
+			})
+
+			It("init containers have empty resource requirements when no resources are set", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(pod.Spec.Resources).To(BeNil())
+
+				cloudImage := findContainerInPod(pod, "build-cloud-image")
+				Expect(cloudImage).ToNot(BeNil())
+				Expect(cloudImage.Resources.Requests).To(BeZero())
+
+				buildISO := findContainerInPod(pod, "build-iso")
+				Expect(buildISO).ToNot(BeNil())
+				Expect(buildISO.Resources.Requests).To(BeZero())
+			})
+		})
+
+		When("spec.resources has both pod-level and per-kind resources", func() {
+			BeforeEach(func() {
+				artifact.Spec.Image = buildv1alpha2.ImageSpec{Ref: testImageName}
+				artifact.Spec.Artifacts = &buildv1alpha2.ArtifactSpec{ISO: true, CloudImage: true}
+				artifact.Spec.Resources = buildv1alpha2.ResourcesSpec{
+					ISO: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("200m"),
+						},
+					},
+					CloudImage: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("500m"),
+						},
+					},
+					Pod: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("1"),
+						},
+					},
+				}
+			})
+
+			It("applies per-kind resources to containers and pod-level to pod spec", func() {
+				pvc, err := r.createPVC(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+				Expect(err).ToNot(HaveOccurred())
+
+				// build-iso should have ISO resources
+				buildISO := findContainerInPod(pod, "build-iso")
+				Expect(buildISO).ToNot(BeNil())
+				Expect(buildISO.Resources.Requests.Cpu().String()).To(Equal("200m"))
+
+				// build-cloud-image should have CloudImage resources
+				cloudImage := findContainerInPod(pod, "build-cloud-image")
+				Expect(cloudImage).ToNot(BeNil())
+				Expect(cloudImage.Resources.Requests.Cpu().String()).To(Equal("500m"))
+
+				// Pod-level resources should be set on the pod spec
+				Expect(pod.Spec.Resources).ToNot(BeNil())
+				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("1"))
 			})
 		})
 	})
