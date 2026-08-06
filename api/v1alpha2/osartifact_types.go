@@ -345,7 +345,11 @@ type ResourcesSpec struct {
 	// +optional
 	UKI *corev1.ResourceRequirements `json:"uki,omitempty"`
 
-	// Pod is a fallback resource spec applied when no specific artifact kind is matched.
+	// Pod sets pod-level resource requests and limits on the builder pod. Requires
+	// the PodLevelResources feature gate on the cluster (beta since Kubernetes 1.32);
+	// on clusters without it, this field is silently dropped by the API server.
+	// When set alongside per-kind resources above, Kubernetes validates that pod-level
+	// values are at least the effective sum of container-level values.
 	// +optional
 	Pod *corev1.ResourceRequirements `json:"pod,omitempty"`
 }
