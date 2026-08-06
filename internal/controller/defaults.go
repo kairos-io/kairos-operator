@@ -1,7 +1,5 @@
 package controller
 
-import buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
-
 // Default values for boolean fields
 const (
 	// NodeOp defaults
@@ -25,15 +23,6 @@ const (
 
 const (
 	defaultHostMountPath = "/host"
-)
-
-const (
-	isoKind     = buildv1alpha2.OSArtifactKindISO
-	ukiKind     = buildv1alpha2.OSArtifactKindUKI
-	cloudKind   = buildv1alpha2.OSArtifactKindCloud
-	azureKind   = buildv1alpha2.OSArtifactKindAzure
-	gceKind     = buildv1alpha2.OSArtifactKindGCE
-	netbootKind = buildv1alpha2.OSArtifactKindNetboot
 )
 
 // upgradeAlwaysExcludePaths are the paths the operator always passes to
