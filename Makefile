@@ -202,7 +202,7 @@ kind-teardown: ## Delete the kind cluster
 # resources (e.g. the rendered OCI spec Secret). This avoids races and keeps expectations clear.
 .PHONY: controller-tests
 controller-tests: kind-setup install ## Run controller tests that require a real cluster (OSArtifact tests)
-	USE_EXISTING_CLUSTER=true go test ./internal/controller/... -v -ginkgo.v -ginkgo.focus="OSArtifact"
+	USE_EXISTING_CLUSTER=true go test -timeout 20m ./internal/controller/... -v -ginkgo.v -ginkgo.focus="OSArtifact"
 
 ##@ Dependencies
 
