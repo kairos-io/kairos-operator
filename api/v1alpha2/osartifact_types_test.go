@@ -487,18 +487,6 @@ var _ = Describe("OSArtifact.ArtifactNameFor", func() {
 			Expect(artifact.ArtifactNameFor("gce")).To(Equal(nameOverride))
 		})
 
-		It("returns nameOverride.Netboot for kind 'netboot'", func() {
-			artifact := &v1alpha2.OSArtifact{
-				Spec: v1alpha2.OSArtifactSpec{
-					NameOverride: v1alpha2.NameOverrideSpec{
-						Netboot: nameOverride,
-					},
-				},
-			}
-			artifact.Name = defaultName
-			Expect(artifact.ArtifactNameFor("netboot")).To(Equal(nameOverride))
-		})
-
 		It("returns nameOverride.UKI for kind 'uki'", func() {
 			artifact := &v1alpha2.OSArtifact{
 				Spec: v1alpha2.OSArtifactSpec{
@@ -509,6 +497,14 @@ var _ = Describe("OSArtifact.ArtifactNameFor", func() {
 			}
 			artifact.Name = defaultName
 			Expect(artifact.ArtifactNameFor("uki")).To(Equal(nameOverride))
+		})
+
+		It("returns metadata.name for kind 'netboot' (no override field)", func() {
+			artifact := &v1alpha2.OSArtifact{
+				Spec: v1alpha2.OSArtifactSpec{},
+			}
+			artifact.Name = defaultName
+			Expect(artifact.ArtifactNameFor("netboot")).To(Equal(defaultName))
 		})
 
 		It("falls back to the resource name for unmatched kinds", func() {

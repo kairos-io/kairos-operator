@@ -282,36 +282,35 @@ type OSArtifactSpec struct {
 }
 
 type NameOverrideSpec struct {
+	// ISO overrides the ISO artifact name. This field is also used as the baseName for netboot artifacts.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	ISO string `json:"iso,omitempty"`
 
+	// CloudImage overrides the cloud image artifact name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	CloudImage string `json:"cloudImage,omitempty"`
 
+	// AzureImage overrides the Azure image artifact name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	AzureImage string `json:"azureImage,omitempty"`
 
+	// GCEImage overrides the GCE image artifact name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +optional
 	GCEImage string `json:"gceImage,omitempty"`
 
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	// +optional
-	Netboot string `json:"netboot,omitempty"`
-
+	// UKI overrides the UKI artifact name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
@@ -545,10 +544,6 @@ func (s *OSArtifact) ArtifactNameFor(kind OSArtifactKind) string {
 	case OSArtifactKindGCE:
 		if s.Spec.NameOverride.GCEImage != "" {
 			return s.Spec.NameOverride.GCEImage
-		}
-	case OSArtifactKindNetboot:
-		if s.Spec.NameOverride.Netboot != "" {
-			return s.Spec.NameOverride.Netboot
 		}
 	case OSArtifactKindUKI:
 		if s.Spec.NameOverride.UKI != "" {

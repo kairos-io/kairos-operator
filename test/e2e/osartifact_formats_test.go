@@ -284,6 +284,57 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 		})
 	})
 
+	Describe("NameOverride with Netboot", func() {
+		It("produces netboot artifacts named after the ISO base name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				iso_name="%s"
+				# Netboot outputs are named after the ISO artifact basename:
+				#   <name>-kernel  <name>-initrd  <name>.squashfs
+				kernel_file=$(ls /artifacts/${iso_name}-kernel 2>/dev/null | head -n1)
+				if [ -z "$kernel_file" ]; then
+					echo "ERROR: expected ${iso_name}-kernel not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				initrd_file=$(ls /artifacts/${iso_name}-initrd 2>/dev/null | head -n1)
+				if [ -z "$initrd_file" ]; then
+					echo "ERROR: expected ${iso_name}-initrd not found"
+					exit 1
+				fi
+				squashfs_file=$(ls /artifacts/${iso_name}.squashfs 2>/dev/null | head -n1)
+				if [ -z "$squashfs_file" ]; then
+					echo "ERROR: expected ${iso_name}.squashfs not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				for file in "$kernel_file" "$initrd_file" "$squashfs_file"; do
+					if [ ! -s "$file" ]; then
+						echo "ERROR: file is empty: $file"
+						exit 1
+					fi
+				done
+				echo "PASS: Netboot artifacts produced with ISO base name: $kernel_file $initrd_file $squashfs_file"
+			`, overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					ISO:     true,
+					Netboot: true,
+					Arch:    "amd64",
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					ISO: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-netboot-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
 	Describe("OSArtifact Format Tests", func() {
 		var artifactName string
 		var artifactLabelSelector labels.Selector
