@@ -1,0 +1,84 @@
+name: Helm Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  release-helm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4
+
+      - name: Lint chart
+        run: helm lint charts/kairos-operator
+
+      - name: Install kustomize
+        run: |
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.6.0/kustomize_v5.6.0_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: Build Kustomize install manifest
+        run: |
+          sed -i "s|value: quay.io/kairos/operator:v[^[:space:]]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
+          sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
+          mkdir -p dist
+          kustomize build config/default > dist/install.yaml
+
+      - name: Login to GHCR (OCI)
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package chart
+        run: |
+          SEMVER="${{ inputs.version }}"
+          SEMVER="${SEMVER#v}"
+          helm package charts/kairos-operator \
+            --version "${SEMVER}" \
+            --app-version "${{ inputs.version }}" \
+            --destination .chart-output
+
+      - name: Create GitHub Release and upload install manifest
+        run: |
+          gh release create "${{ inputs.version }}" \
+            --title "${{ inputs.version }}" \
+            --generate-notes \
+            --verify-tag \
+            2>/dev/null || true
+          gh release upload "${{ inputs.version }}" dist/install.yaml --clobber
+
+      - name: Push chart to GHCR (OCI)
+        run: |
+          helm push .chart-output/kairos-operator-*.tgz oci://ghcr.io/${{ github.repository_owner }}/helm-charts
+
+      - name: Publish to GitHub Pages (Helm repo)
+        uses: helm/chart-releaser-action@a917fd15b20e8b64b94d9158ad54cd6345335584 # v1.6.0
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          CR_PACKAGE_PATH: .chart-output
+        with:
+          charts_dir: charts
+          skip_packaging: true
+          packages_with_index: true

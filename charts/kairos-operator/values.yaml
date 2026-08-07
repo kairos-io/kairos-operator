@@ -1,0 +1,72 @@
+replicaCount: 1
+
+image:
+  operator:
+    repository: quay.io/kairos/operator
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  nodeLabeler:
+    repository: quay.io/kairos/operator-node-labeler
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  create: true
+  name: kairos-operator
+
+serviceAccount:
+  name: kairos-operator
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+metrics:
+  enabled: true
+  port: 8443
+
+leaderElect: true
+
+# Tool images used by the OSArtifact controller. When empty, the controller
+# uses its own compiled-in defaults (quay.io/kairos/auroraboot and quay.io/buildah/stable).
+# Set these to pin specific versions or use a private mirror.
+toolImage: ""
+buildahImage: ""
+
+nodeops:
+  defaultImage: "busybox:latest"
+
+# Image for the reboot sentinel container, used only when NodeOp.spec.rebootOnSuccess is true.
+# When a NodeOp Job completes, this container writes a trigger file to /usr/local/.kairos/ on
+# the host (via hostPath). The node agent reads that file and initiates the reboot.
+# Only needs sh + tee — busybox:latest is the correct default.
+# Override for air-gapped or private registry environments where busybox is not directly pullable.
+# Priority: this value > NodeOp.spec.image > "busybox:latest".
+sentinelImage: ""
+
+# Tolerations for the operator Deployment. Defaults allow scheduling on
+# control-plane and etcd nodes, which is required for Kairos node operations.
+tolerations:
+  - key: "CriticalAddonsOnly"
+    operator: "Exists"
+  - key: "node-role.kubernetes.io/master"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/controlplane"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/etcd"
+    operator: "Exists"
+    effect: "NoExecute"
