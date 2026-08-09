@@ -17,7 +17,6 @@ fullnameOverride: ""
 
 namespace:
   create: true
-  name: kairos-operator
 
 serviceAccount:
   name: kairos-operator

@@ -14,7 +14,7 @@ Expand the name of the chart.
 {{- end }}
 
 {{- define "kairos-operator.namespace" -}}
-{{- .Values.namespace.name }}
+{{- .Release.Namespace }}
 {{- end }}
 
 {{- define "kairos-operator.serviceAccountName" -}}
