@@ -13,7 +13,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-const testBuildahImage = "quay.io/buildah/stable:" + CompatibleBuildahVersion
+const (
+	testBuildahImage = "quay.io/buildah/stable:" + CompatibleBuildahVersion
+	nameOverride     = "chronos"
+)
 
 var _ = Describe("buildahBuildContainer", func() {
 	var artifact *buildv1alpha2.OSArtifact
@@ -390,6 +393,147 @@ var _ = Describe("buildISOCommand", func() {
 			cmd := buildISOCommand(artifact, "amd64", "", "")
 			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
 			Expect(cmd).To(ContainSubstring("dir:/rootfs"))
+		})
+	})
+})
+
+var _ = Describe("isoBasenameForNetboot", func() {
+	When("NameOverride.ISO is not set", func() {
+		It("falls back to metadata.name", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec: buildv1alpha2.OSArtifactSpec{
+					Artifacts: &buildv1alpha2.ArtifactSpec{},
+					NameOverride: buildv1alpha2.NameOverrideSpec{
+						Netboot: nameOverride,
+					},
+				},
+			}
+
+			artifacts := artifact.Spec.Artifacts
+			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+
+			Expect(isoBaseName).To(Equal(artifact.Name))
+		})
+	})
+
+	When("NameOverride.ISO is set", func() {
+		It("overrides iso name", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec: buildv1alpha2.OSArtifactSpec{
+					Artifacts: &buildv1alpha2.ArtifactSpec{},
+					NameOverride: buildv1alpha2.NameOverrideSpec{
+						Netboot: nameOverride + "-netboot",
+						ISO:     nameOverride,
+					},
+				},
+			}
+
+			artifacts := artifact.Spec.Artifacts
+			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+
+			Expect(isoBaseName).To(Equal(nameOverride))
+		})
+	})
+
+	When("ArtifactSpec.UKI.ISO path is enabled and NameOverride.UKI is set", func() {
+		It("appends -uki to NameOverride.UKI", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec: buildv1alpha2.OSArtifactSpec{
+					Artifacts: &buildv1alpha2.ArtifactSpec{
+						UKI: &buildv1alpha2.UKISpec{
+							ISO: true,
+						},
+					},
+					NameOverride: buildv1alpha2.NameOverrideSpec{
+						Netboot: nameOverride,
+						UKI:     nameOverride,
+					},
+				},
+			}
+
+			artifacts := artifact.Spec.Artifacts
+			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+
+			Expect(isoBaseName).To(Equal(nameOverride + "-uki"))
+		})
+	})
+
+	When("ArtifactSpec.UKI.ISO is enabled and NameOverride.UKI is not set", func() {
+		It("appends -uki to metadata.name", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec: buildv1alpha2.OSArtifactSpec{
+					Artifacts: &buildv1alpha2.ArtifactSpec{
+						UKI: &buildv1alpha2.UKISpec{
+							ISO: true,
+						},
+					},
+				},
+			}
+
+			artifacts := artifact.Spec.Artifacts
+			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+
+			Expect(isoBaseName).To(Equal(artifact.Name + "-uki"))
+		})
+	})
+
+	When("ArtifactSpec.UKI is set but ISO is false", func() {
+		It("falls back to the ISO name", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec: buildv1alpha2.OSArtifactSpec{
+					Artifacts: &buildv1alpha2.ArtifactSpec{
+						UKI: &buildv1alpha2.UKISpec{
+							Container: true,
+						},
+					},
+				},
+			}
+
+			artifacts := artifact.Spec.Artifacts
+			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+
+			Expect(isoBaseName).To(Equal(artifact.Name))
+		})
+	})
+
+	When("artifacts is nil", func() {
+		It("falls back to the ISO name without panicking", func() {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec:       buildv1alpha2.OSArtifactSpec{},
+			}
+
+			isoBaseName := isoBasenameForNetboot(artifact, nil)
+
+			Expect(isoBaseName).To(Equal(artifact.Name))
+		})
+	})
+})
+
+var _ = Describe("buildNetbootCmd", func() {
+	When("no name overrides are used", func() {
+		It("points netboot at /artifacts/<name>.iso and uses the name as output basename", func() {
+			Expect(buildNetbootCmd("test-artifact", "test-artifact")).To(
+				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts test-artifact"))
+		})
+	})
+
+	When("the ISO was built by build-uki", func() {
+		It("points netboot at the -uki iso file", func() {
+			Expect(buildNetbootCmd("test-artifact-uki", "test-artifact")).To(
+				Equal("auroraboot --debug netboot /artifacts/test-artifact-uki.iso /artifacts test-artifact"))
+		})
+	})
+
+	When("the netboot name is overridden", func() {
+		It("uses the override as the netboot output basename", func() {
+			Expect(buildNetbootCmd("test-artifact", nameOverride)).To(
+				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts " + nameOverride))
 		})
 	})
 })

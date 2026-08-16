@@ -284,6 +284,78 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 		})
 	})
 
+	Describe("NameOverride with Netboot", func() {
+		It("produces netboot artifacts with the override name", func() {
+			verifyScript := fmt.Sprintf(`
+				set -e
+				# ISO is still built (netboot requires it) and must be named from
+				# metadata.name - the netboot override must not leak into the ISO name
+				iso_file=$(ls /artifacts/*.iso 2>/dev/null | head -n1)
+				if [ -z "$iso_file" ]; then
+					echo "ERROR: no .iso file found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				case "$(basename "$iso_file")" in
+					%[1]s*) ;;
+					*)
+						echo "ERROR: ISO $(basename "$iso_file") is not named from metadata.name (expected prefix %[1]s)"
+						exit 1
+						;;
+				esac
+				if [ ! -s "$iso_file" ]; then
+					echo "ERROR: ISO is empty"
+					exit 1
+				fi
+				if [ -e "/artifacts/%[2]s.iso" ]; then
+					echo "ERROR: /artifacts/%[2]s.iso must not exist (ISO named from netboot override)"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				kernel_file=$(ls /artifacts/%[2]s-kernel 2>/dev/null | head -n1)
+				if [ -z "$kernel_file" ]; then
+					echo "ERROR: expected /artifacts/%[2]s-kernel not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				initrd_file=$(ls /artifacts/%[2]s-initrd 2>/dev/null | head -n1)
+				if [ -z "$initrd_file" ]; then
+					echo "ERROR: expected /artifacts/%[2]s-initrd not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				squashfs_file=$(ls /artifacts/%[2]s.squashfs 2>/dev/null | head -n1)
+				if [ -z "$squashfs_file" ]; then
+					echo "ERROR: expected /artifacts/%[2]s.squashfs not found"
+					ls -la /artifacts/ || true
+					exit 1
+				fi
+				for file in "$kernel_file" "$initrd_file" "$squashfs_file"; do
+					if [ ! -s "$file" ]; then
+						echo "ERROR: file is empty: $file"
+						exit 1
+					fi
+				done
+				echo "PASS: Netboot artifacts produced with nameOverride, ISO keeps metadata.name"
+			`, "nameoverride-netboot-", overrideName)
+
+			spec := buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					Ref: HadronPreKairosified,
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					Netboot:    true,
+					NetbootURL: "https://kairos.io",
+				},
+				NameOverride: buildv1alpha2.NameOverrideSpec{
+					Netboot: overrideName,
+				},
+			}
+			artifactName, artifactLabelSelector := createArtifactWithExporter(tc, "nameoverride-netboot-", spec, verifyScript)
+			runArtifactTest(tc, artifactName, artifactLabelSelector)
+		})
+	})
+
 	Describe("OSArtifact Format Tests", func() {
 		var artifactName string
 		var artifactLabelSelector labels.Selector

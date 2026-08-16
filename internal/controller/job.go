@@ -515,19 +515,19 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 
 // isoBasenameForNetboot returns the ISO basename (without .iso) so netboot finds the right file: use UKI name when the ISO was built by build-uki.
 func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
-	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
+	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindISO)
 	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
-		return ukiArtifactName(artifactName)
+		return ukiArtifactName(artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindUKI))
 	}
 	return artifactName
 }
 
-func buildNetbootCmd(isoBasename string) string {
+func buildNetbootCmd(isoBasename, basename string) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug netboot")
 	fmt.Fprintf(&c, " /artifacts/%s.iso", isoBasename)
 	c.WriteString(" /artifacts")
-	fmt.Fprintf(&c, " %s", isoBasename)
+	fmt.Fprintf(&c, " %s", basename)
 	return c.String()
 }
 
@@ -540,6 +540,8 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
 	isoBasename := isoBasenameForNetboot(artifact, artifacts)
+	baseName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
+
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{Privileged: ptr(true)},
@@ -547,7 +549,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Image:           toolImage,
 		Command:         bashCxeCommand(),
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
-		Args:            []string{buildNetbootCmd(isoBasename)},
+		Args:            []string{buildNetbootCmd(isoBasename, baseName)},
 		VolumeMounts:    mounts,
 		Resources:       artifact.ResourcesFor(buildv1alpha2.OSArtifactKindNetboot),
 	}
