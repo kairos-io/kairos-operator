@@ -1,0 +1,162 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: nodeops.operator.kairos.io
+spec:
+  group: operator.kairos.io
+  names:
+    kind: NodeOp
+    listKind: NodeOpList
+    plural: nodeops
+    singular: nodeop
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              backoffLimit:
+                format: int32
+                type: integer
+              command:
+                items:
+                  type: string
+                type: array
+              concurrency:
+                default: 0
+                format: int32
+                minimum: 0
+                type: integer
+              cordon:
+                default: false
+                type: boolean
+              drainOptions:
+                properties:
+                  deleteEmptyDirData:
+                    default: false
+                    type: boolean
+                  enabled:
+                    default: false
+                    type: boolean
+                  force:
+                    default: false
+                    type: boolean
+                  gracePeriodSeconds:
+                    format: int32
+                    type: integer
+                  ignoreDaemonSets:
+                    default: true
+                    type: boolean
+                  timeoutSeconds:
+                    format: int32
+                    type: integer
+                type: object
+              hostMountPath:
+                default: /host
+                type: string
+              image:
+                type: string
+              imagePullSecrets:
+                items:
+                  properties:
+                    name:
+                      default: ""
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+              nodeSelector:
+                properties:
+                  matchExpressions:
+                    items:
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          type: string
+                        values:
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              preflight:
+                properties:
+                  activeDeadlineSeconds:
+                    default: 120
+                    format: int32
+                    type: integer
+                  command:
+                    items:
+                      type: string
+                    type: array
+                  image:
+                    type: string
+                required:
+                - command
+                type: object
+              rebootOnSuccess:
+                default: false
+                type: boolean
+              stopOnFailure:
+                default: false
+                type: boolean
+              uncordonOnFailure:
+                default: false
+                type: boolean
+            required:
+            - command
+            type: object
+          status:
+            properties:
+              lastUpdated:
+                format: date-time
+                type: string
+              nodeStatuses:
+                additionalProperties:
+                  properties:
+                    jobName:
+                      type: string
+                    lastUpdated:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    phase:
+                      type: string
+                    rebootStatus:
+                      type: string
+                  required:
+                  - phase
+                  type: object
+                type: object
+              phase:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

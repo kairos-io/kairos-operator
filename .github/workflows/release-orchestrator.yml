@@ -20,3 +20,10 @@ jobs:
     secrets:
       QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
       QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+
+  helm-release:
+    needs: [release]
+    uses: ./.github/workflows/helm-release.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: kairos-operator
+description: Helm chart for the Kairos operator — manages NodeOp, NodeOpUpgrade, and OSArtifact resources on Kairos immutable-OS nodes.
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+# chart `version` and `appVersion` are kept in sync — both bumped when a new operator release is tagged.
+keywords:
+  - kairos
+  - operator
+  - upgrade
+  - immutable-os
+icon: https://raw.githubusercontent.com/kairos-io/kairos-docs/main/static/img/logo.png
+home: https://kairos.io
+sources:
+  - https://github.com/kairos-io/kairos-operator
+maintainers:
+  - name: kairos-io
+    url: https://github.com/kairos-io
