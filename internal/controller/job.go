@@ -513,7 +513,9 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 	}
 }
 
-// isoBasenameForNetboot returns the ISO basename (without .iso) so netboot finds the right file: use UKI name when the ISO was built by build-uki.
+// isoBasenameForNetboot returns the source ISO basename (without .iso) that netboot reads from.
+// The netboot output basename is separate (from ArtifactNameFor(OSArtifactKindNetboot)).
+// Uses the UKI name when the ISO was built by build-uki.
 func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
 	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindISO)
 	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
