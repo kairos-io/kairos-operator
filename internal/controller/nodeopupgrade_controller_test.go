@@ -11,6 +11,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,14 +47,15 @@ var _ = Describe("upgradePreflightScript", func() {
 				return filepath.Join(tmpDir, name+"-DOES-NOT-EXIST")
 			}
 			p := filepath.Join(tmpDir, name)
-			Expect(os.WriteFile(p, []byte(content), 0644)).To(Succeed())
+			Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
 			return p
 		}
 
 		termLog := filepath.Join(tmpDir, "termination-log")
 
 		cmd := exec.Command("/bin/sh", "-c", upgradePreflightScript())
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(
+			os.Environ(),
 			"TARGET_KAIROS_RELEASE="+writeMaybe("target-kairos", f.targetKairos),
 			"TARGET_OS_RELEASE="+writeMaybe("target-os", f.targetOS),
 			"HOST_KAIROS_RELEASE="+writeMaybe("host-kairos", f.hostKairos),
@@ -146,7 +148,8 @@ ID=generic
 
 // reconcileNodeOpUpgrade is a helper that reconciles a NodeOpUpgrade and returns the resulting NodeOp
 func reconcileNodeOpUpgrade(ctx context.Context, k8sClient client.Client,
-	nodeOpUpgradeName string) (*kairosiov1alpha1.NodeOp, error) {
+	nodeOpUpgradeName string,
+) (*kairosiov1alpha1.NodeOp, error) {
 	controllerReconciler := &NodeOpUpgradeReconciler{
 		Client: k8sClient,
 		Scheme: k8sClient.Scheme(),
@@ -1021,6 +1024,54 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(*nodeOp.Spec.Preflight.ActiveDeadlineSeconds).To(BeNumerically(">", 0))
 		})
 
+		Context("spec.resources", func() {
+			nodeUpgradeResources := func() *corev1.ResourceRequirements {
+				return &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("250m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("500m"),
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+				}
+			}
+
+			It("leaves the created NodeOp's Resources nil when unset", func() {
+				By("Creating the NodeOpUpgrade without Resources")
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				By("Reconciling the created NodeOpUpgrade")
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the NodeOp's Resources are nil")
+				Expect(nodeOp.Spec.Resources).To(BeNil())
+			})
+
+			It("passes resources to the created NodeOp", func() {
+				By("Creating the NodeOpUpgrade with Resources set")
+				reqs := nodeUpgradeResources()
+				nodeOpUpgrade.Spec.Resources = reqs
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				By("Reading the NodeOpUpgrade back through the API server")
+				nodeUpgr := &kairosiov1alpha1.NodeOpUpgrade{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeOpUpgradeName, Namespace: "default"}, nodeUpgr)).To(Succeed())
+				Expect(nodeUpgr.Spec.Resources).NotTo(BeNil())
+				Expect(*nodeUpgr.Spec.Resources).To(Equal(*reqs))
+
+				By("Reconciling the created NodeOpUpgrade")
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the NodeOp carries the same Resources")
+				Expect(nodeOp.Spec.Resources).NotTo(BeNil())
+				Expect(*nodeOp.Spec.Resources).To(Equal(*reqs))
+			})
+		})
+
 		It("leaves Spec.Preflight nil on the created NodeOp when Spec.Force is true", func() {
 			By("Creating the NodeOpUpgrade with Force=true")
 			nodeOpUpgrade.Spec.Force = asBool(true)
@@ -1135,7 +1186,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(nodeOp.Spec.Command[2]).To(ContainSubstring(
-					"--exclude-path '/tmp/with space/keep'"))
+					"--exclude-path '/tmp/with space/keep'",
+				))
 			})
 
 			It("escapes embedded single quotes with the '\\'' pattern", func() {
@@ -1147,7 +1199,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(nodeOp.Spec.Command[2]).To(ContainSubstring(
-					`--exclude-path '/tmp/it'\''s/keep'`))
+					`--exclude-path '/tmp/it'\''s/keep'`,
+				))
 			})
 		})
 	})

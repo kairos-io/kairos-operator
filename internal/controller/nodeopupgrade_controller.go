@@ -135,6 +135,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 				Enabled: asBool(true), // Always drain for upgrades
 			},
 			Preflight: buildUpgradePreflight(nodeOpUpgrade),
+			Resources: nodeOpUpgrade.Spec.Resources,
 		},
 	}
 

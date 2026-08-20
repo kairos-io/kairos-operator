@@ -102,6 +102,14 @@ type NodeOpSpec struct {
 	// or ActiveDeadlineSeconds expires) marks the node Failed.
 	// +optional
 	Preflight *PreflightSpec `json:"preflight,omitempty"`
+
+	// Resources sets resource requests and limits on every workload this
+	// NodeOp creates: the main "nodeop" container (Job, or its init
+	// container in reboot mode), the preflight Pod container, and the
+	// reboot Pod container. When unset (nil) the containers run with no
+	// resource constraints.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // PreflightSpec defines a per-node check that runs before cordon/drain/Job.
@@ -122,6 +130,15 @@ type PreflightSpec struct {
 	// +optional
 	// +kubebuilder:default=120
 	ActiveDeadlineSeconds *int32 `json:"activeDeadlineSeconds,omitempty"`
+}
+
+// ResourcesOrDefault returns Spec.Resources, or an empty
+// ResourceRequirements when unset.
+func (s *NodeOp) ResourcesOrDefault() corev1.ResourceRequirements {
+	if s.Spec.Resources != nil {
+		return *s.Spec.Resources
+	}
+	return corev1.ResourceRequirements{}
 }
 
 // DrainOptions defines the options for draining a node.

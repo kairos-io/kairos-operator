@@ -462,9 +462,10 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
 				InitContainers: []corev1.Container{
 					{
-						Name:    "nodeop",
-						Image:   getNodeOpImage(nodeOp),
-						Command: nodeOp.Spec.Command,
+						Name:      "nodeop",
+						Image:     getNodeOpImage(nodeOp),
+						Command:   nodeOp.Spec.Command,
+						Resources: nodeOp.ResourcesOrDefault(),
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
@@ -545,9 +546,10 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
 				Containers: []corev1.Container{
 					{
-						Name:    "nodeop",
-						Image:   getNodeOpImage(nodeOp),
-						Command: nodeOp.Spec.Command,
+						Name:      "nodeop",
+						Image:     getNodeOpImage(nodeOp),
+						Command:   nodeOp.Spec.Command,
+						Resources: nodeOp.ResourcesOrDefault(),
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: asBool(true),
 						},
@@ -1084,8 +1086,9 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			HostPID:  true,
 			Containers: []corev1.Container{
 				{
-					Name:  "reboot",
-					Image: operatorImage,
+					Name:      "reboot",
+					Image:     operatorImage,
+					Resources: nodeOp.ResourcesOrDefault(),
 					Command: []string{
 						"/bin/sh", //nolint:goconst // path literal; not worth a constant
 						"-c",
@@ -1708,6 +1711,7 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 				Name:                     preflightContainerName,
 				Image:                    image,
 				Command:                  nodeOp.Spec.Preflight.Command,
+				Resources:                nodeOp.ResourcesOrDefault(),
 				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 				Env: []corev1.EnvVar{
 					{

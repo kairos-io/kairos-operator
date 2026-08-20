@@ -90,6 +90,10 @@ type NodeOpUpgradeSpec struct {
 	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`
+
+	// Resources sets resource requests and limits on the workloads of the NodeOpUpgrade
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.
