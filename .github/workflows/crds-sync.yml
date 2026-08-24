@@ -1,0 +1,19 @@
+name: CRDs sync
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+
+jobs:
+  crds-sync:
+    name: CRDs sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify chart CRDs match generated CRDs
+        run: make diff-crds
