@@ -56,14 +56,13 @@ CRD_CHART_DIR = charts/kairos-operator/crds
 
 .PHONY: diff-crds
 diff-crds: ## Diff generated CRDs ($(CRD_SRC_DIR)) against the Helm chart CRDs ($(CRD_CHART_DIR)).
-	diff -r -q $(CRD_SRC_DIR) $(CRD_CHART_DIR)
+	diff -r -q $(CRD_SRC_DIR) $(CRD_CHART_DIR) || { echo "Chart CRDs are out of sync. Run 'make update-crds' and commit."; exit 1; }
 	@echo "CRDs are in sync"
 
 .PHONY: sync-crds
 sync-crds: ## Sync generated CRDs into the Helm chart ($(CRD_SRC_DIR) -> $(CRD_CHART_DIR)).
 	mkdir -p $(CRD_CHART_DIR)
-	cp -f $(CRD_SRC_DIR)/*.yaml $(CRD_CHART_DIR)/
-	$(MAKE) diff-crds
+	rsync -a --delete $(CRD_SRC_DIR)/ $(CRD_CHART_DIR)/
 
 .PHONY: update-crds
 update-crds: ## Run 'make generate' and 'make manifests', then sync the resulting CRDs into the Helm chart.

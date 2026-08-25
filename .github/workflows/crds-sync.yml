@@ -9,6 +9,11 @@ on:
 
 jobs:
   crds-sync:
+    concurrency:
+      group: crds-sync-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
     name: CRDs sync
     runs-on: ubuntu-latest
     steps:
@@ -16,4 +21,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify chart CRDs match generated CRDs
-        run: make diff-crds
+        run: |
+          make update-crds
+          git diff --exit-code -- config/crd/bases charts/kairos-operator/crds api/v1alpha1
