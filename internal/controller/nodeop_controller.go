@@ -1088,7 +1088,7 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 				{
 					Name:      "reboot",
 					Image:     operatorImage,
-					Resources: nodeOp.ResourcesOrDefault(),
+					Resources: nodeOp.RebootResourcesOrDefault(),
 					Command: []string{
 						"/bin/sh", //nolint:goconst // path literal; not worth a constant
 						"-c",
@@ -1711,7 +1711,7 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 				Name:                     preflightContainerName,
 				Image:                    image,
 				Command:                  nodeOp.Spec.Preflight.Command,
-				Resources:                nodeOp.ResourcesOrDefault(),
+				Resources:                nodeOp.PreflightResourcesOrDefault(),
 				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 				Env: []corev1.EnvVar{
 					{

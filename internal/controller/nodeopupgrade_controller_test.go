@@ -1048,12 +1048,36 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 				By("Verifying the NodeOp's Resources are nil")
 				Expect(nodeOp.Spec.Resources).To(BeNil())
+				Expect(nodeOp.Spec.PreflightResources).To(BeNil())
+				Expect(nodeOp.Spec.RebootResources).To(BeNil())
 			})
 
 			It("passes resources to the created NodeOp", func() {
 				By("Creating the NodeOpUpgrade with Resources set")
 				reqs := nodeUpgradeResources()
+				preflightReqs := &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("64Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("64Mi"),
+					},
+				}
+				rebootReqs := &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				}
 				nodeOpUpgrade.Spec.Resources = reqs
+				nodeOpUpgrade.Spec.PreflightResources = preflightReqs
+				nodeOpUpgrade.Spec.RebootResources = rebootReqs
 				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
 
 				By("Reading the NodeOpUpgrade back through the API server")
@@ -1061,6 +1085,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeOpUpgradeName, Namespace: "default"}, nodeUpgr)).To(Succeed())
 				Expect(nodeUpgr.Spec.Resources).NotTo(BeNil())
 				Expect(*nodeUpgr.Spec.Resources).To(Equal(*reqs))
+				Expect(nodeUpgr.Spec.PreflightResources).NotTo(BeNil())
+				Expect(*nodeUpgr.Spec.PreflightResources).To(Equal(*preflightReqs))
+				Expect(nodeUpgr.Spec.RebootResources).NotTo(BeNil())
+				Expect(*nodeUpgr.Spec.RebootResources).To(Equal(*rebootReqs))
 
 				By("Reconciling the created NodeOpUpgrade")
 				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
@@ -1069,6 +1097,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				By("Verifying the NodeOp carries the same Resources")
 				Expect(nodeOp.Spec.Resources).NotTo(BeNil())
 				Expect(*nodeOp.Spec.Resources).To(Equal(*reqs))
+				Expect(nodeOp.Spec.PreflightResources).NotTo(BeNil())
+				Expect(*nodeOp.Spec.PreflightResources).To(Equal(*preflightReqs))
+				Expect(nodeOp.Spec.RebootResources).NotTo(BeNil())
+				Expect(*nodeOp.Spec.RebootResources).To(Equal(*rebootReqs))
 			})
 		})
 

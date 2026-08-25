@@ -59,27 +59,19 @@ var _ = Describe("NodeOpSpec.Resources", func() {
 			},
 		}
 		spec := v1alpha1.NodeOpSpec{
-			Command:   []string{"true"},
+			Command: []string{
+				"true",
+			},
 			Resources: resources,
 		}
+
 		Expect(spec.Resources.Requests.Memory().String()).To(Equal("256Mi"))
 		Expect(spec.Resources.Limits).To(BeNil())
 	})
 })
 
 var _ = Describe("NodeOp.ResourcesOrDefault", func() {
-	It("should return an empty ResourceRequirements when unset", func() {
-		op := &v1alpha1.NodeOp{
-			Spec: v1alpha1.NodeOpSpec{
-				Command: []string{"true"},
-			},
-		}
-
-		Expect(op.ResourcesOrDefault()).To(Equal(corev1.ResourceRequirements{}))
-		Expect(op.Spec.Resources).To(BeNil())
-	})
-
-	It("should return a copy of Spec.Resources when set", func() {
+	It("should return a deep copy of Spec.Resources when set", func() {
 		origResources := corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU: resource.MustParse("250m"),
@@ -88,20 +80,113 @@ var _ = Describe("NodeOp.ResourcesOrDefault", func() {
 		resources := &origResources
 		op := &v1alpha1.NodeOp{
 			Spec: v1alpha1.NodeOpSpec{
-				Command:   []string{"true"},
+				Command: []string{
+					"true",
+				},
 				Resources: resources,
 			},
 		}
 
 		Expect(op.ResourcesOrDefault()).To(Equal(*resources))
 
+		// Mutating the returned value (map entry and struct field) must
+		// not affect the spec.
 		op.ResourcesOrDefault().Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
-		Expect(op.Spec.Resources.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(op.Spec.Resources.Requests.Memory().String()).To(Equal("0"))
 
 		out := op.ResourcesOrDefault()
 		out.Limits = corev1.ResourceList{
 			corev1.ResourceMemory: resource.MustParse("1Gi"),
 		}
+
 		Expect(op.Spec.Resources.Limits).To(BeNil())
+	})
+})
+
+var _ = Describe("NodeOp Pod resource resolvers", func() {
+	It("resolves nil fields to the built-in default in both requests and limits", func() {
+		op := &v1alpha1.NodeOp{
+			Spec: v1alpha1.NodeOpSpec{
+				Command: []string{
+					"true",
+				},
+			},
+		}
+
+		preflight := op.PreflightResourcesOrDefault()
+		Expect(preflight.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(preflight.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(preflight.Limits.Cpu().String()).To(Equal("200m"))
+		Expect(preflight.Limits.Memory().String()).To(Equal("128Mi"))
+
+		reboot := op.RebootResourcesOrDefault()
+		Expect(reboot.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(reboot.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(reboot.Limits.Cpu().String()).To(Equal("200m"))
+		Expect(reboot.Limits.Memory().String()).To(Equal("128Mi"))
+
+		standard := op.RebootResourcesOrDefault()
+		Expect(standard.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(standard.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(standard.Limits.Cpu().String()).To(Equal("200m"))
+		Expect(standard.Limits.Memory().String()).To(Equal("128Mi"))
+	})
+
+	It("resolves an explicitly empty field to no resources", func() {
+		empty := corev1.ResourceRequirements{}
+		op := &v1alpha1.NodeOp{Spec: v1alpha1.NodeOpSpec{
+			Command: []string{
+				"true",
+			},
+			PreflightResources: &empty,
+			RebootResources:    &empty,
+			Resources:          &empty,
+		}}
+
+		Expect(op.PreflightResourcesOrDefault().Requests).To(BeEmpty())
+		Expect(op.PreflightResourcesOrDefault().Limits).To(BeEmpty())
+		Expect(op.RebootResourcesOrDefault().Requests).To(BeEmpty())
+		Expect(op.RebootResourcesOrDefault().Limits).To(BeEmpty())
+		Expect(op.ResourcesOrDefault().Requests).To(BeEmpty())
+		Expect(op.ResourcesOrDefault().Limits).To(BeEmpty())
+	})
+
+	It("uses explicit requests and limits without aliasing the spec", func() {
+		reqs := &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("200m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("250m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		}
+		op := &v1alpha1.NodeOp{Spec: v1alpha1.NodeOpSpec{
+			Command: []string{
+				"true",
+			},
+			PreflightResources: reqs,
+			RebootResources:    reqs,
+			Resources:          reqs,
+		}}
+
+		pref := op.PreflightResourcesOrDefault()
+		Expect(pref.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(pref.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(pref.Limits.Cpu().String()).To(Equal("250m"))
+		Expect(pref.Limits.Memory().String()).To(Equal("256Mi"))
+
+		reboot := op.RebootResourcesOrDefault()
+		Expect(reboot.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(reboot.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(reboot.Limits.Cpu().String()).To(Equal("250m"))
+		Expect(reboot.Limits.Memory().String()).To(Equal("256Mi"))
+
+		std := op.ResourcesOrDefault()
+		Expect(std.Requests.Cpu().String()).To(Equal("200m"))
+		Expect(std.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(std.Limits.Cpu().String()).To(Equal("250m"))
+		Expect(std.Limits.Memory().String()).To(Equal("256Mi"))
 	})
 })

@@ -134,8 +134,10 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			DrainOptions: &kairosiov1alpha1.DrainOptions{
 				Enabled: asBool(true), // Always drain for upgrades
 			},
-			Preflight: buildUpgradePreflight(nodeOpUpgrade),
-			Resources: nodeOpUpgrade.Spec.Resources,
+			Preflight:          buildUpgradePreflight(nodeOpUpgrade),
+			Resources:          nodeOpUpgrade.Spec.Resources,
+			PreflightResources: nodeOpUpgrade.Spec.PreflightResources,
+			RebootResources:    nodeOpUpgrade.Spec.RebootResources,
 		},
 	}
 
