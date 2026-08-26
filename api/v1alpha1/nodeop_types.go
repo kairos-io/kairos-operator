@@ -150,8 +150,8 @@ type PreflightSpec struct {
 }
 
 // defaultPodResources is the built-in Guaranteed floor applied to
-// the main, preflight, and reboot Pods when the corresponding spec
-// field is unset.
+// the preflight and reboot Pods when the corresponding spec field is
+// unset.
 var defaultPodResources = corev1.ResourceList{
 	corev1.ResourceCPU:    resource.MustParse("200m"),
 	corev1.ResourceMemory: resource.MustParse("128Mi"),

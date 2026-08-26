@@ -497,8 +497,8 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						Name:  "sentinel-creator",
 						Image: getSentinelImage(nodeOp),
 						Resources: corev1.ResourceRequirements{
-							Requests: sentinelResources,
-							Limits:   sentinelResources,
+							Requests: sentinelResources.DeepCopy(),
+							Limits:   sentinelResources.DeepCopy(),
 						},
 						Command: []string{
 							"/bin/sh", //nolint:goconst // path literal; not worth a constant
