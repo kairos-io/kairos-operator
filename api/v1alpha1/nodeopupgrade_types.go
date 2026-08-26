@@ -90,6 +90,31 @@ type NodeOpUpgradeSpec struct {
 	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`
+
+	// Resources sets resource requests and limits on the main "nodeop"
+	// container of the NodeOp this upgrade generates (the Job container,
+	// or its init container in reboot mode). It does not affect the
+	// sentinel-creator container of the reboot Job, which is not
+	// constrained by this field.
+	//   - unset (nil): no resource constraints are set.
+	//   - set: requests and limits are used.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// PreflightResources sets resource requests and limits on the
+	// preflight Pod of the generated NodeOp. Tri-state:
+	//   - unset (nil): the built-in default (200m CPU, 128Mi memory) is
+	//     applied to both requests and limits (Guaranteed QoS).
+	//   - explicit empty ({}): opt out - no resources are set.
+	//   - set: requests and limits are used.
+	// +optional
+	PreflightResources *corev1.ResourceRequirements `json:"preflightResources,omitempty"`
+
+	// RebootResources sets resource requests and limits on the reboot
+	// Pod of the generated NodeOp, with the same tri-state semantics as
+	// PreflightResources (built-in default 200m CPU, 128Mi memory).
+	// +optional
+	RebootResources *corev1.ResourceRequirements `json:"rebootResources,omitempty"`
 }
 
 // NodeOpUpgradeStatus defines the observed state of NodeOpUpgrade.

@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1559,6 +1560,10 @@ var _ = Describe("NodeOp Controller", func() {
 			mainContainer := job.Spec.Template.Spec.Containers[0]
 			Expect(mainContainer.Name).To(Equal("sentinel-creator"))
 			Expect(mainContainer.Image).To(Equal("busybox:latest"))
+			Expect(mainContainer.Resources.Requests.Cpu().String()).To(Equal("10m"))
+			Expect(mainContainer.Resources.Requests.Memory().String()).To(Equal("32Mi"))
+			Expect(mainContainer.Resources.Limits.Cpu().String()).To(Equal("10m"))
+			Expect(mainContainer.Resources.Limits.Memory().String()).To(Equal("32Mi"))
 			Expect(mainContainer.Command).To(ContainElement(ContainSubstring("echo 'Job completed at $(date)'")))
 			Expect(mainContainer.VolumeMounts).To(HaveLen(1))
 			Expect(mainContainer.VolumeMounts[0].Name).To(Equal("sentinel-volume"))
@@ -3682,5 +3687,376 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 				"preflight Pod must always have an ActiveDeadlineSeconds to guarantee forward progress")
 			Expect(*pod.Spec.ActiveDeadlineSeconds).To(BeNumerically(">", 0))
 		}
+	})
+})
+
+var _ = Describe("NodeOp Controller - Resources", func() {
+	const (
+		timeout  = time.Second * 10
+		interval = time.Millisecond * 250
+	)
+
+	var (
+		ctx          context.Context
+		resourceName string
+		nodeName     string
+		node         *corev1.Node
+		r            *NodeOpReconciler
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
+		suffix := fmt.Sprintf("-%d", time.Now().UnixNano())
+		resourceName = "res-test" + suffix
+		nodeName = "res-node" + suffix
+		node = &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		r = &NodeOpReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	AfterEach(func() {
+		Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
+
+		// Delete NodeOp.
+		Eventually(func() error {
+			nop := &kairosiov1alpha1.NodeOp{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}, nop)
+			if err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			return k8sClient.Delete(ctx, nop)
+		}, timeout, interval).Should(Succeed())
+
+		// Delete Jobs owned by this test's NodeOp.
+		jobList := &batchv1.JobList{}
+		Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"))).To(Succeed())
+		for i := range jobList.Items {
+			j := jobList.Items[i]
+			for _, o := range j.OwnerReferences {
+				if o.Kind == kindNodeOp && o.Name == resourceName {
+					prop := metav1.DeletePropagationBackground
+					Expect(k8sClient.Delete(ctx, &j, &client.DeleteOptions{PropagationPolicy: &prop})).To(Succeed())
+					break
+				}
+			}
+		}
+
+		// Delete any reboot Pods created for this test's NodeOp.
+		podList := &corev1.PodList{}
+		Expect(k8sClient.List(
+			ctx, podList,
+			client.InNamespace("default"),
+			client.MatchingLabels{"kairos.io/nodeop": resourceName},
+		)).To(Succeed())
+		for i := range podList.Items {
+			pod := podList.Items[i]
+			grace := int64(0)
+			Expect(k8sClient.Delete(ctx, &pod, &client.DeleteOptions{GracePeriodSeconds: &grace})).To(Succeed())
+		}
+
+		Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+	})
+
+	reconcileOnce := func() {
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: resourceName, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	newNodeOp := func(spec kairosiov1alpha1.NodeOpSpec) *kairosiov1alpha1.NodeOp {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "kairos.io/v1alpha1", Kind: kindNodeOp},
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec:       spec,
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+		return nodeOp
+	}
+
+	// getRebootPod runs the reconciler until the reboot Pod exists
+	getRebootPod := func(spec kairosiov1alpha1.NodeOpSpec) *corev1.Pod {
+		newNodeOp(spec)
+		reconcileOnce()
+
+		jobList := &batchv1.JobList{}
+		Expect(k8sClient.List(
+			ctx, jobList,
+			client.InNamespace("default"),
+			client.MatchingLabels{labelKeyNodeOp: resourceName},
+		)).To(Succeed())
+		Expect(jobList.Items).To(HaveLen(1))
+		Expect(markJobAsCompleted(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+		reconcileOnce()
+
+		podList := &corev1.PodList{}
+		Expect(k8sClient.List(
+			ctx, podList,
+			client.InNamespace("default"),
+			client.MatchingLabels{labelKeyNodeOp: resourceName, labelKeyReboot: "true"},
+		)).To(Succeed())
+		Expect(podList.Items).To(HaveLen(1))
+		return &podList.Items[0]
+	}
+
+	resourceRequirements := func() *corev1.ResourceRequirements {
+		return &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		}
+	}
+
+	When("spec.resources is unset", func() {
+		It("leaves the main container unconstrained", func() {
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{
+						"echo",
+						"test",
+					},
+				},
+			}
+
+			stdJob := r.createStandardJobSpec(nodeOp, *node, 6)
+			Expect(stdJob.Template.Spec.Containers).To(HaveLen(1))
+			Expect(stdJob.Template.Spec.Containers[0].Name).To(Equal("nodeop"))
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Requests).To(BeEmpty())
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Limits).To(BeEmpty())
+		})
+	})
+
+	When("spec.preflightResources", func() {
+		It("applies the built-in default when unset", func() {
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{
+						"echo",
+						"test",
+					},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{"true"},
+					},
+				},
+			}
+
+			preflightPod := r.buildPreflightPod(nodeOp, *node)
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("200m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("128Mi"))
+		})
+
+		It("opts out when explicitly empty", func() {
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{
+						"echo",
+						"test",
+					},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{
+							"true",
+						},
+					},
+					PreflightResources: &corev1.ResourceRequirements{},
+				},
+			}
+
+			preflightPod := r.buildPreflightPod(nodeOp, *node)
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests).To(BeEmpty())
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits).To(BeEmpty())
+		})
+
+		It("applies explicit requests and limits", func() {
+			preflightReqs := &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("200m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("300m"),
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				},
+			}
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{
+						"echo",
+						"test",
+					},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{
+							"true",
+						},
+					},
+					PreflightResources: preflightReqs,
+				},
+			}
+
+			preflightPod := r.buildPreflightPod(nodeOp, *node)
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("300m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("256Mi"))
+		})
+	})
+
+	When("spec.rebootResources", func() {
+		It("applies the built-in default when unset", func() {
+			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{
+					"echo",
+					"test",
+				},
+				RebootOnSuccess: asBool(true),
+				Cordon:          asBool(true),
+			})
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("200m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("128Mi"))
+		})
+
+		It("opts out when explicitly empty", func() {
+			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{
+					"echo",
+					"test",
+				},
+				RebootOnSuccess: asBool(true),
+				Cordon:          asBool(true),
+				RebootResources: &corev1.ResourceRequirements{},
+			})
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests).To(BeEmpty())
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits).To(BeEmpty())
+		})
+
+		It("applies explicit requests and limits", func() {
+			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{
+					"echo",
+					"test",
+				},
+				RebootOnSuccess: asBool(true),
+				Cordon:          asBool(true),
+				RebootResources: &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("300m"),
+						corev1.ResourceMemory: resource.MustParse("256Mi"),
+					},
+				},
+			})
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("300m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("256Mi"))
+		})
+	})
+
+	When("spec.resources is set", func() {
+		It("applies the requirements to the main container only, not sentinel-creator", func() {
+			reqs := resourceRequirements()
+			nodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command: []string{
+						"echo",
+						"test",
+					},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{
+							"true",
+						},
+					},
+					Resources: reqs,
+				},
+			}
+
+			stdJob := r.createStandardJobSpec(nodeOp, *node, 6)
+			Expect(stdJob.Template.Spec.Containers).To(HaveLen(1))
+			Expect(stdJob.Template.Spec.Containers[0].Name).To(Equal("nodeop"))
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Requests).To(Equal(reqs.Requests))
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Limits).To(Equal(reqs.Limits))
+
+			rebootJob := r.createRebootJobSpec(nodeOp, *node, 6)
+			Expect(rebootJob.Template.Spec.InitContainers).To(HaveLen(1))
+			Expect(rebootJob.Template.Spec.InitContainers[0].Name).To(Equal("nodeop"))
+			Expect(rebootJob.Template.Spec.InitContainers[0].Resources.Requests).To(Equal(reqs.Requests))
+			Expect(rebootJob.Template.Spec.InitContainers[0].Resources.Limits).To(Equal(reqs.Limits))
+			Expect(rebootJob.Template.Spec.Containers).To(HaveLen(1))
+			Expect(rebootJob.Template.Spec.Containers[0].Name).To(Equal("sentinel-creator"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("10m"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("32Mi"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("10m"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("32Mi"))
+
+			preflightPod := r.buildPreflightPod(nodeOp, *node)
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("200m"))
+			Expect(preflightPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("128Mi"))
+		})
+
+		It("keeps the reboot Pod on the built-in default while the Job carries the requirements", func() {
+			reqs := resourceRequirements()
+			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{
+					"echo",
+					"test",
+				},
+				RebootOnSuccess: asBool(true),
+				Cordon:          asBool(true),
+				Resources:       reqs,
+			})
+
+			Expect(rebootPod.Spec.Containers).To(HaveLen(1))
+			Expect(rebootPod.Spec.Containers[0].Name).To(Equal("reboot"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("200m"))
+			Expect(rebootPod.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("128Mi"))
+
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(
+				ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels{labelKeyNodeOp: resourceName},
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(jobList.Items[0].Spec.Template.Spec.InitContainers[0].Resources.Requests).To(Equal(reqs.Requests))
+			Expect(jobList.Items[0].Spec.Template.Spec.InitContainers[0].Resources.Limits).To(Equal(reqs.Limits))
+		})
 	})
 })

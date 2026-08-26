@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -102,6 +103,30 @@ type NodeOpSpec struct {
 	// or ActiveDeadlineSeconds expires) marks the node Failed.
 	// +optional
 	Preflight *PreflightSpec `json:"preflight,omitempty"`
+
+	// Resources sets resource requests and limits on the main "nodeop"
+	// container (the Job container, or its init container in reboot
+	// mode). It does not affect the sentinel-creator container of the
+	// reboot Job, which is not constrained by this field.
+	//   - unset (nil): no resource constraints are set.
+	//   - set: requests and limits are used.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// PreflightResources sets resource requests and limits on the
+	// preflight Pod's container:
+	//   - unset (nil): the built-in default (200m CPU, 128Mi memory) is
+	//     applied to both requests and limits (Guaranteed QoS).
+	//   - explicit empty ({}): opt out - no resources are set.
+	//   - set: requests and limits are used.
+	// +optional
+	PreflightResources *corev1.ResourceRequirements `json:"preflightResources,omitempty"`
+
+	// RebootResources sets resource requests and limits on the reboot
+	// Pod's container, with the same tri-state semantics as
+	// PreflightResources (built-in default 200m CPU, 128Mi memory).
+	// +optional
+	RebootResources *corev1.ResourceRequirements `json:"rebootResources,omitempty"`
 }
 
 // PreflightSpec defines a per-node check that runs before cordon/drain/Job.
@@ -122,6 +147,54 @@ type PreflightSpec struct {
 	// +optional
 	// +kubebuilder:default=120
 	ActiveDeadlineSeconds *int32 `json:"activeDeadlineSeconds,omitempty"`
+}
+
+// defaultPodResources is the built-in Guaranteed floor applied to
+// the preflight and reboot Pods when the corresponding spec field is
+// unset.
+var defaultPodResources = corev1.ResourceList{
+	corev1.ResourceCPU:    resource.MustParse("200m"),
+	corev1.ResourceMemory: resource.MustParse("128Mi"),
+}
+
+// ResourcesOrDefault resolves Spec.Resources into the
+// ResourceRequirements for the main "nodeop" container:
+//   - nil: no resource constraints are set.
+//   - non-nil: a deep copy of the given requirements.
+func (n *NodeOp) ResourcesOrDefault() corev1.ResourceRequirements {
+	if n.Spec.Resources != nil {
+		return *n.Spec.Resources.DeepCopy()
+	}
+
+	return corev1.ResourceRequirements{}
+}
+
+// PreflightResourcesOrDefault resolves Spec.PreflightResources into the
+// ResourceRequirements for the preflight Pod container.
+func (n *NodeOp) PreflightResourcesOrDefault() corev1.ResourceRequirements {
+	return setPodResources(n.Spec.PreflightResources)
+}
+
+// RebootResourcesOrDefault resolves Spec.RebootResources into the
+// ResourceRequirements for the reboot Pod container.
+func (n *NodeOp) RebootResourcesOrDefault() corev1.ResourceRequirements {
+	return setPodResources(n.Spec.RebootResources)
+}
+
+// setPodResources resolves a *corev1.ResourceRequirements for the
+// main, preflight, or reboot Pod:
+//   - nil: built-in default (defaultPodResources) in both requests and
+//     limits.
+//   - non-nil: a deep copy of the given requirements.
+func setPodResources(res *corev1.ResourceRequirements) corev1.ResourceRequirements {
+	if res == nil {
+		return corev1.ResourceRequirements{
+			Requests: defaultPodResources.DeepCopy(),
+			Limits:   defaultPodResources.DeepCopy(),
+		}
+	}
+
+	return *res.DeepCopy()
 }
 
 // DrainOptions defines the options for draining a node.
