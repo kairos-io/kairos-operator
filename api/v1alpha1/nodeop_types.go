@@ -106,11 +106,9 @@ type NodeOpSpec struct {
 
 	// Resources sets resource requests and limits on the main "nodeop"
 	// container (the Job container, or its init container in reboot
-	// mode). The sentinel-creator container of the reboot Job is not
-	// constrained. Tri-state:
-	//   - unset (nil): the built-in default (200m CPU, 128Mi memory) is
-	//     applied to both requests and limits (Guaranteed QoS).
-	//   - explicit empty ({}): opt out - no resource constraints are set.
+	// mode). It does not affect the sentinel-creator container of the
+	// reboot Job, which is not constrained by this field.
+	//   - unset (nil): no resource constraints are set.
 	//   - set: requests and limits are used.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -160,21 +158,27 @@ var defaultPodResources = corev1.ResourceList{
 }
 
 // ResourcesOrDefault resolves Spec.Resources into the
-// ResourceRequirements for the main "nodeop" container.
-func (s *NodeOp) ResourcesOrDefault() corev1.ResourceRequirements {
-	return setPodResources(s.Spec.Resources)
+// ResourceRequirements for the main "nodeop" container:
+//   - nil: no resource constraints are set.
+//   - non-nil: a deep copy of the given requirements.
+func (n *NodeOp) ResourcesOrDefault() corev1.ResourceRequirements {
+	if n.Spec.Resources != nil {
+		return *n.Spec.Resources.DeepCopy()
+	}
+
+	return corev1.ResourceRequirements{}
 }
 
 // PreflightResourcesOrDefault resolves Spec.PreflightResources into the
 // ResourceRequirements for the preflight Pod container.
-func (s *NodeOp) PreflightResourcesOrDefault() corev1.ResourceRequirements {
-	return setPodResources(s.Spec.PreflightResources)
+func (n *NodeOp) PreflightResourcesOrDefault() corev1.ResourceRequirements {
+	return setPodResources(n.Spec.PreflightResources)
 }
 
 // RebootResourcesOrDefault resolves Spec.RebootResources into the
 // ResourceRequirements for the reboot Pod container.
-func (s *NodeOp) RebootResourcesOrDefault() corev1.ResourceRequirements {
-	return setPodResources(s.Spec.RebootResources)
+func (n *NodeOp) RebootResourcesOrDefault() corev1.ResourceRequirements {
+	return setPodResources(n.Spec.RebootResources)
 }
 
 // setPodResources resolves a *corev1.ResourceRequirements for the

@@ -28,7 +28,9 @@ var _ = Describe("NodeOpSpec.Resources", func() {
 			},
 		}
 		spec := v1alpha1.NodeOpSpec{
-			Command:   []string{"true"},
+			Command: []string{
+				"true",
+			},
 			Resources: resources,
 		}
 		Expect(spec.Resources).ToNot(BeNil())
@@ -45,7 +47,9 @@ var _ = Describe("NodeOpSpec.Resources", func() {
 			},
 		}
 		spec := v1alpha1.NodeOpSpec{
-			Command:   []string{"true"},
+			Command: []string{
+				"true",
+			},
 			Resources: resources,
 		}
 		Expect(spec.Resources.Limits.Cpu().String()).To(Equal("2"))
@@ -71,6 +75,20 @@ var _ = Describe("NodeOpSpec.Resources", func() {
 })
 
 var _ = Describe("NodeOp.ResourcesOrDefault", func() {
+	It("should return empty requirements when unset", func() {
+		op := &v1alpha1.NodeOp{
+			Spec: v1alpha1.NodeOpSpec{
+				Command: []string{
+					"true",
+				},
+			},
+		}
+
+		out := op.ResourcesOrDefault()
+		Expect(out.Requests).To(BeEmpty())
+		Expect(out.Limits).To(BeEmpty())
+	})
+
 	It("should return a deep copy of Spec.Resources when set", func() {
 		origResources := corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
@@ -104,7 +122,7 @@ var _ = Describe("NodeOp.ResourcesOrDefault", func() {
 })
 
 var _ = Describe("NodeOp Pod resource resolvers", func() {
-	It("resolves nil fields to the built-in default in both requests and limits", func() {
+	It("resolves nil preflight/reboot fields to the built-in default in both requests and limits", func() {
 		op := &v1alpha1.NodeOp{
 			Spec: v1alpha1.NodeOpSpec{
 				Command: []string{
@@ -124,12 +142,32 @@ var _ = Describe("NodeOp Pod resource resolvers", func() {
 		Expect(reboot.Requests.Memory().String()).To(Equal("128Mi"))
 		Expect(reboot.Limits.Cpu().String()).To(Equal("200m"))
 		Expect(reboot.Limits.Memory().String()).To(Equal("128Mi"))
+	})
 
-		standard := op.RebootResourcesOrDefault()
-		Expect(standard.Requests.Cpu().String()).To(Equal("200m"))
-		Expect(standard.Requests.Memory().String()).To(Equal("128Mi"))
-		Expect(standard.Limits.Cpu().String()).To(Equal("200m"))
-		Expect(standard.Limits.Memory().String()).To(Equal("128Mi"))
+	It("sets no resources on the main container when unset or explicitly empty", func() {
+		empty := corev1.ResourceRequirements{}
+
+		for _, op := range []*v1alpha1.NodeOp{
+			{
+				Spec: v1alpha1.NodeOpSpec{
+					Command: []string{
+						"true",
+					},
+				},
+			},
+			{
+				Spec: v1alpha1.NodeOpSpec{
+					Command: []string{
+						"true",
+					},
+					Resources: &empty,
+				},
+			},
+		} {
+			out := op.ResourcesOrDefault()
+			Expect(out.Requests).To(BeEmpty())
+			Expect(out.Limits).To(BeEmpty())
+		}
 	})
 
 	It("resolves an explicitly empty field to no resources", func() {

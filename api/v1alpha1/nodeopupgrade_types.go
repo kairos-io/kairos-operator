@@ -93,11 +93,10 @@ type NodeOpUpgradeSpec struct {
 
 	// Resources sets resource requests and limits on the main "nodeop"
 	// container of the NodeOp this upgrade generates (the Job container,
-	// or its init container in reboot mode). The sentinel-creator
-	// container of the reboot Job is not constrained. Tri-state:
-	//   - unset (nil): the built-in default (200m CPU, 128Mi memory) is
-	//     applied to both requests and limits (Guaranteed QoS).
-	//   - explicit empty ({}): opt out - no resource constraints are set.
+	// or its init container in reboot mode). It does not affect the
+	// sentinel-creator container of the reboot Job, which is not
+	// constrained by this field.
+	//   - unset (nil): no resource constraints are set.
 	//   - set: requests and limits are used.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`

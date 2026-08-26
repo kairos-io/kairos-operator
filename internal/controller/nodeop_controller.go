@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -74,6 +75,14 @@ const (
 	hostDirEnv         = "HOST_DIR"
 	sentinelVolumeName = "sentinel-volume"
 )
+
+// sentinelResources is the built-in Guaranteed floor (same values in both
+// requests and limits) applied to the sentinel-creator container of the
+// reboot Job.
+var sentinelResources = corev1.ResourceList{
+	corev1.ResourceCPU:    resource.MustParse("10m"),
+	corev1.ResourceMemory: resource.MustParse("32Mi"),
+}
 
 // NodeOpReconciler reconciles a NodeOp object
 type NodeOpReconciler struct {
@@ -487,6 +496,10 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 					{
 						Name:  "sentinel-creator",
 						Image: getSentinelImage(nodeOp),
+						Resources: corev1.ResourceRequirements{
+							Requests: sentinelResources,
+							Limits:   sentinelResources,
+						},
 						Command: []string{
 							"/bin/sh", //nolint:goconst // path literal; not worth a constant
 							"-c",

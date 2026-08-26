@@ -1560,6 +1560,10 @@ var _ = Describe("NodeOp Controller", func() {
 			mainContainer := job.Spec.Template.Spec.Containers[0]
 			Expect(mainContainer.Name).To(Equal("sentinel-creator"))
 			Expect(mainContainer.Image).To(Equal("busybox:latest"))
+			Expect(mainContainer.Resources.Requests.Cpu().String()).To(Equal("10m"))
+			Expect(mainContainer.Resources.Requests.Memory().String()).To(Equal("32Mi"))
+			Expect(mainContainer.Resources.Limits.Cpu().String()).To(Equal("10m"))
+			Expect(mainContainer.Resources.Limits.Memory().String()).To(Equal("32Mi"))
 			Expect(mainContainer.Command).To(ContainElement(ContainSubstring("echo 'Job completed at $(date)'")))
 			Expect(mainContainer.VolumeMounts).To(HaveLen(1))
 			Expect(mainContainer.VolumeMounts[0].Name).To(Equal("sentinel-volume"))
@@ -3821,7 +3825,7 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 	}
 
 	When("spec.resources is unset", func() {
-		It("applies the built-in default to the main Pod", func() {
+		It("leaves the main container unconstrained", func() {
 			nodeOp := &kairosiov1alpha1.NodeOp{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
 				Spec: kairosiov1alpha1.NodeOpSpec{
@@ -3835,23 +3839,26 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 			stdJob := r.createStandardJobSpec(nodeOp, *node, 6)
 			Expect(stdJob.Template.Spec.Containers).To(HaveLen(1))
 			Expect(stdJob.Template.Spec.Containers[0].Name).To(Equal("nodeop"))
-			Expect(stdJob.Template.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
-			Expect(stdJob.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("128Mi"))
-			Expect(stdJob.Template.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("200m"))
-			Expect(stdJob.Template.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("128Mi"))
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Requests).To(BeEmpty())
+			Expect(stdJob.Template.Spec.Containers[0].Resources.Limits).To(BeEmpty())
 		})
 	})
 
 	When("spec.preflightResources", func() {
 		It("applies the built-in default when unset", func() {
 			nodeOp := &kairosiov1alpha1.NodeOp{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
 					Command: []string{
 						"echo",
 						"test",
 					},
-					Preflight: &kairosiov1alpha1.PreflightSpec{Command: []string{"true"}},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{"true"},
+					},
 				},
 			}
 
@@ -3870,7 +3877,11 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 						"echo",
 						"test",
 					},
-					Preflight:          &kairosiov1alpha1.PreflightSpec{Command: []string{"true"}},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{
+							"true",
+						},
+					},
 					PreflightResources: &corev1.ResourceRequirements{},
 				},
 			}
@@ -3898,7 +3909,11 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 						"echo",
 						"test",
 					},
-					Preflight:          &kairosiov1alpha1.PreflightSpec{Command: []string{"true"}},
+					Preflight: &kairosiov1alpha1.PreflightSpec{
+						Command: []string{
+							"true",
+						},
+					},
 					PreflightResources: preflightReqs,
 				},
 			}
@@ -3971,11 +3986,19 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 		It("applies the requirements to the main container only, not sentinel-creator", func() {
 			reqs := resourceRequirements()
 			nodeOp := &kairosiov1alpha1.NodeOp{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
 				Spec: kairosiov1alpha1.NodeOpSpec{
-					Command: []string{"echo", "test"},
+					Command: []string{
+						"echo",
+						"test",
+					},
 					Preflight: &kairosiov1alpha1.PreflightSpec{
-						Command: []string{"true"},
+						Command: []string{
+							"true",
+						},
 					},
 					Resources: reqs,
 				},
@@ -3994,8 +4017,10 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 			Expect(rebootJob.Template.Spec.InitContainers[0].Resources.Limits).To(Equal(reqs.Limits))
 			Expect(rebootJob.Template.Spec.Containers).To(HaveLen(1))
 			Expect(rebootJob.Template.Spec.Containers[0].Name).To(Equal("sentinel-creator"))
-			Expect(rebootJob.Template.Spec.Containers[0].Resources.Requests).To(BeNil())
-			Expect(rebootJob.Template.Spec.Containers[0].Resources.Limits).To(BeNil())
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("10m"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("32Mi"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Limits.Cpu().String()).To(Equal("10m"))
+			Expect(rebootJob.Template.Spec.Containers[0].Resources.Limits.Memory().String()).To(Equal("32Mi"))
 
 			preflightPod := r.buildPreflightPod(nodeOp, *node)
 			Expect(preflightPod.Spec.Containers[0].Resources.Requests.Cpu().String()).To(Equal("200m"))
@@ -4007,7 +4032,10 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 		It("keeps the reboot Pod on the built-in default while the Job carries the requirements", func() {
 			reqs := resourceRequirements()
 			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
-				Command:         []string{"echo", "test"},
+				Command: []string{
+					"echo",
+					"test",
+				},
 				RebootOnSuccess: asBool(true),
 				Cordon:          asBool(true),
 				Resources:       reqs,
