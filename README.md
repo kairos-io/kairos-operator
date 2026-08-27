@@ -12,6 +12,36 @@ For one-shot semantics and reusing manifests (`generateName`, `kubectl create`),
 
 This project is managed with [kubebuilder](https://book.kubebuilder.io).
 
+### Repository layout
+
+- `api/v1alpha1/` - `NodeOp` and `NodeOpUpgrade` types (node operations and upgrades).
+- `api/v1alpha2/` - `OSArtifact` types (OS image building: iso, cloud, azure, gce, netboot, uki).
+- `internal/controller/` - reconcilers: `nodeop_controller.go`, `nodeopupgrade_controller.go`, `osartifact_controller.go`, plus internal `nodelabeler_controller.go` / `nodelabeler_daemonset_controller.go` (no CRD, manages the labeler DaemonSet).
+- `config/` - kustomize manifests: CRDs, RBAC, deployment, dev overrides.
+- `charts/` - Helm chart for deploying the operator.
+- `test/e2e/` - ginkgo end-to-end suites.
+- `examples/` - sample CRs.
+
+### API changes & CRD sync
+
+API types live in `api/` (see layout above). Add new fields to the appropriate version's types; new CRDs go into a new version package.
+
+When you change API types, regenerate the generated code and CRDs, then sync the CRDs into the Helm chart:
+
+```bash
+make update-crds
+```
+
+This runs `make generate` (DeepCopy), `make manifests` (CRDs), and `make sync-crds` (copies `config/crd/bases/` into `charts/kairos-operator/crds/`). You can also run the pieces individually:
+
+```bash
+make generate   # DeepCopy
+make manifests  # CRDs
+make sync-crds  # copy config/crd/bases/ -> charts/kairos-operator/crds/
+```
+
+Commit the regenerated files **and** the synced chart CRDs together. Use `make diff-crds` to check sync locally.
+
 ### Running tests
 
 There are multiple test suites in this project:
@@ -50,6 +80,13 @@ ginkgo internal/controller
 
 Note: OSArtifact controller tests require `USE_EXISTING_CLUSTER=true` and will be skipped in the unit test suite. Use `make controller-tests` to run them: it sets up a Kind cluster and installs CRDs but does not deploy the operator, so the test (using a direct client) is the only actor.
 
+### Local development
+
+- `make run` runs the operator against your local cluster.
+- `make deploy-dev` deploys the dev config.
+- `make install` / `make uninstall` manage CRDs.
+- Unit tests use [envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest); controller tests (`make controller-tests`) and e2e tests spin up a [Kind](https://kind.sigs.k8s.io/) cluster.
+
 ## Contributing
 
 Contributions are welcome! This repo follows the [main Kairos contributing guide](https://github.com/kairos-io/kairos/blob/master/CONTRIBUTING.md).
@@ -59,34 +96,6 @@ Contributions are welcome! This repo follows the [main Kairos contributing guide
 1. Fork the repository, then clone your fork locally. Configure your fork as the
 `origin` remote and the original repository as `upstream`.
 2. Create a feature branch: `git checkout -b feat/my-change`
-3. Make your changes (see **Repository layout** and **Operator-specific patterns** below).
-4. Verify locally before submitting:
-   - `make lint` - static analysis
-   - `make test` - unit tests (envtest); `make build` compiles the manager binary
-   - `make controller-tests` - OSArtifact controller tests against a real Kind cluster
-   - `make test-e2e` (or `ginkgo test/e2e`) - end-to-end tests
-5. Open a PR against `main`. CI runs the same suites.
-
-### Repository layout
-
-- `api/v1alpha1/` - `NodeOp` and `NodeOpUpgrade` types (node operations and upgrades).
-- `api/v1alpha2/` - `OSArtifact` types (OS image building: iso, cloud, azure, gce, netboot, uki).
-- `internal/controller/` - reconcilers: `nodeop_controller.go`, `nodeopupgrade_controller.go`, `osartifact_controller.go`, plus internal `nodelabeler_controller.go` / `nodelabeler_daemonset_controller.go` (no CRD, manages the labeler DaemonSet).
-- `config/` - kustomize manifests: CRDs, RBAC, deployment, dev overrides.
-- `charts/` - Helm chart for deploying the operator.
-- `test/e2e/` - ginkgo end-to-end suites.
-- `examples/` - sample CRs.
-
-### Operator-specific patterns
-
-- **API types** live in `api/` (see layout above). Add new fields to the appropriate version's types; new CRDs go into a new version package.
-- **Controllers** live in `internal/controller/`, one file per reconciler.
-- After changing API types or controllers, regenerate:
-
-  ```bash
-  make generate   # DeepCopy
-  make manifests  # CRDs
-  ```
-
-- **Tests** - unit tests use [envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest); controller tests (`make controller-tests`) and e2e tests spin up a [Kind](https://kind.sigs.k8s.io/) cluster.
-- **Deploy for local development**: `make run` runs the manager against your local cluster; `make deploy-dev` deploys the dev config; `make install`/`make uninstall` manage CRDs.
+3. Make your changes (see **Repository layout** above). For API type changes, follow **API changes & CRD sync**.
+4. Verify locally before submitting: `make lint` (static analysis), plus the test suites in **Running tests**.
+5. Open a PR against `main`. CI runs the same suites, including the `CRDs sync` check.
