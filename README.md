@@ -8,6 +8,11 @@ For user documentation (installation, usage, examples), see the [Kairos Operator
 
 For one-shot semantics and reusing manifests (`generateName`, `kubectl create`), see the **One-off** sections in the [OSArtifact](https://kairos.io/operator-docs/osartifact/), [NodeOp](https://kairos.io/operator-docs/nodeop/), and [NodeOpUpgrade](https://kairos.io/operator-docs/nodeop-upgrade/) pages under the operator documentation.
 
+> **Found a bug, or want to request a feature?** Open it on
+> [kairos-io/kairos](https://github.com/kairos-io/kairos/issues), including
+> issues about this repository. Every Kairos issue lives in one place, so you
+> never have to work out which repository to file against.
+
 ## Development notes
 
 This project is managed with [kubebuilder](https://book.kubebuilder.io).
