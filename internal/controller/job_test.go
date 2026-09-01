@@ -438,7 +438,7 @@ var _ = Describe("isoBasenameForNetboot", func() {
 	})
 
 	When("ArtifactSpec.UKI.ISO path is enabled and NameOverride.UKI is set", func() {
-		It("appends -uki to NameOverride.UKI", func() {
+		It("uses NameOverride.UKI as-is", func() {
 			artifact := &buildv1alpha2.OSArtifact{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
 				Spec: buildv1alpha2.OSArtifactSpec{
@@ -457,7 +457,7 @@ var _ = Describe("isoBasenameForNetboot", func() {
 			artifacts := artifact.Spec.Artifacts
 			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
 
-			Expect(isoBaseName).To(Equal(nameOverride + "-uki"))
+			Expect(isoBaseName).To(Equal(nameOverride))
 		})
 	})
 
