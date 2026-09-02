@@ -1311,6 +1311,18 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(rebootPod.Spec.Volumes).To(HaveLen(1))
 			Expect(rebootPod.Spec.Volumes[0].Name).To(Equal("sentinel-volume"))
 			Expect(rebootPod.Spec.ServiceAccountName).To(Equal(fmt.Sprintf("%s-reboot", rebootNodeOp.Name)))
+			Expect(rebootPod.Spec.Tolerations).To(ContainElements(
+				corev1.Toleration{
+					Key:      corev1.TaintNodeNotReady,
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoExecute,
+				},
+				corev1.Toleration{
+					Key:      corev1.TaintNodeUnreachable,
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoExecute,
+				},
+			), "reboot pod must tolerate NotReady/Unreachable without tolerationSeconds so taint-eviction cannot delete it during the reboot it triggers")
 
 			// Verify node is still cordoned
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())

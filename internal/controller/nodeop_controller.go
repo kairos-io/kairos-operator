@@ -1178,6 +1178,28 @@ done`,
 			},
 			RestartPolicy:      corev1.RestartPolicyOnFailure,
 			ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
+			// The reboot pod must survive the NotReady/Unreachable window caused
+			// by the very reboot it triggers. Without infinite NoExecute
+			// tolerations, the taint-eviction controller deletes the pod after
+			// the defaulted tolerationSeconds (300s stock), destroying the
+			// completion evidence and leaving the NodeOp with
+			// rebootStatus=pending and the node cordoned forever.
+			//
+			// TolerationSeconds is deliberately omitted: a NoExecute toleration
+			// without it tolerates the taint indefinitely, which is what makes
+			// these tolerations "infinite".
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      corev1.TaintNodeNotReady,
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoExecute,
+				},
+				{
+					Key:      corev1.TaintNodeUnreachable,
+					Operator: corev1.TolerationOpExists,
+					Effect:   corev1.TaintEffectNoExecute,
+				},
+			},
 		},
 	}
 
