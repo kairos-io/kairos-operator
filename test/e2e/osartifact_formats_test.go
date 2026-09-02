@@ -223,10 +223,10 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 		It("produces UKI artifacts with the override name instead of metadata.name", func() {
 			verifyScript := fmt.Sprintf(`
 				set -e
-				# UKI produces <name>-uki.iso
-				uki_iso=$(ls /artifacts/%s-uki.iso 2>/dev/null | head -n1)
+				# UKI produces <name_override>.iso
+				uki_iso=$(ls /artifacts/%s.iso 2>/dev/null | head -n1)
 				if [ -z "$uki_iso" ]; then
-					echo "ERROR: expected /artifacts/%s-uki.iso not found"
+					echo "ERROR: expected /artifacts/%s.iso not found"
 					ls -la /artifacts/ || true
 					exit 1
 				fi

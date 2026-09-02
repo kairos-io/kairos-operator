@@ -428,6 +428,58 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 				}
 				Expect(spec.Validate()).ToNot(HaveOccurred())
 			})
+
+			It("returns error when nameOverride.uki equals nameOverride.iso and an unsigned iso is built", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					ISO: true,
+					UKI: &v1alpha2.UKISpec{ISO: true, KeysVolume: "uki-keys"},
+				}
+				spec.NameOverride = v1alpha2.NameOverrideSpec{ISO: "shared", UKI: "shared"}
+
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nameOverride.uki"))
+				Expect(err.Error()).To(ContainSubstring("shared"))
+			})
+
+			It("returns error when nameOverride.uki equals nameOverride.iso and netboot is enabled", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					Netboot: true,
+					UKI:     &v1alpha2.UKISpec{ISO: true, KeysVolume: "uki-keys"},
+				}
+				spec.NameOverride = v1alpha2.NameOverrideSpec{ISO: "shared", UKI: "shared"}
+
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nameOverride.uki"))
+			})
+
+			It("returns nil when nameOverride.uki equals nameOverride.iso but no unsigned iso is built", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					UKI: &v1alpha2.UKISpec{ISO: true, KeysVolume: "uki-keys"},
+				}
+				spec.NameOverride = v1alpha2.NameOverrideSpec{ISO: "shared", UKI: "shared"}
+
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+
+			It("returns nil when nameOverride.uki equals nameOverride.iso but uki.iso is not requested", func() {
+				spec := validImageRef("img")
+				spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+				spec.Artifacts = &v1alpha2.ArtifactSpec{
+					ISO: true,
+					UKI: &v1alpha2.UKISpec{Container: true, KeysVolume: "uki-keys"},
+				}
+				spec.NameOverride = v1alpha2.NameOverrideSpec{ISO: "shared", UKI: "shared"}
+
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
 		})
 	})
 })

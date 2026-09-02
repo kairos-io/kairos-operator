@@ -268,7 +268,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		if artifacts.KairosRelease != "" {
 			inits = append(inits, kairosReleaseContainer(r.ToolImage))
 		}
-		// UKI (signed) artifacts: run build-uki for each requested output type (<name>-uki.iso, etc.).
+		// UKI (signed) artifacts: run build-uki for each requested output type. See ukiArtifactName for the output basename.
 		if artifacts.UKI != nil && (artifacts.UKI.ISO || artifacts.UKI.Container || artifacts.UKI.EFI) {
 			if artifacts.UKI.ISO {
 				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, "iso", volumeMounts))
@@ -280,7 +280,8 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 				inits = append(inits, makeBuildUKIContainer(r.ToolImage, artifact, "uki", volumeMounts))
 			}
 		}
-		// Unsigned ISO when artifacts.ISO or Netboot is set (output <name>.iso); can run alongside UKI ISO (<name>-uki.iso).
+		// Unsigned ISO when artifacts.ISO or Netboot is set (output <name>.iso); can run alongside
+		// the UKI ISO, which uses a distinct basename unless NameOverride.UKI is set (see ukiArtifactName).
 		if artifacts.ISO || artifacts.Netboot {
 			inits = append(inits, buildIsoContainer)
 		}
@@ -439,16 +440,20 @@ func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 const ukiKeysMountPath = "/uki-keys"
 
 // ukiArtifactName returns the basename for UKI outputs so they do not collide with unsigned artifacts (e.g. <name>-uki.iso vs <name>.iso).
-func ukiArtifactName(artifactName string) string {
-	return artifactName + "-uki"
+// The suffix is skipped when NameOverride.UKI is set.
+func ukiArtifactName(artifact *buildv1alpha2.OSArtifact) string {
+	name := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindUKI)
+	if artifact.Spec.NameOverride.UKI != "" {
+		return name
+	}
+	return name + "-uki"
 }
 
 func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) string {
 	var cmd strings.Builder
-	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindUKI)
 
 	fmt.Fprintf(&cmd, "auroraboot --debug build-uki")
-	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifactName))
+	fmt.Fprintf(&cmd, " --name %s", ukiArtifactName(artifact))
 	fmt.Fprintf(&cmd, " --output-dir %s", artifactsMountPath)
 	fmt.Fprintf(&cmd, " --output-type %s", outputType)
 	fmt.Fprintf(&cmd, " --public-keys %s", ukiKeysMountPath)
@@ -519,7 +524,7 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
 	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindISO)
 	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
-		return ukiArtifactName(artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindUKI))
+		return ukiArtifactName(artifact)
 	}
 	return artifactName
 }

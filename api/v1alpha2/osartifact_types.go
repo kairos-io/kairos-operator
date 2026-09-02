@@ -525,6 +525,10 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 			return fmt.Errorf("spec.artifacts.uki.keysVolume references volume %q which is not defined in spec.volumes", a.UKI.KeysVolume)
 		}
 	}
+	if a.UKI != nil && a.UKI.ISO && (a.ISO || a.Netboot) &&
+		s.NameOverride.UKI != "" && s.NameOverride.UKI == s.NameOverride.ISO {
+		return fmt.Errorf("spec.nameOverride.uki %q must differ from spec.nameOverride.iso when both uki.iso and iso/netboot are enabled: both artifacts would be written to /artifacts/%s.iso", s.NameOverride.UKI, s.NameOverride.UKI)
+	}
 	return nil
 }
 
