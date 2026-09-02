@@ -1184,6 +1184,10 @@ done`,
 			// the defaulted tolerationSeconds (300s stock), destroying the
 			// completion evidence and leaving the NodeOp with
 			// rebootStatus=pending and the node cordoned forever.
+			//
+			// TolerationSeconds is deliberately omitted: a NoExecute toleration
+			// without it tolerates the taint indefinitely, which is what makes
+			// these tolerations "infinite".
 			Tolerations: []corev1.Toleration{
 				{
 					Key:      corev1.TaintNodeNotReady,
