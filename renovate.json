@@ -23,5 +23,14 @@
       ],
       "groupName": "kubernetes"
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^Makefile$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+[A-Z0-9_]+_VERSION \\?= (?<currentValue>\\S+)"
+      ]
+    }
   ]
 }
