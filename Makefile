@@ -239,6 +239,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GINKGO ?= $(LOCALBIN)/ginkgo
 
 ## Tool Versions
+# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.17.2
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
