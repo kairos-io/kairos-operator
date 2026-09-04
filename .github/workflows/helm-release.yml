@@ -39,7 +39,7 @@ jobs:
           BASE="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}"
           curl -sSfL "${BASE}/${TARBALL}" -o "/tmp/${TARBALL}"
           curl -sSfL "${BASE}/checksums.txt" -o /tmp/kustomize-checksums.txt
-          (cd /tmp && grep "${TARBALL}" kustomize-checksums.txt | sha256sum -c)
+          (cd /tmp && grep -F -- "${TARBALL}" kustomize-checksums.txt | sha256sum -c)
           tar -xz -C /usr/local/bin < "/tmp/${TARBALL}"
 
       - name: Build Kustomize install manifest
