@@ -35,10 +35,10 @@ jobs:
       - name: Install kustomize
         run: |
           BASE="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.6.0"
-          curl -sSfL "${BASE}/kustomize_v5.6.0_linux_amd64.tar.gz" -o /tmp/kustomize.tar.gz
+          curl -sSfL "${BASE}/kustomize_v5.6.0_linux_amd64.tar.gz" -o /tmp/kustomize_v5.6.0_linux_amd64.tar.gz
           curl -sSfL "${BASE}/checksums.txt" -o /tmp/kustomize-checksums.txt
-          grep "kustomize_v5.6.0_linux_amd64.tar.gz" /tmp/kustomize-checksums.txt | sha256sum -c
-          tar -xz -C /usr/local/bin < /tmp/kustomize.tar.gz
+          (cd /tmp && grep "kustomize_v5.6.0_linux_amd64.tar.gz" kustomize-checksums.txt | sha256sum -c)
+          tar -xz -C /usr/local/bin < /tmp/kustomize_v5.6.0_linux_amd64.tar.gz
 
       - name: Build Kustomize install manifest
         run: |
