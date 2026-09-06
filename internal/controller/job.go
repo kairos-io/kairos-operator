@@ -529,12 +529,18 @@ func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv
 	return artifactName
 }
 
-func buildNetbootCmd(isoBasename, basename string) string {
+// buildNetbootCmd builds the netboot extraction command. When removeSourceISO
+// is true, the source ISO is deleted after extraction so `iso: false,
+// netboot: true` does not ship the intermediate ISO.
+func buildNetbootCmd(isoBasename, basename string, removeSourceISO bool) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug netboot")
 	fmt.Fprintf(&c, " /artifacts/%s.iso", isoBasename)
 	c.WriteString(" /artifacts")
 	fmt.Fprintf(&c, " %s", basename)
+	if removeSourceISO {
+		fmt.Fprintf(&c, " && rm -f /artifacts/%s.iso", isoBasename)
+	}
 	return c.String()
 }
 
@@ -548,6 +554,7 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
 	isoBasename := isoBasenameForNetboot(artifact, artifacts)
 	baseName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
+	removeSourceISO := artifacts != nil && !artifacts.ISO && !(artifacts.UKI != nil && artifacts.UKI.ISO)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -556,7 +563,7 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Image:           toolImage,
 		Command:         bashCxeCommand(),
 		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
-		Args:            []string{buildNetbootCmd(isoBasename, baseName)},
+		Args:            []string{buildNetbootCmd(isoBasename, baseName, removeSourceISO)},
 		VolumeMounts:    mounts,
 		Resources:       artifact.ResourcesFor(buildv1alpha2.OSArtifactKindNetboot),
 	}

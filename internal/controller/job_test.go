@@ -518,22 +518,70 @@ var _ = Describe("isoBasenameForNetboot", func() {
 var _ = Describe("buildNetbootCmd", func() {
 	When("no name overrides are used", func() {
 		It("points netboot at /artifacts/<name>.iso and uses the name as output basename", func() {
-			Expect(buildNetbootCmd("test-artifact", "test-artifact")).To(
+			Expect(buildNetbootCmd("test-artifact", "test-artifact", false)).To(
 				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts test-artifact"))
 		})
 	})
 
 	When("the ISO was built by build-uki", func() {
 		It("points netboot at the -uki iso file", func() {
-			Expect(buildNetbootCmd("test-artifact-uki", "test-artifact")).To(
+			Expect(buildNetbootCmd("test-artifact-uki", "test-artifact", false)).To(
 				Equal("auroraboot --debug netboot /artifacts/test-artifact-uki.iso /artifacts test-artifact"))
 		})
 	})
 
 	When("the netboot name is overridden", func() {
 		It("uses the override as the netboot output basename", func() {
-			Expect(buildNetbootCmd("test-artifact", nameOverride)).To(
+			Expect(buildNetbootCmd("test-artifact", nameOverride, false)).To(
 				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts " + nameOverride))
+		})
+	})
+
+	When("removeSourceISO is true", func() {
+		It("removes the source ISO after extraction", func() {
+			Expect(buildNetbootCmd("test-artifact", "test-artifact", true)).To(
+				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts test-artifact && rm -f /artifacts/test-artifact.iso"))
+		})
+
+		It("removes the -uki source ISO when the ISO was built by build-uki", func() {
+			Expect(buildNetbootCmd("test-artifact-uki", "test-artifact", true)).To(
+				Equal("auroraboot --debug netboot /artifacts/test-artifact-uki.iso /artifacts test-artifact && rm -f /artifacts/test-artifact-uki.iso"))
+		})
+	})
+})
+
+var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
+	artifact := func() *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+		}
+	}
+
+	When("iso: false, netboot: true", func() {
+		It("removes the intermediate source ISO after extraction", func() {
+			c := makeNetbootContainer("tool", artifact(), nil, &buildv1alpha2.ArtifactSpec{ISO: false, Netboot: true})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso"))
+		})
+	})
+
+	When("iso: true, netboot: true", func() {
+		It("keeps the source ISO because the user asked for it", func() {
+			c := makeNetbootContainer("tool", artifact(), nil, &buildv1alpha2.ArtifactSpec{ISO: true, Netboot: true})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).ToNot(ContainSubstring("rm -f"))
+		})
+	})
+
+	When("uki.iso: true, iso: false, netboot: true", func() {
+		It("keeps the -uki source ISO because the user asked for it", func() {
+			c := makeNetbootContainer("tool", artifact(), nil, &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).ToNot(ContainSubstring("rm -f"))
 		})
 	})
 })
