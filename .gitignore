@@ -28,3 +28,4 @@ dist/
 *.swp
 *.swo
 *~
+.chart-output/
