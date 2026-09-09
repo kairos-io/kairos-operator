@@ -556,7 +556,7 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
 	isoBasename := isoBasenameForNetboot(artifact, artifacts)
 	baseName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
-	removeSourceISO := artifacts != nil && !artifacts.ISO && !(artifacts.UKI != nil && artifacts.UKI.ISO)
+	removeSourceISO := artifacts != nil && !artifacts.ISO && (artifacts.UKI == nil || !artifacts.UKI.ISO)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
