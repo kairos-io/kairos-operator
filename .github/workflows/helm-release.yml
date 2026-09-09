@@ -65,14 +65,14 @@ jobs:
             --app-version "${{ inputs.version }}" \
             --destination .chart-output
 
-      - name: Create GitHub Release and upload install manifest
+      - name: Create GitHub Release and upload artifacts
         run: |
           gh release view "${{ inputs.version }}" > /dev/null 2>&1 || \
             gh release create "${{ inputs.version }}" \
               --title "${{ inputs.version }}" \
               --generate-notes \
               --verify-tag
-          gh release upload "${{ inputs.version }}" dist/install.yaml --clobber
+          gh release upload "${{ inputs.version }}" dist/install.yaml .chart-output/kairos-operator-*.tgz --clobber
 
       - name: Push chart to GHCR (OCI)
         run: |
