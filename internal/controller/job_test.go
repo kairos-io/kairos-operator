@@ -540,12 +540,20 @@ var _ = Describe("buildNetbootCmd", func() {
 	When("removeSourceISO is true", func() {
 		It("removes the source ISO after extraction", func() {
 			Expect(buildNetbootCmd("test-artifact", "test-artifact", true)).To(
-				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts test-artifact && rm -f /artifacts/test-artifact.iso"))
+				Equal("auroraboot --debug netboot /artifacts/test-artifact.iso /artifacts test-artifact && rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
 		})
 
 		It("removes the -uki source ISO when the ISO was built by build-uki", func() {
 			Expect(buildNetbootCmd("test-artifact-uki", "test-artifact", true)).To(
-				Equal("auroraboot --debug netboot /artifacts/test-artifact-uki.iso /artifacts test-artifact && rm -f /artifacts/test-artifact-uki.iso"))
+				Equal("auroraboot --debug netboot /artifacts/test-artifact-uki.iso /artifacts test-artifact && rm -f /artifacts/test-artifact-uki.iso /artifacts/test-artifact-uki.iso.sha256"))
+		})
+
+		// build-iso writes the checksum as <name>.iso.sha256 next to the ISO
+		// (AuroraBoot pkg/ops/iso.go), so leaving it behind hands the user a
+		// checksum for a file that is gone.
+		It("removes the checksum build-iso wrote next to the ISO", func() {
+			Expect(buildNetbootCmd("test-artifact", "test-artifact", true)).To(
+				HaveSuffix("rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
 		})
 	})
 })
@@ -561,7 +569,7 @@ var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 		It("removes the intermediate source ISO after extraction", func() {
 			c := makeNetbootContainer("tool", artifact(), nil, &buildv1alpha2.ArtifactSpec{ISO: false, Netboot: true})
 			Expect(c.Args).To(HaveLen(1))
-			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso"))
+			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
 		})
 	})
 

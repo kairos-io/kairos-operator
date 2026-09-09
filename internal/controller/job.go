@@ -531,7 +531,9 @@ func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv
 
 // buildNetbootCmd builds the netboot extraction command. When removeSourceISO
 // is true, the source ISO is deleted after extraction so `iso: false,
-// netboot: true` does not ship the intermediate ISO.
+// netboot: true` does not ship the intermediate ISO. build-iso writes a
+// checksum next to the ISO, so that goes with it, otherwise the user is left
+// with a checksum naming a file that is not there.
 func buildNetbootCmd(isoBasename, basename string, removeSourceISO bool) string {
 	var c strings.Builder
 	c.WriteString("auroraboot --debug netboot")
@@ -539,7 +541,7 @@ func buildNetbootCmd(isoBasename, basename string, removeSourceISO bool) string 
 	c.WriteString(" /artifacts")
 	fmt.Fprintf(&c, " %s", basename)
 	if removeSourceISO {
-		fmt.Fprintf(&c, " && rm -f /artifacts/%s.iso", isoBasename)
+		fmt.Fprintf(&c, " && rm -f /artifacts/%s.iso /artifacts/%s.iso.sha256", isoBasename, isoBasename)
 	}
 	return c.String()
 }
