@@ -288,45 +288,31 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 		It("produces netboot artifacts with the override name", func() {
 			verifyScript := fmt.Sprintf(`
 				set -e
-				# ISO is still built (netboot requires it) and must be named from
-				# metadata.name - the netboot override must not leak into the ISO name
-				iso_file=$(ls /artifacts/*.iso 2>/dev/null | head -n1)
-				if [ -z "$iso_file" ]; then
-					echo "ERROR: no .iso file found"
+				# An ISO is still built because netboot extracts from one, but iso is
+				# false here so it gets pruned. That prune targets <metadata.name>.iso,
+				# so any ISO left behind also means the netboot override leaked into
+				# the ISO name.
+				leftover=$(ls /artifacts/*.iso /artifacts/*.iso.sha256 2>/dev/null || true)
+				if [ -n "$leftover" ]; then
+					echo "ERROR: ISO leftovers for an iso:false spec: $leftover"
 					ls -la /artifacts/ || true
 					exit 1
 				fi
-				case "$(basename "$iso_file")" in
-					%[1]s*) ;;
-					*)
-						echo "ERROR: ISO $(basename "$iso_file") is not named from metadata.name (expected prefix %[1]s)"
-						exit 1
-						;;
-				esac
-				if [ ! -s "$iso_file" ]; then
-					echo "ERROR: ISO is empty"
-					exit 1
-				fi
-				if [ -e "/artifacts/%[2]s.iso" ]; then
-					echo "ERROR: /artifacts/%[2]s.iso must not exist (ISO named from netboot override)"
-					ls -la /artifacts/ || true
-					exit 1
-				fi
-				kernel_file=$(ls /artifacts/%[2]s-kernel 2>/dev/null | head -n1)
+				kernel_file=$(ls /artifacts/%[1]s-kernel 2>/dev/null | head -n1)
 				if [ -z "$kernel_file" ]; then
-					echo "ERROR: expected /artifacts/%[2]s-kernel not found"
+					echo "ERROR: expected /artifacts/%[1]s-kernel not found"
 					ls -la /artifacts/ || true
 					exit 1
 				fi
-				initrd_file=$(ls /artifacts/%[2]s-initrd 2>/dev/null | head -n1)
+				initrd_file=$(ls /artifacts/%[1]s-initrd 2>/dev/null | head -n1)
 				if [ -z "$initrd_file" ]; then
-					echo "ERROR: expected /artifacts/%[2]s-initrd not found"
+					echo "ERROR: expected /artifacts/%[1]s-initrd not found"
 					ls -la /artifacts/ || true
 					exit 1
 				fi
-				squashfs_file=$(ls /artifacts/%[2]s.squashfs 2>/dev/null | head -n1)
+				squashfs_file=$(ls /artifacts/%[1]s.squashfs 2>/dev/null | head -n1)
 				if [ -z "$squashfs_file" ]; then
-					echo "ERROR: expected /artifacts/%[2]s.squashfs not found"
+					echo "ERROR: expected /artifacts/%[1]s.squashfs not found"
 					ls -la /artifacts/ || true
 					exit 1
 				fi
@@ -336,8 +322,8 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 						exit 1
 					fi
 				done
-				echo "PASS: Netboot artifacts produced with nameOverride, ISO keeps metadata.name"
-			`, "nameoverride-netboot-", overrideName)
+				echo "PASS: Netboot artifacts produced with nameOverride, intermediate ISO pruned"
+			`, overrideName)
 
 			spec := buildv1alpha2.OSArtifactSpec{
 				Image: buildv1alpha2.ImageSpec{
