@@ -204,7 +204,7 @@ jobs:
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'github-actions@github.com'
           git add config/default/kustomization.yaml charts/kairos-operator/Chart.yaml
-          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git commit -s -m "chore: bump version to ${{ inputs.version }}"
           git push origin "chore/bump-version-${{ inputs.version }}"
 
       - name: Create Pull Request
