@@ -539,48 +539,63 @@ var _ = Describe("buildNetbootCmd", func() {
 })
 
 var _ = Describe("buildUKICommand", func() {
-	// Tests for --cloud-config flag order
-	// See: https://github.com/kairos-io/kairos-operator/pull/73
+	// auroraboot build-uki has no --cloud-config flag, so passing one aborts
+	// the build on flag parsing. The cloud config reaches the ISO root through
+	// --overlay-iso instead, which is where build-iso --cloud-config puts it.
+	// See: https://github.com/kairos-io/kairos/issues/4586
+
+	ukiArtifact := func(artifacts *buildv1alpha2.ArtifactSpec) *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+			Spec:       buildv1alpha2.OSArtifactSpec{Artifacts: artifacts},
+		}
+	}
 
 	When("CloudConfigRef is set", func() {
-		It("places --cloud-config before dir:/rootfs", func() {
-			artifact := &buildv1alpha2.OSArtifact{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
-				Spec: buildv1alpha2.OSArtifactSpec{
-					Artifacts: &buildv1alpha2.ArtifactSpec{
-						CloudConfigRef: &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "config.yaml"},
-					},
-				},
+		artifacts := &buildv1alpha2.ArtifactSpec{
+			UKI:            &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			CloudConfigRef: &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "userdata"},
+		}
+
+		It("never passes --cloud-config, whatever the output type", func() {
+			for _, outputType := range []string{"iso", "container", "uki"} {
+				Expect(buildUKICommand(ukiArtifact(artifacts), outputType)).
+					ToNot(ContainSubstring("--cloud-config"), "output type %s", outputType)
 			}
-			cmd := buildUKICommand(artifact, "iso")
-			Expect(strings.Index(cmd, "--cloud-config")).To(BeNumerically("<", strings.Index(cmd, "dir:/rootfs")))
+		})
+
+		It("stages the config into an overlay dir and passes it before dir:/rootfs", func() {
+			cmd := buildUKICommand(ukiArtifact(artifacts), "iso")
+			Expect(cmd).To(HavePrefix(
+				"mkdir -p /uki-cloud-config && cp /cloud-config.yaml /uki-cloud-config/config.yaml && auroraboot "))
+			Expect(cmd).To(ContainSubstring("--overlay-iso " + ukiCloudConfigDir))
+			Expect(strings.Index(cmd, "--overlay-iso")).
+				To(BeNumerically("<", strings.Index(cmd, "dir:/rootfs")))
+		})
+
+		It("stages nothing for an output type that builds no ISO", func() {
+			for _, outputType := range []string{"container", "uki"} {
+				cmd := buildUKICommand(ukiArtifact(artifacts), outputType)
+				Expect(cmd).To(HavePrefix("auroraboot "), "output type %s", outputType)
+				Expect(cmd).ToNot(ContainSubstring("--overlay-iso"), "output type %s", outputType)
+			}
 		})
 	})
 
-	When("GRUBConfig is set", func() {
-		It("places --cloud-config before dir:/rootfs", func() {
-			artifact := &buildv1alpha2.OSArtifact{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
-				Spec: buildv1alpha2.OSArtifactSpec{
-					Artifacts: &buildv1alpha2.ArtifactSpec{
-						GRUBConfig: "set timeout=10",
-					},
-				},
-			}
-			cmd := buildUKICommand(artifact, "iso")
-			Expect(strings.Index(cmd, "--cloud-config")).To(BeNumerically("<", strings.Index(cmd, "dir:/rootfs")))
+	When("only GRUBConfig is set", func() {
+		It("passes neither --cloud-config nor an overlay, since a UKI has no GRUB", func() {
+			cmd := buildUKICommand(ukiArtifact(&buildv1alpha2.ArtifactSpec{
+				UKI:        &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+				GRUBConfig: "set timeout=10",
+			}), "iso")
+			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
+			Expect(cmd).ToNot(ContainSubstring("--overlay-iso"))
 		})
 	})
 
 	When("neither CloudConfigRef nor GRUBConfig is set", func() {
 		It("does not include --cloud-config flag", func() {
-			artifact := &buildv1alpha2.OSArtifact{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
-				Spec: buildv1alpha2.OSArtifactSpec{
-					Artifacts: &buildv1alpha2.ArtifactSpec{},
-				},
-			}
-			cmd := buildUKICommand(artifact, "iso")
+			cmd := buildUKICommand(ukiArtifact(&buildv1alpha2.ArtifactSpec{}), "iso")
 			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
 			Expect(cmd).To(ContainSubstring("dir:/rootfs"))
 		})
