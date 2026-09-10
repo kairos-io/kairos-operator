@@ -42,6 +42,16 @@ const (
 	overlayISOMountPath    = "/overlay-iso"
 	overlayRootfsMountPath = "/overlay-rootfs"
 	ocispecVolumeName      = "ocispec"
+	cloudConfigMountPath   = "/cloud-config.yaml"
+	// ukiCloudConfigDir is a scratch directory the build-uki container fills
+	// with a single config.yaml and hands to --overlay-iso. It is not a volume
+	// mount: a Secret volume mounted as a directory is a symlink farm, which
+	// older AuroraBoot copies verbatim into the ISO (kairos-io/kairos#4324).
+	ukiCloudConfigDir = "/uki-cloud-config"
+	// cloudConfigFileName is the name the config must have inside that
+	// directory: Kairos reads *.yaml from /run/initramfs/live, which is where
+	// the ISO root ends up at boot.
+	cloudConfigFileName = "config.yaml"
 	// DOCKER_CONFIG env var directs OCI tooling at the auth file.
 	dockerConfigEnv      = "DOCKER_CONFIG"
 	dockerCredsMountPath = "/root/.docker"
@@ -398,7 +408,7 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.CloudConfigRef != nil {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      "cloudconfig",
-			MountPath: "/cloud-config.yaml",
+			MountPath: cloudConfigMountPath,
 			SubPath:   artifact.Spec.Artifacts.CloudConfigRef.Key,
 		})
 	}
@@ -418,7 +428,7 @@ func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overl
 	}
 	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
 	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
-		cmd.WriteString(" --cloud-config /cloud-config.yaml")
+		cmd.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	cmd.WriteString(" dir:/rootfs")
 	return cmd.String()
@@ -461,10 +471,21 @@ func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) stri
 	fmt.Fprintf(&cmd, " --sb-key %s/db.key", ukiKeysMountPath)
 	fmt.Fprintf(&cmd, " --sb-cert %s/db.pem", ukiKeysMountPath)
 	// Note: auroraboot build-uki does not support --arch; arch is not passed.
-	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
-		fmt.Fprintf(&cmd, " --cloud-config %s", "/cloud-config.yaml")
+	// It has no --cloud-config either, and a UKI has no GRUB, so neither
+	// CloudConfigRef nor GRUBConfig produces a flag here. The cloud config goes
+	// in through --overlay-iso, which lands it at the ISO root just like
+	// build-iso --cloud-config does, and only the ISO output type has an ISO.
+	withCloudConfig := outputType == "iso" &&
+		artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.CloudConfigRef != nil
+	if withCloudConfig {
+		fmt.Fprintf(&cmd, " --overlay-iso %s", ukiCloudConfigDir)
 	}
 	fmt.Fprintf(&cmd, " %s", "dir:/rootfs")
+	if withCloudConfig {
+		// Copy rather than mount: see ukiCloudConfigDir.
+		return fmt.Sprintf("mkdir -p %s && cp %s %s/%s && %s",
+			ukiCloudConfigDir, cloudConfigMountPath, ukiCloudConfigDir, cloudConfigFileName, cmd.String())
+	}
 	return cmd.String()
 }
 
@@ -497,7 +518,7 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 		fmt.Fprintf(&c, " --set 'disk.size=%s'", artifacts.DiskSize)
 	}
 	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		c.WriteString(" --cloud-config /cloud-config.yaml")
+		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
@@ -574,7 +595,7 @@ func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *b
 		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
 	}
 	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		c.WriteString(" --cloud-config /cloud-config.yaml")
+		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
@@ -607,7 +628,7 @@ func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *bui
 		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
 	}
 	if artifacts != nil && artifacts.CloudConfigRef != nil {
-		c.WriteString(" --cloud-config /cloud-config.yaml")
+		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
 		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
