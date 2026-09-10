@@ -11,4 +11,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: quay.io/kairos/operator
-  newTag: v0.2.1@sha256:eba30a1006eae233fd8c2eead6671fd4fdacf2fc8bb097a8664ca01f47040426
+  newTag: v0.2.2@sha256:854198e1e418315c49b55595e0268ca98ea0729403d75cdf17e3f55aabddb3b9
