@@ -590,15 +590,28 @@ var _ = Describe("buildUKICommand", func() {
 			}), "iso")
 			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
 			Expect(cmd).ToNot(ContainSubstring("--overlay-iso"))
+			Expect(cmd).To(HavePrefix("auroraboot "))
 		})
 	})
 
 	When("neither CloudConfigRef nor GRUBConfig is set", func() {
-		It("does not include --cloud-config flag", func() {
-			cmd := buildUKICommand(ukiArtifact(&buildv1alpha2.ArtifactSpec{}), "iso")
-			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
-			Expect(cmd).To(ContainSubstring("dir:/rootfs"))
-		})
+		// An empty ArtifactSpec and a nil one take different branches of the
+		// nil guard in withCloudConfig, so both are exercised.
+		for _, tc := range []struct {
+			name      string
+			artifacts *buildv1alpha2.ArtifactSpec
+		}{
+			{"an empty ArtifactSpec", &buildv1alpha2.ArtifactSpec{}},
+			{"no ArtifactSpec at all", nil},
+		} {
+			It("passes no cloud config and stages nothing, given "+tc.name, func() {
+				cmd := buildUKICommand(ukiArtifact(tc.artifacts), "iso")
+				Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
+				Expect(cmd).ToNot(ContainSubstring("--overlay-iso"))
+				Expect(cmd).To(ContainSubstring("dir:/rootfs"))
+				Expect(cmd).To(HavePrefix("auroraboot "))
+			})
+		}
 	})
 })
 
