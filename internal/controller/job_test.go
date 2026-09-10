@@ -367,8 +367,8 @@ var _ = Describe("buildISOCommand", func() {
 		})
 	})
 
-	When("GRUBConfig is set", func() {
-		It("places --cloud-config before dir:/rootfs", func() {
+	When("only GRUBConfig is set", func() {
+		It("passes no --cloud-config, since nothing mounts that path", func() {
 			artifact := &buildv1alpha2.OSArtifact{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
 				Spec: buildv1alpha2.OSArtifactSpec{
@@ -378,8 +378,40 @@ var _ = Describe("buildISOCommand", func() {
 				},
 			}
 			cmd := buildISOCommand(artifact, "amd64", "", "")
-			Expect(strings.Index(cmd, "--cloud-config")).To(BeNumerically("<", strings.Index(cmd, "dir:/rootfs")))
+			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
+			Expect(cmd).To(HavePrefix("auroraboot "))
 		})
+	})
+
+	// The flag names a path inside the builder container, so it is only ever
+	// correct when a volume mount puts a file there. auroraboot build-iso
+	// aborts with "file '/cloud-config.yaml' not found" otherwise.
+	It("passes --cloud-config only when that path is mounted", func() {
+		for _, artifacts := range []*buildv1alpha2.ArtifactSpec{
+			nil,
+			{},
+			{GRUBConfig: "set timeout=10"},
+			{CloudConfigRef: &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "config.yaml"}},
+			{
+				GRUBConfig:     "set timeout=10",
+				CloudConfigRef: &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "config.yaml"},
+			},
+		} {
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec:       buildv1alpha2.OSArtifactSpec{Artifacts: artifacts},
+			}
+			mounts, overlayISO, overlayRootfs := builderVolumeMounts(artifact)
+			var mounted bool
+			for _, m := range mounts {
+				if m.MountPath == "/cloud-config.yaml" {
+					mounted = true
+				}
+			}
+			cmd := buildISOCommand(artifact, "amd64", overlayISO, overlayRootfs)
+			Expect(strings.Contains(cmd, "--cloud-config /cloud-config.yaml")).
+				To(Equal(mounted), "artifacts %+v produced %q", artifacts, cmd)
+		}
 	})
 
 	When("neither CloudConfigRef nor GRUBConfig is set", func() {
