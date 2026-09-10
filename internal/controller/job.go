@@ -427,7 +427,12 @@ func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overl
 		fmt.Fprintf(&cmd, " --arch %s", arch)
 	}
 	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
-	if artifact.Spec.Artifacts != nil && (artifact.Spec.Artifacts.CloudConfigRef != nil || artifact.Spec.Artifacts.GRUBConfig != "") {
+	// Only CloudConfigRef puts a file at cloudConfigMountPath (see
+	// builderVolumeMounts), and auroraboot build-iso aborts with
+	// "file '/cloud-config.yaml' not found" when the flag names a path that
+	// is not there. GRUBConfig mounts a grub.cfg elsewhere and never produced
+	// a cloud config, so including it here failed every such build.
+	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.CloudConfigRef != nil {
 		cmd.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	cmd.WriteString(" dir:/rootfs")
