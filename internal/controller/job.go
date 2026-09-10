@@ -541,13 +541,13 @@ func makeCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArtifac
 
 // isoBasenameForNetboot returns the source ISO basename (without .iso) that netboot reads from.
 // The netboot output basename is separate (from ArtifactNameFor(OSArtifactKindNetboot)).
-// Uses the UKI name when the ISO was built by build-uki.
-func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) string {
-	artifactName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindISO)
-	if artifacts != nil && artifacts.UKI != nil && artifacts.UKI.ISO {
-		return ukiArtifactName(artifact)
-	}
-	return artifactName
+//
+// Always the unsigned ISO, never the UKI one. `auroraboot netboot` extracts
+// /rootfs.squashfs, which a build-uki ISO does not contain, so pointing it at
+// the UKI ISO fails the build. The unsigned build-iso runs whenever Netboot is
+// set (see the init container list), so that file is always there.
+func isoBasenameForNetboot(artifact *buildv1alpha2.OSArtifact) string {
+	return artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindISO)
 }
 
 func buildNetbootCmd(isoBasename, basename string) string {
@@ -567,7 +567,7 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 }
 
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
-	isoBasename := isoBasenameForNetboot(artifact, artifacts)
+	isoBasename := isoBasenameForNetboot(artifact)
 	baseName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
 
 	return corev1.Container{

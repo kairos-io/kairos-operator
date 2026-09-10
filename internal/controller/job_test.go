@@ -410,8 +410,7 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				},
 			}
 
-			artifacts := artifact.Spec.Artifacts
-			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
 			Expect(isoBaseName).To(Equal(artifact.Name))
 		})
@@ -430,15 +429,17 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				},
 			}
 
-			artifacts := artifact.Spec.Artifacts
-			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
 			Expect(isoBaseName).To(Equal(nameOverride))
 		})
 	})
 
-	When("ArtifactSpec.UKI.ISO path is enabled and NameOverride.UKI is set", func() {
-		It("uses NameOverride.UKI as-is", func() {
+	// `auroraboot netboot` extracts /rootfs.squashfs, which a build-uki ISO does
+	// not contain, so the UKI ISO can never be the netboot source. The unsigned
+	// build-iso runs whenever Netboot is set, so its output is always present.
+	When("ArtifactSpec.UKI.ISO is enabled and NameOverride.UKI is set", func() {
+		It("still reads the unsigned ISO, not the UKI one", func() {
 			artifact := &buildv1alpha2.OSArtifact{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
 				Spec: buildv1alpha2.OSArtifactSpec{
@@ -454,15 +455,14 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				},
 			}
 
-			artifacts := artifact.Spec.Artifacts
-			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
-			Expect(isoBaseName).To(Equal(nameOverride))
+			Expect(isoBaseName).To(Equal(artifact.Name))
 		})
 	})
 
 	When("ArtifactSpec.UKI.ISO is enabled and NameOverride.UKI is not set", func() {
-		It("appends -uki to metadata.name", func() {
+		It("still reads the unsigned ISO, not <name>-uki", func() {
 			artifact := &buildv1alpha2.OSArtifact{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
 				Spec: buildv1alpha2.OSArtifactSpec{
@@ -474,10 +474,35 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				},
 			}
 
-			artifacts := artifact.Spec.Artifacts
-			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
-			Expect(isoBaseName).To(Equal(artifact.Name + "-uki"))
+			Expect(isoBaseName).ToNot(Equal(artifact.Name + "-uki"))
+			Expect(isoBaseName).To(Equal(artifact.Name))
+		})
+	})
+
+	// The regression this guards: uki.iso: true, iso: false, netboot: true used
+	// to render `auroraboot netboot /artifacts/<name>-uki.iso`, which fails with
+	// "target file /rootfs.squashfs does not exist".
+	When("uki.iso: true, iso: false, netboot: true", func() {
+		It("renders a netboot command that reads the unsigned ISO", func() {
+			artifacts := &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			}
+			// The reconciler passes artifact.Spec.Artifacts itself, so the spec
+			// has to hang off the artifact or the UKI path is never reached.
+			artifact := &buildv1alpha2.OSArtifact{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+				Spec:       buildv1alpha2.OSArtifactSpec{Artifacts: artifacts},
+			}
+
+			c := makeNetbootContainer("tool", artifact, nil, artifacts)
+
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("netboot /artifacts/test-artifact.iso "))
+			Expect(c.Args[0]).ToNot(ContainSubstring("test-artifact-uki.iso"))
 		})
 	})
 
@@ -494,8 +519,7 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				},
 			}
 
-			artifacts := artifact.Spec.Artifacts
-			isoBaseName := isoBasenameForNetboot(artifact, artifacts)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
 			Expect(isoBaseName).To(Equal(artifact.Name))
 		})
@@ -508,7 +532,7 @@ var _ = Describe("isoBasenameForNetboot", func() {
 				Spec:       buildv1alpha2.OSArtifactSpec{},
 			}
 
-			isoBaseName := isoBasenameForNetboot(artifact, nil)
+			isoBaseName := isoBasenameForNetboot(artifact)
 
 			Expect(isoBaseName).To(Equal(artifact.Name))
 		})
