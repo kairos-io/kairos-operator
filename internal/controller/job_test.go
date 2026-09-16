@@ -638,14 +638,50 @@ var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 	})
 
 	When("uki.iso: true, iso: false, netboot: true", func() {
-		It("keeps the -uki source ISO because the user asked for it", func() {
+		// netboot always extracts from the *unsigned* ISO (see
+		// isoBasenameForNetboot), and build-uki writes <name>-uki.iso, so the
+		// two are different files and only the unsigned one is intermediate.
+		// See: https://github.com/kairos-io/kairos/issues/4684
+		It("removes the unsigned source ISO, which is not the UKI ISO the user asked for", func() {
 			c := makeNetbootContainer("tool", artifact(), nil, &buildv1alpha2.ArtifactSpec{
 				ISO:     false,
 				Netboot: true,
 				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
 			})
 			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
+			Expect(c.Args[0]).ToNot(ContainSubstring("test-artifact-uki.iso"))
+		})
+	})
+
+	// nameOverride.uki drops the "-uki" suffix, so setting it to the unsigned
+	// ISO's name makes build-uki and build-iso write the same file. That is
+	// the one shape where the source ISO really is the requested artifact.
+	// validateArtifactSpec only rejects nameOverride.uki == nameOverride.iso,
+	// so this passes validation with nameOverride.iso empty.
+	When("nameOverride.uki resolves to the unsigned ISO's basename", func() {
+		It("keeps the source ISO, because it is the UKI ISO", func() {
+			a := artifact()
+			a.Spec.NameOverride.UKI = "test-artifact"
+			c := makeNetbootContainer("tool", a, nil, &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			})
+			Expect(c.Args).To(HaveLen(1))
 			Expect(c.Args[0]).ToNot(ContainSubstring("rm -f"))
+		})
+
+		It("still removes it when the names differ", func() {
+			a := artifact()
+			a.Spec.NameOverride.UKI = nameOverride
+			c := makeNetbootContainer("tool", a, nil, &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
 		})
 	})
 })
