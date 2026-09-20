@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -143,6 +144,168 @@ ID=generic
 			hostKairos: matchingRelease,
 		})
 		Expect(msg).To(ContainSubstring("node is already at"))
+	})
+})
+
+var _ = Describe("generateUpgradeCommand version gate", func() {
+	// These tests execute the script generateUpgradeCommand actually emits,
+	// with stub `mount` and `kairos-agent` binaries on PATH and synthetic
+	// release files mapped in via the same env-var overrides the preflight
+	// script uses. That way the assertions are about real shell behaviour,
+	// not about the literal text of the script.
+
+	type files struct {
+		targetKairos, targetOS, hostKairos, hostOS string
+	}
+
+	const matchingRelease = `KAIROS_VERSION="v4.1.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const newerRelease = `KAIROS_VERSION="v4.2.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const osReleaseWithoutKairos = `NAME="Generic Linux"
+VERSION="1.0"
+ID=generic
+`
+
+	// runUpgradeScript runs the generated script and returns its stdout.
+	runUpgradeScript := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, f files) string {
+		tmpDir := GinkgoT().TempDir()
+
+		binDir := filepath.Join(tmpDir, "bin")
+		Expect(os.MkdirAll(binDir, 0o755)).To(Succeed())
+		for _, name := range []string{"mount", "kairos-agent"} {
+			stub := "#!/bin/sh\necho \"" + name + " $*\"\n"
+			Expect(os.WriteFile(filepath.Join(binDir, name), []byte(stub), 0o755)).To(Succeed())
+		}
+
+		writeMaybe := func(name, content string) string {
+			if content == "" {
+				return filepath.Join(tmpDir, name+"-DOES-NOT-EXIST")
+			}
+			p := filepath.Join(tmpDir, name)
+			Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
+			return p
+		}
+
+		r := &NodeOpUpgradeReconciler{}
+		command := r.generateUpgradeCommand(&kairosiov1alpha1.NodeOpUpgrade{Spec: spec})
+		Expect(command[0]).To(Equal("/bin/sh"))
+		Expect(command[1]).To(Equal("-c"))
+
+		cmd := exec.Command(command[0], command[1], command[2])
+		cmd.Env = append(
+			os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TARGET_KAIROS_RELEASE="+writeMaybe("target-kairos", f.targetKairos),
+			"TARGET_OS_RELEASE="+writeMaybe("target-os", f.targetOS),
+			"HOST_KAIROS_RELEASE="+writeMaybe("host-kairos", f.hostKairos),
+			"HOST_OS_RELEASE="+writeMaybe("host-os", f.hostOS),
+		)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		Expect(cmd.Run()).To(Succeed(), "script must exit 0: %s", stderr.String())
+		return stdout.String()
+	}
+
+	It("skips the upgrade when the host is already at the target version", func() {
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, files{
+			targetKairos: matchingRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(out).To(ContainSubstring("Up to date"))
+		Expect(out).NotTo(ContainSubstring("kairos-agent upgrade"))
+	})
+
+	It("upgrades when the target version is newer", func() {
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, files{
+			targetKairos: newerRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+	})
+
+	It("upgrades when neither side reports a KAIROS_VERSION", func() {
+		// Two unknown versions must not compare equal. The preflight script
+		// already guards this; the in-Pod script must agree with it.
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, files{
+			targetOS: osReleaseWithoutKairos,
+			hostOS:   osReleaseWithoutKairos,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade"))
+	})
+
+	It("upgrades when the target kairos-release carries no KAIROS_VERSION", func() {
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, files{
+			targetKairos: osReleaseWithoutKairos,
+			hostKairos:   osReleaseWithoutKairos,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade"))
+	})
+
+	It("upgrades the recovery partition even when the active partition matches the target", func() {
+		// The version check reads the host's ACTIVE version. It says nothing
+		// about the recovery partition, so it must not gate a recovery
+		// upgrade.
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeRecovery: asBool(true),
+			UpgradeActive:   asBool(false),
+		}, files{
+			targetKairos: matchingRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+	})
+
+	It("upgrades both partitions when the active partition matches the target", func() {
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeRecovery: asBool(true),
+			UpgradeActive:   asBool(true),
+		}, files{
+			targetKairos: matchingRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+	})
+
+	It("still honours force when the versions match", func() {
+		out := runUpgradeScript(kairosiov1alpha1.NodeOpUpgradeSpec{
+			Force: asBool(true),
+		}, files{
+			targetKairos: matchingRelease,
+			hostKairos:   matchingRelease,
+		})
+		Expect(out).NotTo(ContainSubstring("Up to date"))
+		Expect(out).To(ContainSubstring("kairos-agent upgrade"))
+	})
+})
+
+var _ = Describe("buildUpgradePreflight", func() {
+	It("returns no preflight when force is set", func() {
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{Force: asBool(true)},
+		})).To(BeNil())
+	})
+
+	It("returns no preflight when the recovery partition is upgraded", func() {
+		// The preflight only knows the host's active version, so it would
+		// skip nodes whose recovery partition still needs the upgrade.
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{UpgradeRecovery: asBool(true)},
+		})).To(BeNil())
+	})
+
+	It("returns a preflight for a plain active upgrade", func() {
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{})).NotTo(BeNil())
 	})
 })
 

@@ -151,7 +151,10 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 
 // buildUpgradePreflight returns the PreflightSpec the NodeOp should run before
 // cordoning/draining each target node. Returns nil when Force=true so the
-// upgrade runs on every node regardless of the current OS version.
+// upgrade runs on every node regardless of the current OS version, and when
+// the recovery partition is upgraded: the preflight only knows the host's
+// active version, so it would skip nodes whose recovery partition still needs
+// the new image.
 //
 // The preflight script reads /etc/kairos-release inside the upgrade image and
 // compares the resulting version triple against the host's /etc/kairos-release
@@ -160,7 +163,8 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 // the node as Completed (skipped). When the versions differ it stays silent
 // and exits 0, which the controller treats as "proceed".
 func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairosiov1alpha1.PreflightSpec {
-	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) {
+	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) ||
+		getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault) {
 		return nil
 	}
 	deadline := int32(120)
@@ -170,28 +174,25 @@ func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairo
 	}
 }
 
-// upgradePreflightScript is the shell snippet run inside each preflight Pod
-// when this is a NodeOpUpgrade. Output convention: a non-empty
-// /dev/termination-log means "skip this node with the given reason"; an empty
-// termination log + exit 0 means "proceed".
+// versionLookupScript is the POSIX-shell prelude shared by the preflight
+// script and the in-Pod upgrade script. It leaves the target image version in
+// TARGET and the host's active version in CURRENT, both empty when the
+// version cannot be read.
 //
-// get_version returns an empty string when KAIROS_VERSION is missing (e.g.
-// when falling back to /etc/os-release on a non-Kairos image or older OS that
-// doesn't carry KAIROS_* variables). The skip short-circuit then requires
-// BOTH CURRENT and TARGET to be non-empty before declaring equality —
-// otherwise two unknowns would compare equal and we'd wrongly skip the
-// upgrade. Unknown either side means "proceed".
+// get_version returns an empty string when the file is missing or carries no
+// KAIROS_VERSION (e.g. when falling back to /etc/os-release on a non-Kairos
+// image or an older OS that doesn't carry KAIROS_* variables). Callers must
+// therefore require BOTH sides to be non-empty before declaring the versions
+// equal: two unknowns would otherwise compare equal and skip the upgrade.
 //
 // File paths are read from environment variables (defaults match what the
-// preflight Pod sees in production), so tests can drive the script with
-// synthetic files in a temp directory.
-func upgradePreflightScript() string {
-	return `set -e
-: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
+// Pods see in production), so tests can drive the script with synthetic files
+// in a temp directory.
+func versionLookupScript() string {
+	return `: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
 : "${TARGET_OS_RELEASE:=/etc/os-release}"
 : "${HOST_KAIROS_RELEASE:=` + defaultHostMountPath + `/etc/kairos-release}"
 : "${HOST_OS_RELEASE:=` + defaultHostMountPath + `/etc/os-release}"
-: "${TERMINATION_LOG:=/dev/termination-log}"
 
 get_version() {
     local file_path="$1"
@@ -217,7 +218,21 @@ CURRENT=$(get_version "${HOST_KAIROS_RELEASE}")
 if [ -z "${CURRENT}" ]; then
     CURRENT=$(get_version "${HOST_OS_RELEASE}")
 fi
+`
+}
 
+// upgradePreflightScript is the shell snippet run inside each preflight Pod
+// when this is a NodeOpUpgrade. Output convention: a non-empty
+// /dev/termination-log means "skip this node with the given reason"; an empty
+// termination log + exit 0 means "proceed".
+//
+// The version lookup, and the reason both sides must be non-empty before the
+// skip fires, are described on versionLookupScript.
+func upgradePreflightScript() string {
+	return `set -e
+: "${TERMINATION_LOG:=/dev/termination-log}"
+
+` + versionLookupScript() + `
 echo "Host: ${CURRENT:-unknown}, Target: ${TARGET:-unknown}"
 if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
     echo "node is already at ${TARGET}" > "${TERMINATION_LOG}"
@@ -255,36 +270,20 @@ func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosio
 
 `
 
-	// Add version check logic unless force is enabled
 	forceUpgrade := getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault)
-	if !forceUpgrade {
-		script += `get_version() {
-    local file_path="$1"
-    # shellcheck disable=SC1090
-    . "$file_path"
+	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
+	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
-    echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
-}
-
-if [ -f "/etc/kairos-release" ]; then
-      UPDATE_VERSION=$(get_version "/etc/kairos-release")
-    else
-      # shellcheck disable=SC1091
-      UPDATE_VERSION=$(get_version "/etc/os-release" )
-    fi
-
-    if [ -f "` + defaultHostMountPath + `/etc/kairos-release" ]; then
-      # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/kairos-release" )
-    else
-      # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/os-release" )
-    fi
-
-    if [ "$CURRENT_VERSION" = "$UPDATE_VERSION" ]; then
+	// Skip the upgrade when the host already runs the target version, unless
+	// force is set. The versions come from the host's active system, so they
+	// say nothing about the recovery partition: when recovery is part of the
+	// upgrade the check would skip work that still has to happen.
+	if !forceUpgrade && !upgradeRecovery {
+		script += versionLookupScript() + `
+    if [ -n "$CURRENT" ] && [ -n "$TARGET" ] && [ "$CURRENT" = "$TARGET" ]; then
       echo Up to date
-      echo "Current version: ${CURRENT_VERSION}"
-      echo "Update version: ${UPDATE_VERSION}"
+      echo "Current version: ${CURRENT}"
+      echo "Update version: ${TARGET}"
       exit 0
     fi
 
@@ -296,9 +295,6 @@ if [ -f "/etc/kairos-release" ]; then
 mount --rbind ` + defaultHostMountPath + `/run /run
 
 `
-
-	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
-	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
 	// --debug is a global flag on the kairos-agent CLI, so it must precede the
 	// upgrade subcommand.
