@@ -151,7 +151,10 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 
 // buildUpgradePreflight returns the PreflightSpec the NodeOp should run before
 // cordoning/draining each target node. Returns nil when Force=true so the
-// upgrade runs on every node regardless of the current OS version.
+// upgrade runs on every node regardless of the current OS version, and when
+// the recovery partition is upgraded: the preflight only knows the host's
+// active version, so it would skip nodes whose recovery partition still
+// needs the new image.
 //
 // The preflight script reads /etc/kairos-release inside the upgrade image and
 // compares the resulting version triple against the host's /etc/kairos-release
@@ -160,7 +163,8 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 // the node as Completed (skipped). When the versions differ it stays silent
 // and exits 0, which the controller treats as "proceed".
 func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairosiov1alpha1.PreflightSpec {
-	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) {
+	if getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault) ||
+		getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault) {
 		return nil
 	}
 	deadline := int32(120)
@@ -270,8 +274,14 @@ func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosio
 	// version detection as the preflight, so the two cannot disagree: an
 	// unknown version on either side must not be read as "already up to
 	// date".
+	//
+	// The versions come from the host's active system, so they say nothing
+	// about the recovery partition. Skip the check when recovery is part of
+	// the upgrade, or it would skip work that still has to happen.
 	forceUpgrade := getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault)
-	if !forceUpgrade {
+	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
+	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
+	if !forceUpgrade && !upgradeRecovery {
 		script += versionDetectionSnippet() + `
 if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
   echo Up to date
@@ -288,9 +298,6 @@ fi
 mount --rbind ` + defaultHostMountPath + `/run /run
 
 `
-
-	upgradeRecovery := getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault)
-	upgradeActive := getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault)
 
 	// --debug is a global flag on the kairos-agent CLI, so it must precede the
 	// upgrade subcommand.
