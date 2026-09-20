@@ -170,28 +170,27 @@ func buildUpgradePreflight(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) *kairo
 	}
 }
 
-// upgradePreflightScript is the shell snippet run inside each preflight Pod
-// when this is a NodeOpUpgrade. Output convention: a non-empty
-// /dev/termination-log means "skip this node with the given reason"; an empty
-// termination log + exit 0 means "proceed".
+// versionDetectionSnippet is the shell fragment that resolves the target and
+// the host Kairos version triple into TARGET and CURRENT. Both the preflight
+// script and the upgrade script itself use it, so the two always agree on
+// what "same version" means.
 //
-// get_version returns an empty string when KAIROS_VERSION is missing (e.g.
-// when falling back to /etc/os-release on a non-Kairos image or older OS that
-// doesn't carry KAIROS_* variables). The skip short-circuit then requires
-// BOTH CURRENT and TARGET to be non-empty before declaring equality —
-// otherwise two unknowns would compare equal and we'd wrongly skip the
-// upgrade. Unknown either side means "proceed".
+// get_version returns an empty string when the file is missing or when
+// KAIROS_VERSION is unset (e.g. when falling back to /etc/os-release on a
+// non-Kairos image or an older OS that doesn't carry KAIROS_* variables), so
+// an unknown version is always distinguishable from a known one. Callers must
+// therefore require BOTH CURRENT and TARGET to be non-empty before declaring
+// them equal — otherwise two unknowns compare equal and the upgrade is
+// wrongly reported as unnecessary. Unknown on either side means "proceed".
 //
-// File paths are read from environment variables (defaults match what the
-// preflight Pod sees in production), so tests can drive the script with
-// synthetic files in a temp directory.
-func upgradePreflightScript() string {
-	return `set -e
-: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
+// File paths are read from environment variables (defaults match what the Pod
+// sees in production), so tests can drive either script with synthetic files
+// in a temp directory.
+func versionDetectionSnippet() string {
+	return `: "${TARGET_KAIROS_RELEASE:=/etc/kairos-release}"
 : "${TARGET_OS_RELEASE:=/etc/os-release}"
 : "${HOST_KAIROS_RELEASE:=` + defaultHostMountPath + `/etc/kairos-release}"
 : "${HOST_OS_RELEASE:=` + defaultHostMountPath + `/etc/os-release}"
-: "${TERMINATION_LOG:=/dev/termination-log}"
 
 get_version() {
     local file_path="$1"
@@ -219,6 +218,18 @@ if [ -z "${CURRENT}" ]; then
 fi
 
 echo "Host: ${CURRENT:-unknown}, Target: ${TARGET:-unknown}"
+`
+}
+
+// upgradePreflightScript is the shell snippet run inside each preflight Pod
+// when this is a NodeOpUpgrade. Output convention: a non-empty
+// /dev/termination-log means "skip this node with the given reason"; an empty
+// termination log + exit 0 means "proceed".
+func upgradePreflightScript() string {
+	return `set -e
+: "${TERMINATION_LOG:=/dev/termination-log}"
+
+` + versionDetectionSnippet() + `
 if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
     echo "node is already at ${TARGET}" > "${TERMINATION_LOG}"
 fi
@@ -255,38 +266,19 @@ func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosio
 
 `
 
-	// Add version check logic unless force is enabled
+	// Add version check logic unless force is enabled. This uses the same
+	// version detection as the preflight, so the two cannot disagree: an
+	// unknown version on either side must not be read as "already up to
+	// date".
 	forceUpgrade := getBool(nodeOpUpgrade.Spec.Force, UpgradeForceDefault)
 	if !forceUpgrade {
-		script += `get_version() {
-    local file_path="$1"
-    # shellcheck disable=SC1090
-    . "$file_path"
-
-    echo "${KAIROS_VERSION}-${KAIROS_SOFTWARE_VERSION_PREFIX}${KAIROS_SOFTWARE_VERSION}"
-}
-
-if [ -f "/etc/kairos-release" ]; then
-      UPDATE_VERSION=$(get_version "/etc/kairos-release")
-    else
-      # shellcheck disable=SC1091
-      UPDATE_VERSION=$(get_version "/etc/os-release" )
-    fi
-
-    if [ -f "` + defaultHostMountPath + `/etc/kairos-release" ]; then
-      # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/kairos-release" )
-    else
-      # shellcheck disable=SC1091
-      CURRENT_VERSION=$(get_version "` + defaultHostMountPath + `/etc/os-release" )
-    fi
-
-    if [ "$CURRENT_VERSION" = "$UPDATE_VERSION" ]; then
-      echo Up to date
-      echo "Current version: ${CURRENT_VERSION}"
-      echo "Update version: ${UPDATE_VERSION}"
-      exit 0
-    fi
+		script += versionDetectionSnippet() + `
+if [ -n "${CURRENT}" ] && [ -n "${TARGET}" ] && [ "${CURRENT}" = "${TARGET}" ]; then
+  echo Up to date
+  echo "Current version: ${CURRENT}"
+  echo "Update version: ${TARGET}"
+  exit 0
+fi
 
 `
 	}
