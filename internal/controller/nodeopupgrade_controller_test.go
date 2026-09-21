@@ -159,9 +159,9 @@ var _ = Describe("generateUpgradeCommand version gate", func() {
 	}
 
 	type gateResult struct {
-		output      string
-		ranUpgrade  bool
-		saidUpToDte bool
+		output       string
+		ranUpgrade   bool
+		saidUpToDate bool
 	}
 
 	runUpgradeWithSpec := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, f gateFiles) gateResult {
@@ -202,9 +202,9 @@ var _ = Describe("generateUpgradeCommand version gate", func() {
 
 		_, statErr := os.Stat(marker)
 		return gateResult{
-			output:      string(out),
-			ranUpgrade:  statErr == nil,
-			saidUpToDte: strings.Contains(string(out), "Up to date"),
+			output:       string(out),
+			ranUpgrade:   statErr == nil,
+			saidUpToDate: strings.Contains(string(out), "Up to date"),
 		}
 	}
 
@@ -227,7 +227,7 @@ ID=generic
 
 	It("skips the upgrade when both sides report the same version", func() {
 		r := runUpgrade(gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
-		Expect(r.saidUpToDte).To(BeTrue(), r.output)
+		Expect(r.saidUpToDate).To(BeTrue(), r.output)
 		Expect(r.ranUpgrade).To(BeFalse(), "kairos-agent must not run: %s", r.output)
 	})
 
@@ -242,7 +242,7 @@ ID=generic
 		// otherwise the Pod exits 0 without upgrading and the node is
 		// recorded as successfully upgraded.
 		r := runUpgrade(gateFiles{targetOS: gateNoKairos, hostOS: gateNoKairos})
-		Expect(r.saidUpToDte).To(BeFalse(),
+		Expect(r.saidUpToDate).To(BeFalse(),
 			"two unknown versions must not be read as up to date: %s", r.output)
 		Expect(r.ranUpgrade).To(BeTrue(), r.output)
 	})
@@ -264,7 +264,7 @@ ID=generic
 			targetKairos: gateNoKairos, targetOS: gateMatching,
 			hostKairos: gateNoKairos, hostOS: gateMatching,
 		})
-		Expect(r.saidUpToDte).To(BeTrue(), r.output)
+		Expect(r.saidUpToDate).To(BeTrue(), r.output)
 		Expect(r.ranUpgrade).To(BeFalse(), r.output)
 	})
 
@@ -277,7 +277,7 @@ ID=generic
 			UpgradeRecovery: asBool(true),
 			UpgradeActive:   asBool(false),
 		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
-		Expect(r.saidUpToDte).To(BeFalse(), r.output)
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
 		Expect(r.ranUpgrade).To(BeTrue(), r.output)
 		Expect(r.output).To(ContainSubstring("--recovery"))
 	})
@@ -287,7 +287,7 @@ ID=generic
 			UpgradeRecovery: asBool(true),
 			UpgradeActive:   asBool(true),
 		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
-		Expect(r.saidUpToDte).To(BeFalse(), r.output)
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
 		Expect(r.output).To(ContainSubstring("--recovery"))
 	})
 
@@ -295,7 +295,7 @@ ID=generic
 		r := runUpgradeWithSpec(kairosiov1alpha1.NodeOpUpgradeSpec{
 			Force: asBool(true),
 		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
-		Expect(r.saidUpToDte).To(BeFalse(), r.output)
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
 		Expect(r.ranUpgrade).To(BeTrue(), r.output)
 	})
 })
