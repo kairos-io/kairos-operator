@@ -146,6 +146,180 @@ ID=generic
 	})
 })
 
+var _ = Describe("generateUpgradeCommand version gate", func() {
+	// The upgrade script, not the preflight, is what actually decides whether
+	// kairos-agent runs: the preflight can only say "skip", and when it says
+	// "proceed" the upgrade script still re-checks the versions. These tests
+	// drive the real script with synthetic release files and with `mount` and
+	// `kairos-agent` stubbed on PATH, so we observe what the script does
+	// rather than what it says.
+
+	type gateFiles struct {
+		targetKairos, targetOS, hostKairos, hostOS string
+	}
+
+	type gateResult struct {
+		output       string
+		ranUpgrade   bool
+		saidUpToDate bool
+	}
+
+	runUpgradeWithSpec := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, f gateFiles) gateResult {
+		tmpDir := GinkgoT().TempDir()
+		writeMaybe := func(name, content string) string {
+			if content == "" {
+				return filepath.Join(tmpDir, name+"-DOES-NOT-EXIST")
+			}
+			p := filepath.Join(tmpDir, name)
+			Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
+			return p
+		}
+
+		// Stub out the two commands the script would otherwise run for real.
+		binDir := filepath.Join(tmpDir, "bin")
+		Expect(os.MkdirAll(binDir, 0o755)).To(Succeed())
+		marker := filepath.Join(tmpDir, "upgrade-ran")
+		Expect(os.WriteFile(filepath.Join(binDir, "mount"),
+			[]byte("#!/bin/sh\nexit 0\n"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(binDir, "kairos-agent"),
+			[]byte("#!/bin/sh\necho \"$@\" >> \""+marker+"\"\nexit 0\n"), 0o755)).To(Succeed())
+
+		reconciler := &NodeOpUpgradeReconciler{}
+		command := reconciler.generateUpgradeCommand(&kairosiov1alpha1.NodeOpUpgrade{Spec: spec})
+		Expect(command).To(HaveLen(3))
+
+		cmd := exec.Command(command[0], command[1], command[2])
+		cmd.Env = append(
+			os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TARGET_KAIROS_RELEASE="+writeMaybe("target-kairos", f.targetKairos),
+			"TARGET_OS_RELEASE="+writeMaybe("target-os", f.targetOS),
+			"HOST_KAIROS_RELEASE="+writeMaybe("host-kairos", f.hostKairos),
+			"HOST_OS_RELEASE="+writeMaybe("host-os", f.hostOS),
+		)
+		out, err := cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "script must exit 0: %s", string(out))
+
+		_, statErr := os.Stat(marker)
+		return gateResult{
+			output:       string(out),
+			ranUpgrade:   statErr == nil,
+			saidUpToDate: strings.Contains(string(out), "Up to date"),
+		}
+	}
+
+	runUpgrade := func(f gateFiles) gateResult {
+		return runUpgradeWithSpec(kairosiov1alpha1.NodeOpUpgradeSpec{}, f)
+	}
+
+	const gateMatching = `KAIROS_VERSION="v4.1.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const gateDifferent = `KAIROS_VERSION="v4.2.0"
+KAIROS_SOFTWARE_VERSION="v1.34.7+k3s1"
+KAIROS_SOFTWARE_VERSION_PREFIX="k3s"
+`
+	const gateNoKairos = `NAME="Generic Linux"
+VERSION="1.0"
+ID=generic
+`
+
+	It("skips the upgrade when both sides report the same version", func() {
+		r := runUpgrade(gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
+		Expect(r.saidUpToDate).To(BeTrue(), r.output)
+		Expect(r.ranUpgrade).To(BeFalse(), "kairos-agent must not run: %s", r.output)
+	})
+
+	It("runs the upgrade when the versions differ", func() {
+		r := runUpgrade(gateFiles{targetKairos: gateDifferent, hostKairos: gateMatching})
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+
+	It("runs the upgrade when neither side reports a KAIROS_VERSION", func() {
+		// Two unknown versions must not compare equal. The preflight already
+		// guards this and answers "proceed"; the upgrade script has to agree,
+		// otherwise the Pod exits 0 without upgrading and the node is
+		// recorded as successfully upgraded.
+		r := runUpgrade(gateFiles{targetOS: gateNoKairos, hostOS: gateNoKairos})
+		Expect(r.saidUpToDate).To(BeFalse(),
+			"two unknown versions must not be read as up to date: %s", r.output)
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+
+	It("runs the upgrade when no release file exists at all", func() {
+		r := runUpgrade(gateFiles{})
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+
+	It("runs the upgrade when only the host side lacks KAIROS_VERSION", func() {
+		r := runUpgrade(gateFiles{targetKairos: gateMatching, hostOS: gateNoKairos})
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+
+	It("falls back to os-release when kairos-release carries no KAIROS_VERSION", func() {
+		// A kairos-release that exists but is empty must not pin the answer
+		// to "unknown" when os-release does carry the variables.
+		r := runUpgrade(gateFiles{
+			targetKairos: gateNoKairos, targetOS: gateMatching,
+			hostKairos: gateNoKairos, hostOS: gateMatching,
+		})
+		Expect(r.saidUpToDate).To(BeTrue(), r.output)
+		Expect(r.ranUpgrade).To(BeFalse(), r.output)
+	})
+
+	It("upgrades the recovery partition even when the active partition matches", func() {
+		// The versions come from the host's active system. They say nothing
+		// about the recovery partition, so they must not gate a recovery
+		// upgrade: bringing recovery in line with an already-upgraded active
+		// partition is exactly what upgradeRecovery is for.
+		r := runUpgradeWithSpec(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeRecovery: asBool(true),
+			UpgradeActive:   asBool(false),
+		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+		Expect(r.output).To(ContainSubstring("--recovery"))
+	})
+
+	It("upgrades both partitions even when the active partition matches", func() {
+		r := runUpgradeWithSpec(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeRecovery: asBool(true),
+			UpgradeActive:   asBool(true),
+		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
+		Expect(r.output).To(ContainSubstring("--recovery"))
+	})
+
+	It("still runs the upgrade under force when the versions match", func() {
+		r := runUpgradeWithSpec(kairosiov1alpha1.NodeOpUpgradeSpec{
+			Force: asBool(true),
+		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
+		Expect(r.saidUpToDate).To(BeFalse(), r.output)
+		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+})
+
+var _ = Describe("buildUpgradePreflight", func() {
+	It("returns no preflight when force is set", func() {
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{Force: asBool(true)},
+		})).To(BeNil())
+	})
+
+	It("returns no preflight when the recovery partition is upgraded", func() {
+		// The preflight only knows the host's active version, so it would
+		// skip nodes whose recovery partition still needs the new image.
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{UpgradeRecovery: asBool(true)},
+		})).To(BeNil())
+	})
+
+	It("returns a preflight for a plain active upgrade", func() {
+		Expect(buildUpgradePreflight(&kairosiov1alpha1.NodeOpUpgrade{})).NotTo(BeNil())
+	})
+})
+
 // reconcileNodeOpUpgrade is a helper that reconciles a NodeOpUpgrade and returns the resulting NodeOp
 func reconcileNodeOpUpgrade(ctx context.Context, k8sClient client.Client,
 	nodeOpUpgradeName string,
