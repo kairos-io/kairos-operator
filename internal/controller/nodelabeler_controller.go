@@ -12,11 +12,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/kairos-io/kairos-operator/internal/utils"
 )
@@ -61,7 +64,8 @@ func getOperatorNamespace() string {
 	return namespace
 }
 
-func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string, nodeName string) (bool, error) {
+// jobsForNode returns the node-labeler Jobs that currently exist for nodeName.
+func (r *NodeLabelerReconciler) jobsForNode(ctx context.Context, namespace string, nodeName string) ([]batchv1.Job, error) {
 	jobList := &batchv1.JobList{}
 	if err := r.List(ctx, jobList,
 		client.InNamespace(namespace),
@@ -70,10 +74,34 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 			labelKeyApp:     labelValueNodeLabelerApp,
 		}),
 	); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return len(jobList.Items) > 0, nil
+	return jobList.Items, nil
+}
+
+// jobFailed reports whether the Job gave up. A Job that exhausted its backoff
+// limit never runs another Pod, so the node it was meant to label stays
+// unlabeled until the Job is replaced.
+func jobFailed(job *batchv1.Job) bool {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+
+	return false
+}
+
+// findNodeForLabelerJob maps a node-labeler Job back to the node it labels, so
+// a Job that fails wakes the reconciler instead of waiting for a Node event.
+func (r *NodeLabelerReconciler) findNodeForLabelerJob(_ context.Context, obj client.Object) []reconcile.Request {
+	nodeName := obj.GetLabels()[labelKeyJobNode]
+	if nodeName == "" {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: nodeName}}}
 }
 
 func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespace string) *batchv1.Job {
@@ -228,21 +256,45 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	namespace := getOperatorNamespace()
 
 	// Check if a labeler job already exists for this node
-	exists, err := r.jobExists(ctx, namespace, node.Name)
+	existing, err := r.jobsForNode(ctx, namespace, node.Name)
 	if err != nil {
 		log.Error(err, "Failed to check for existing jobs")
 		return ctrl.Result{}, err
 	}
 
-	if exists {
-		// Job already exists for this node
-		return ctrl.Result{}, nil
+	for i := range existing {
+		if !jobFailed(&existing[i]) {
+			// A Job for this node is still pending, running or already done
+			return ctrl.Result{}, nil
+		}
+	}
+
+	// Every Job we found gave up. Drop them, so the deterministic name is free
+	// and the node gets another chance to be labeled.
+	for i := range existing {
+		failed := &existing[i]
+		propagation := metav1.DeletePropagationBackground
+		// The UID precondition keeps a stale cache read from deleting the
+		// replacement Job, which carries the same name.
+		err := r.Delete(ctx, failed,
+			client.PropagationPolicy(propagation),
+			client.Preconditions{UID: &failed.UID},
+		)
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			log.Error(err, "Failed to delete failed node-labeler job", "job", failed.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Deleted failed node-labeler job", "node", node.Name, "job", failed.Name)
 	}
 
 	// Create the node-labeler job
 	job := r.createNodeLabelerJob(node, namespace)
 
 	if err := r.Create(ctx, job); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// The name is derived from the node, so another reconcile won the race.
+			return ctrl.Result{}, nil
+		}
 		log.Error(err, "Failed to create node-labeler job")
 		return ctrl.Result{}, err
 	}
@@ -282,6 +334,13 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}
 
 				return matches
+			})),
+		).
+		Watches(
+			&batchv1.Job{},
+			handler.EnqueueRequestsFromMapFunc(r.findNodeForLabelerJob),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return obj.GetLabels()[labelKeyApp] == labelValueNodeLabelerApp
 			})),
 		).
 		Complete(r)
