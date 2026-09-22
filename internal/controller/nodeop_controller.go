@@ -350,12 +350,10 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		return err
 	}
 
-	// The grace period is a property of the DELETE request, not of the object,
-	// so it has to travel as a client.DeleteOption. Writing it onto the Pod's
-	// metadata has no effect: the API server owns
-	// metadata.deletionGracePeriodSeconds and fills it in from the request.
-	// A negative value means "use the grace period the Pod declares", which is
-	// what the API server does when the request carries no grace period at all.
+	// The grace period is a property of the DELETE request, so it travels as a
+	// client.DeleteOption. A negative value means "use the grace period the Pod
+	// declares", which is what the API server applies to a request that carries
+	// no grace period.
 	var deleteOpts []client.DeleteOption
 	if drainOptions.GracePeriodSeconds != nil && *drainOptions.GracePeriodSeconds >= 0 {
 		deleteOpts = append(deleteOpts, client.GracePeriodSeconds(int64(*drainOptions.GracePeriodSeconds)))
