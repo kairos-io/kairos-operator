@@ -17,61 +17,58 @@ var dns1123Subdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z
 const jobNameLimit = utils.KubernetesNameLengthLimit - 6
 
 var _ = Describe("TruncateNameWithHash", func() {
-	It("leaves a short enough name alone", func() {
-		name := "kairos-upgrade-worker-1"
-		Expect(utils.TruncateNameWithHash(name, jobNameLimit)).To(Equal(name))
-	})
-
-	It("truncates a long name and stays within the limit", func() {
-		name := "kairos-upgrade-ip-10-0-15-201.eu-central-1.compute.internal"
-		got := utils.TruncateNameWithHash(name, jobNameLimit)
-		Expect(len(got)).To(BeNumerically("<=", jobNameLimit))
-		Expect(got).ToNot(Equal(name))
-	})
-
-	It("gives different names to different inputs", func() {
-		a := utils.TruncateNameWithHash("kairos-upgrade-ip-10-0-15-201.eu-central-1.compute.internal", jobNameLimit)
-		b := utils.TruncateNameWithHash("kairos-upgrade-ip-10-0-15-202.eu-central-1.compute.internal", jobNameLimit)
-		Expect(a).ToNot(Equal(b))
-	})
-
-	// %x drops the leading zeros of the uint64 FNV sum, so these names hash to
-	// fewer than 12 hex characters and used to panic on the [:12] slice.
-	DescribeTable("keeps a full width hash when the hash is small",
-		func(name string) {
-			got := utils.TruncateNameWithHash(name, jobNameLimit)
-			Expect(len(got)).To(BeNumerically("<=", jobNameLimit))
-			Expect(got).To(MatchRegexp(`-[0-9a-f]{12}$`))
+	DescribeTable("builds the name",
+		func(name string, maxLength int, expected string) {
+			got := utils.TruncateNameWithHash(name, maxLength)
+			Expect(got).To(Equal(expected))
+			Expect(len(got)).To(BeNumerically("<=", maxLength))
+			Expect(dns1123Subdomain.MatchString(got)).To(BeTrue(), "%q is not a valid resource name", got)
 		},
-		Entry("ip-10-27-39-167", "kairos-upgrade-ip-10-27-39-167.eu-west-1.compute.internal"),
-		Entry("ip-10-29-65-104", "kairos-upgrade-ip-10-29-65-104.eu-west-1.compute.internal"),
-		Entry("ip-10-39-37-195", "kairos-upgrade-ip-10-39-37-195.eu-west-1.compute.internal"),
-		Entry("ip-10-69-245-77", "kairos-upgrade-ip-10-69-245-77.eu-west-1.compute.internal"),
-		Entry("ip-10-79-40-157", "kairos-upgrade-ip-10-79-40-157.eu-west-1.compute.internal"),
+
+		Entry("leaves a short enough name alone",
+			"kairos-upgrade-worker-1", jobNameLimit,
+			"kairos-upgrade-worker-1"),
+
+		Entry("truncates a long name and appends the hash",
+			"kairos-upgrade-ip-10-0-15-201.eu-central-1.compute.internal", jobNameLimit,
+			"kairos-upgrade-ip-10-0-15-201.eu-central-1.c-13c26f919108"),
+
+		Entry("cuts at the limit it is given, not at the Kubernetes one",
+			"kairos-upgrade-ip-10-0-15-201.eu-central-1.compute.internal", utils.KubernetesNameLengthLimit,
+			"kairos-upgrade-ip-10-0-15-201.eu-central-1.compute-13c26f919108"),
+
+		// Two hostnames that differ only in the last octet must not collide.
+		Entry("hashes a neighbouring node to a different name",
+			"kairos-upgrade-ip-10-0-15-202.eu-central-1.compute.internal", jobNameLimit,
+			"kairos-upgrade-ip-10-0-15-202.eu-central-1.c-74e6c23c951d"),
+
+		// %x drops the leading zeros of the uint64 FNV sum, so these names used
+		// to render fewer than 12 hex characters and panic on the [:12] slice.
+		Entry("pads a hash below 2^60 to a full width",
+			"kairos-upgrade-ip-10-27-39-167.eu-west-1.compute.internal", jobNameLimit,
+			"kairos-upgrade-ip-10-27-39-167.eu-west-1.com-00000b36be95"),
+		Entry("pads a hash below 2^48 to a full width",
+			"kairos-upgrade-ip-10-39-37-195.eu-west-1.compute.internal", jobNameLimit,
+			"kairos-upgrade-ip-10-39-37-195.eu-west-1.com-0000021b1316"),
+		Entry("pads a hash below 2^44 to a full width",
+			"kairos-upgrade-ip-10-69-245-77.eu-west-1.compute.internal", jobNameLimit,
+			"kairos-upgrade-ip-10-69-245-77.eu-west-1.com-000006cf897d"),
+
+		// A label may not start with the separator the cut would leave behind,
+		// so the trailing "." or "-" goes before the hash is appended.
+		Entry("drops a trailing dot left by the cut",
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.eu-west-1.compute.internal", jobNameLimit,
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-10eedb7039b5"),
+		Entry("drops a trailing hyphen left by the cut",
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaa.eu-west-1.compute.internal", jobNameLimit,
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaa.eu-west-d99be9916da1"),
+		Entry("keeps a cut that lands on a normal character",
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.eu-west-1.compute.internal", jobNameLimit,
+			"os-upgrade-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0cf68d652209"),
+
+		// Nothing is left of the prefix once the separators are trimmed.
+		Entry("returns the bare hash when the prefix trims away",
+			"--------------------------------------------------", jobNameLimit,
+			"c71fded56eae"),
 	)
-
-	// The cut lands on the "." after the region, and a label may not start
-	// with the hyphen that follows it.
-	It("does not end the prefix on a separator", func() {
-		name := "os-upgrade-v372-ip-172-31-255-254.us-east-2.compute.internal"
-		got := utils.TruncateNameWithHash(name, jobNameLimit)
-		Expect(got).To(MatchRegexp(dns1123Subdomain.String()))
-	})
-
-	It("returns a valid resource name for every offset of a hostname", func() {
-		for i := 1; i < 40; i++ {
-			name := "os-upgrade-" + repeat("a", i) + ".eu-west-1.compute.internal"
-			got := utils.TruncateNameWithHash(name, jobNameLimit)
-			Expect(len(got)).To(BeNumerically("<=", jobNameLimit), "name %q", name)
-			Expect(dns1123Subdomain.MatchString(got)).To(BeTrue(), "name %q became %q", name, got)
-		}
-	})
 })
-
-func repeat(s string, n int) string {
-	out := ""
-	for i := 0; i < n; i++ {
-		out += s
-	}
-	return out
-}

@@ -37,10 +37,6 @@ func TruncateNameWithHash(name string, maxLength int) string {
 	h.Write([]byte(name))
 	hash := fmt.Sprintf("%016x", h.Sum64())[:12] // Take first 12 chars of hex
 
-	if prefixLength < 1 {
-		return hash
-	}
-
 	prefix := strings.TrimRight(name[:prefixLength], "-.")
 	if prefix == "" {
 		return hash
