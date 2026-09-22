@@ -350,6 +350,15 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		return err
 	}
 
+	// The grace period is a property of the DELETE request, so it travels as a
+	// client.DeleteOption. A negative value means "use the grace period the Pod
+	// declares", which is what the API server applies to a request that carries
+	// no grace period.
+	var deleteOpts []client.DeleteOption
+	if drainOptions.GracePeriodSeconds != nil && *drainOptions.GracePeriodSeconds >= 0 {
+		deleteOpts = append(deleteOpts, client.GracePeriodSeconds(int64(*drainOptions.GracePeriodSeconds)))
+	}
+
 	// Filter pods that are on this node
 	for _, pod := range podList.Items {
 		// Skip pods that are not on this node
@@ -408,16 +417,8 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			}
 		}
 
-		// Set deletion grace period if specified
-		if drainOptions.GracePeriodSeconds != nil {
-			gracePeriod := int64(*drainOptions.GracePeriodSeconds)
-			if gracePeriod >= 0 {
-				pod.DeletionGracePeriodSeconds = &gracePeriod
-			}
-		}
-
 		// Delete the pod
-		if err := r.Delete(ctx, &pod); err != nil {
+		if err := r.Delete(ctx, &pod, deleteOpts...); err != nil {
 			log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
 			return err
 		}
