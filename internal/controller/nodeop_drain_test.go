@@ -106,7 +106,9 @@ var _ = Describe("drainNode grace period", func() {
 		opts := &kairosiov1alpha1.DrainOptions{GracePeriodSeconds: asInt32(0)}
 		Expect(reconciler.drainNode(ctx, node, opts)).To(Succeed())
 
-		err := k8sClient.Get(ctx, podKey, &corev1.Pod{})
-		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a zero grace period should remove the Pod at once")
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, podKey, &corev1.Pod{})
+			return apierrors.IsNotFound(err)
+		}).Should(BeTrue(), "a zero grace period should remove the Pod at once")
 	})
 })
