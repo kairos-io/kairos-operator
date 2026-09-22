@@ -3529,6 +3529,44 @@ var _ = Describe("NodeOp Controller - Preflight", func() {
 			"the preflight Pod must be deleted once the controller decides to proceed with the main Job")
 	})
 
+	It("keeps the preflight failure reason on later reconciles", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Image:   preflightCtxImage,
+				Command: []string{"echo", "test"},
+				Preflight: &kairosiov1alpha1.PreflightSpec{
+					Command: []string{"/bin/sh", "-c", "exit 5"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		reconcileOnce()
+		pods := listPreflightPods()
+		Expect(pods).NotTo(BeEmpty())
+
+		By("Marking the first preflight Pod as PodFailed")
+		failPreflight(&pods[0])
+		reconcileOnce()
+
+		failedNode := pods[0].Spec.NodeName
+		recorded := getNodeOp().Status.NodeStatuses[failedNode]
+		Expect(recorded.Phase).To(Equal("Failed"))
+		Expect(recorded.JobName).To(BeEmpty())
+		Expect(recorded.Message).To(ContainSubstring("Preflight failed"))
+
+		By("Reconciling again, as the 5 minute resync does")
+		reconcileOnce()
+		reconcileOnce()
+
+		after := getNodeOp().Status.NodeStatuses[failedNode]
+		Expect(after.Phase).To(Equal("Failed"))
+		Expect(after.Message).To(Equal(recorded.Message),
+			"a node that failed preflight has no Job, so nothing may replace its reason with a Job verdict")
+		Expect(getNodeOp().Status.Phase).To(Equal("Failed"))
+	})
+
 	It("marks a node Failed when its preflight Pod ends up in PodFailed", func() {
 		nodeOp := &kairosiov1alpha1.NodeOp{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},

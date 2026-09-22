@@ -717,6 +717,16 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			completedNodes++
 			continue
 		}
+		// Failed-by-preflight nodes are terminal as well, and they have no Job
+		// either. processJobStatus would Get a Job named "" and take that for a
+		// deleted Job, replacing the preflight reason with "Job not found".
+		if status.Phase == phaseFailed && status.JobName == "" {
+			anyFailed = true
+			if err := r.uncordonAfterFailure(ctx, nodeOp, nodeName); err != nil {
+				return err
+			}
+			continue
+		}
 
 		status, err = r.processJobStatus(ctx, nodeOp, nodeName, status)
 		if err != nil {
@@ -748,16 +758,8 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		if status.Phase == phaseFailed {
 			anyFailed = true
 
-			// Uncordon the node when the operation failed, if opted in. The
-			// uncordonNode helper only acts on nodes this NodeOp cordoned, so
-			// out-of-band cordons are left alone. Failed jobs do not reboot, so it
-			// is safe to uncordon now.
-			if getBool(nodeOp.Spec.Cordon, CordonDefault) &&
-				getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault) {
-				if err := r.uncordonNode(ctx, nodeOp, nodeName); err != nil {
-					log.Error(err, "Failed to uncordon node after job failure", "node", nodeName)
-					return err
-				}
+			if err := r.uncordonAfterFailure(ctx, nodeOp, nodeName); err != nil {
+				return err
 			}
 		}
 
@@ -791,6 +793,22 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		return err
 	}
 
+	return nil
+}
+
+// uncordonAfterFailure uncordons a node whose operation failed, when the
+// NodeOp opted into it. The uncordonNode helper only acts on nodes this NodeOp
+// cordoned, so out-of-band cordons are left alone. A failed node does not
+// reboot, so it is safe to uncordon now.
+func (r *NodeOpReconciler) uncordonAfterFailure(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
+	if !getBool(nodeOp.Spec.Cordon, CordonDefault) ||
+		!getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault) {
+		return nil
+	}
+	if err := r.uncordonNode(ctx, nodeOp, nodeName); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to uncordon node after failure", "node", nodeName)
+		return err
+	}
 	return nil
 }
 
