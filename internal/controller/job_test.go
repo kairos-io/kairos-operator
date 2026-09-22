@@ -684,6 +684,39 @@ var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/test-artifact.iso /artifacts/test-artifact.iso.sha256"))
 		})
 	})
+
+	// The mirror of the case above: the collision can be reached from the
+	// other side too, by moving the unsigned ISO onto the default UKI
+	// basename instead of moving the UKI ISO onto the unsigned one.
+	// nameOverride.uki stays empty, so validateArtifactSpec, which only
+	// rejects nameOverride.uki == nameOverride.iso, does not see it either.
+	When("nameOverride.iso resolves to the default UKI basename", func() {
+		It("keeps the source ISO, because it is the UKI ISO", func() {
+			a := artifact()
+			a.Spec.NameOverride.ISO = "test-artifact-uki"
+			Expect(ukiArtifactName(a)).To(Equal("test-artifact-uki"))
+			c := makeNetbootContainer("tool", a, nil, &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("/artifacts/test-artifact-uki.iso /artifacts"))
+			Expect(c.Args[0]).ToNot(ContainSubstring("rm -f"))
+		})
+
+		It("still removes it when the names differ", func() {
+			a := artifact()
+			a.Spec.NameOverride.ISO = nameOverride
+			c := makeNetbootContainer("tool", a, nil, &buildv1alpha2.ArtifactSpec{
+				ISO:     false,
+				Netboot: true,
+				UKI:     &buildv1alpha2.UKISpec{ISO: true, KeysVolume: "keys"},
+			})
+			Expect(c.Args).To(HaveLen(1))
+			Expect(c.Args[0]).To(ContainSubstring("&& rm -f /artifacts/" + nameOverride + ".iso /artifacts/" + nameOverride + ".iso.sha256"))
+		})
+	})
 })
 
 var _ = Describe("buildUKICommand", func() {
