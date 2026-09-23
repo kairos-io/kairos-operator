@@ -356,6 +356,14 @@ func (r *NodeOpUpgradeReconciler) updateStatusFromNodeOp(ctx context.Context,
 		statusChanged = true
 	}
 
+	// Reconcile writes nodeOpName only on the branch that creates the NodeOp,
+	// so a status update lost between Create and here would leave it empty for
+	// good. Mirror it alongside the rest of the status instead.
+	if nodeOpUpgrade.Status.NodeOpName != nodeOp.Name {
+		nodeOpUpgrade.Status.NodeOpName = nodeOp.Name
+		statusChanged = true
+	}
+
 	if nodeOpUpgrade.Status.NodeStatuses == nil {
 		nodeOpUpgrade.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
 	}
