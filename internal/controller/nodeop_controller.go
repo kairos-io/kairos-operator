@@ -658,9 +658,15 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		return err
 	}
 
-	actualJobName := job.Name
+	return r.recordJobStarted(ctx, nodeOp, node.Name, job.Name)
+}
 
-	// Initialize node status
+// recordJobStarted records that nodeName is now running jobName. It is the
+// only place that writes the initial NodeStatus for a node, so an adopted Job
+// and a freshly created one are recorded identically.
+func (r *NodeOpReconciler) recordJobStarted(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
+	log := logf.FromContext(ctx)
+
 	if nodeOp.Status.NodeStatuses == nil {
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
 	}
@@ -671,9 +677,9 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		rebootStatus = rebootStatusPending
 	}
 
-	nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+	nodeOp.Status.NodeStatuses[nodeName] = kairosiov1alpha1.NodeStatus{
 		Phase:        phasePending,
-		JobName:      actualJobName,
+		JobName:      jobName,
 		Message:      "Job created",
 		RebootStatus: rebootStatus,
 		LastUpdated:  metav1.Now(),
@@ -687,8 +693,8 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 
 	log.Info("Created Job for node",
 		"nodeOp", nodeOp.Name,
-		"node", node.Name,
-		"job", actualJobName)
+		"node", nodeName,
+		"job", jobName)
 
 	return nil
 }
@@ -1236,11 +1242,12 @@ done`,
 	return nil
 }
 
-// cleanupRebootPodForNode removes the reboot pod for a failed job
-func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
+// rebootPodsForNode returns the reboot Pods this NodeOp owns for a node.
+// There is normally at most one; a list is returned so callers can clean up
+// after an operator version that could leave more than one behind.
+func (r *NodeOpReconciler) rebootPodsForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) ([]corev1.Pod, error) {
 	log := logf.FromContext(ctx)
 
-	// Get the reboot pod for the failed job
 	podList := &corev1.PodList{}
 	err := r.List(
 		ctx, podList,
@@ -1253,14 +1260,26 @@ func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *
 	)
 	if err != nil {
 		log.Error(err, "Failed to list reboot pods", "node", nodeName)
+		return nil, err
+	}
+
+	return podList.Items, nil
+}
+
+// cleanupRebootPodForNode removes the reboot pods for a node
+func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
+	log := logf.FromContext(ctx)
+
+	pods, err := r.rebootPodsForNode(ctx, nodeOp, nodeName)
+	if err != nil {
 		return err
 	}
 
-	if len(podList.Items) > 0 {
-		pod := podList.Items[0]
-		log.Info("Deleting reboot pod for failed job", "node", nodeName, "pod", pod.Name)
-		if err := r.Delete(ctx, &pod); err != nil {
-			log.Error(err, "Failed to delete reboot pod for failed job", "node", nodeName)
+	for i := range pods {
+		pod := pods[i]
+		log.Info("Deleting reboot pod", "node", nodeName, "pod", pod.Name)
+		if err := r.Delete(ctx, &pod); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete reboot pod", "node", nodeName)
 			return err
 		}
 	}
@@ -1270,26 +1289,13 @@ func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *
 
 // isRebootPodCompleted checks if the reboot pod for a node is completed
 func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (bool, error) {
-	log := logf.FromContext(ctx)
-
-	// Get the reboot pod for the node
-	podList := &corev1.PodList{}
-	err := r.List(
-		ctx, podList,
-		client.InNamespace(nodeOp.Namespace),
-		client.MatchingLabels(map[string]string{
-			labelKeyNodeOp: nodeOp.Name,
-			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
-			labelKeyNode:   nodeName,
-		}),
-	)
+	// Get the reboot pods for the node
+	pods, err := r.rebootPodsForNode(ctx, nodeOp, nodeName)
 	if err != nil {
-		log.Error(err, "Failed to list reboot pods", "node", nodeName)
 		return false, err
 	}
 
-	if len(podList.Items) > 0 {
-		pod := podList.Items[0]
+	for _, pod := range pods {
 		// Check if pod has succeeded AND has the reboot completion annotation
 		if pod.Status.Phase == corev1.PodSucceeded {
 			if rebootState, exists := pod.Annotations["kairos.io/reboot-state"]; exists && rebootState == rebootStatusCompleted {
@@ -1499,16 +1505,69 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 // the active Job's sentinel-creator. Unique per-run names eliminate that
 // ambiguity (so the cleanup pass is gone).
 func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	log := logf.FromContext(ctx)
+
+	// A node only reaches this function while it has no NodeStatus entry, so an
+	// earlier attempt may have created children and then returned before the
+	// status was written: a drain that could not evict a Pod, a Job rejected by
+	// quota or admission, a conflicting status update. Adopt what that attempt
+	// left behind instead of starting a second copy of the same work, the way
+	// startPreflight already does for the preflight Pod.
+	existingJob, err := r.findNodeJob(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
+	}
+	if existingJob != nil {
+		log.Info("Adopting the Job an earlier attempt left for this node",
+			"nodeOp", nodeOp.Name, "node", node.Name, "job", existingJob.Name)
+		return r.recordJobStarted(ctx, nodeOp, node.Name, existingJob.Name)
+	}
+
 	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
 	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
 	jobName := jobBaseName + "-" + rand.String(5)
 
 	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
+		// There is no Job for this node, so any reboot Pod still around watches
+		// for the sentinel of a Job that was never created. It can never finish,
+		// and nothing else deletes it while the node has no NodeStatus entry.
+		if err := r.cleanupRebootPodForNode(ctx, nodeOp, node.Name); err != nil {
+			return err
+		}
 		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
 			return err
 		}
 	}
 	return r.createNodeJob(ctx, nodeOp, node, jobName)
+}
+
+// findNodeJob returns the Job this NodeOp owns for a node, or nil. A NodeOp
+// recreated under the same name is a different owner, so Jobs left by the
+// previous one (still being garbage collected) are not adopted.
+func (r *NodeOpReconciler) findNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (*batchv1.Job, error) {
+	log := logf.FromContext(ctx)
+
+	jobList := &batchv1.JobList{}
+	err := r.List(
+		ctx, jobList,
+		client.InNamespace(nodeOp.Namespace),
+		client.MatchingLabels(map[string]string{
+			labelKeyNodeOp: nodeOp.Name,
+			labelKeyNode:   nodeName,
+		}),
+	)
+	if err != nil {
+		log.Error(err, "Failed to list Jobs for node", "node", nodeName)
+		return nil, err
+	}
+
+	for i := range jobList.Items {
+		if metav1.IsControlledBy(&jobList.Items[i], nodeOp) {
+			return &jobList.Items[i], nil
+		}
+	}
+
+	return nil, nil
 }
 
 // hasFailedJobs checks if any jobs have failed
