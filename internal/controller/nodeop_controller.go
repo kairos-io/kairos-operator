@@ -729,19 +729,27 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 			continue
 		}
 
-		status, err = r.processJobStatus(ctx, nodeOp, nodeName, status)
-		if err != nil {
-			return err
-		}
+		// A node that has reached a terminal outcome is a record of what
+		// happened, not a projection of a live object. Re-deriving it rewrites
+		// that record as soon as the finished Job is pruned: the Jobs carry no
+		// ttlSecondsAfterFinished and live as long as the NodeOp does, so
+		// cleaning them up is ordinary housekeeping, and processJobStatus reads
+		// a missing Job as a failure.
+		if !isTerminalNodeStatus(status) {
+			status, err = r.processJobStatus(ctx, nodeOp, nodeName, status)
+			if err != nil {
+				return err
+			}
 
-		// Process reboot status
-		status, err = r.processRebootStatus(ctx, nodeOp, nodeName, status)
-		if err != nil {
-			return err
-		}
+			// Process reboot status
+			status, err = r.processRebootStatus(ctx, nodeOp, nodeName, status)
+			if err != nil {
+				return err
+			}
 
-		// Update the status map with any changes
-		nodeOp.Status.NodeStatuses[nodeName] = status
+			// Update the status map with any changes
+			nodeOp.Status.NodeStatuses[nodeName] = status
+		}
 
 		// Handle uncordoning for completed nodes
 		if status.Phase == phaseCompleted && getBool(nodeOp.Spec.Cordon, CordonDefault) {
@@ -811,6 +819,28 @@ func (r *NodeOpReconciler) uncordonAfterFailure(ctx context.Context, nodeOp *kai
 		return err
 	}
 	return nil
+}
+
+// isTerminalNodeStatus reports whether a node's recorded outcome is final, so
+// that neither processJobStatus nor processRebootStatus has anything left to
+// contribute for it.
+//
+// Completed and Failed only count as final once the reboot side has settled:
+// processRebootStatus still has to watch the reboot Pod finish for a Completed
+// node, and still has to cancel the reboot and remove that Pod for a Failed
+// one. Both of those move RebootStatus away from "pending".
+func isTerminalNodeStatus(status kairosiov1alpha1.NodeStatus) bool {
+	if status.Phase != phaseCompleted && status.Phase != phaseFailed {
+		return false
+	}
+
+	// An empty RebootStatus has not been initialised yet, which is
+	// processRebootStatus's first job.
+	switch status.RebootStatus {
+	case "", rebootStatusPending:
+		return false
+	}
+	return true
 }
 
 // processJobStatus processes the job status for a specific node
