@@ -195,14 +195,14 @@ func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namesp
 		},
 		Subjects: []rbacv1.Subject{
 			{
-				Kind:      "ServiceAccount",
+				Kind:      kindServiceAccount,
 				Name:      nodeLabelerServiceAccount,
 				Namespace: namespace,
 			},
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacAPIGroup,
+			Kind:     kindClusterRole,
 			Name:     nodeLabelerServiceAccount,
 		},
 	}

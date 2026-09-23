@@ -1382,10 +1382,12 @@ var _ = Describe("NodeOp Controller", func() {
 				Namespace: "default",
 			}, sa)).To(Succeed())
 
-			// Verify cluster role binding was created
+			// Verify cluster role binding was created. The name carries the
+			// namespace because ClusterRoleBindings are cluster-scoped while
+			// NodeOps are not.
 			crb := &rbacv1.ClusterRoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: fmt.Sprintf("nodeop-reboot-%s", rebootNodeOp.Name),
+				Name: rebootClusterRoleBindingName(rebootNodeOp),
 			}, crb)).To(Succeed())
 			Expect(crb.Subjects).To(HaveLen(1))
 			Expect(crb.Subjects[0].Name).To(Equal(fmt.Sprintf("%s-reboot", rebootNodeOp.Name)))
@@ -4108,5 +4110,158 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 			Expect(jobList.Items[0].Spec.Template.Spec.InitContainers[0].Resources.Requests).To(Equal(reqs.Requests))
 			Expect(jobList.Items[0].Spec.Template.Spec.InitContainers[0].Resources.Limits).To(Equal(reqs.Limits))
 		})
+	})
+})
+
+var _ = Describe("NodeOp Controller - reboot RBAC across namespaces", func() {
+	var (
+		ctx        context.Context
+		reconciler *NodeOpReconciler
+		nodeOpName string
+		nsA, nsB   string
+	)
+
+	// rebootGrantExists reports whether some ClusterRoleBinding to the
+	// nodeop-reboot ClusterRole lists this NodeOp's reboot ServiceAccount as a
+	// subject. That is the permission the reboot Pod actually needs in order to
+	// annotate itself with kairos.io/reboot-state, which is how the controller
+	// learns the reboot happened.
+	rebootGrantExists := func(nodeOp *kairosiov1alpha1.NodeOp) bool {
+		crbList := &rbacv1.ClusterRoleBindingList{}
+		Expect(k8sClient.List(ctx, crbList)).To(Succeed())
+		for _, crb := range crbList.Items {
+			if crb.RoleRef.Name != "nodeop-reboot" {
+				continue
+			}
+			for _, s := range crb.Subjects {
+				if s.Kind == kindServiceAccount &&
+					s.Name == fmt.Sprintf("%s-reboot", nodeOp.Name) &&
+					s.Namespace == nodeOp.Namespace {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	newNodeOp := func(namespace string) *kairosiov1alpha1.NodeOp {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      nodeOpName,
+				Namespace: namespace,
+			},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Command:         []string{"echo", "test"},
+				RebootOnSuccess: asBool(true),
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+		return nodeOp
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		reconciler = &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		stamp := time.Now().UnixNano()
+		nodeOpName = fmt.Sprintf("shared-upgrade-%d", stamp)
+		nsA = fmt.Sprintf("crb-ns-a-%d", stamp)
+		nsB = fmt.Sprintf("crb-ns-b-%d", stamp)
+		for _, ns := range []string{nsA, nsB} {
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: ns},
+			})).To(Succeed())
+		}
+	})
+
+	It("grants every same-named NodeOp its own namespace's reboot ServiceAccount", func() {
+		opA := newNodeOp(nsA)
+		opB := newNodeOp(nsB)
+
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opA)).To(Succeed())
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opB)).To(Succeed())
+
+		Expect(rebootGrantExists(opA)).To(BeTrue(),
+			"the NodeOp in the first namespace must be able to patch its reboot Pod")
+		Expect(rebootGrantExists(opB)).To(BeTrue(),
+			"a NodeOp that shares its name with one in another namespace must get its own grant, "+
+				"otherwise its reboot Pod cannot annotate itself and the NodeOp never leaves Running")
+	})
+
+	It("cleans up the namespace-less ClusterRoleBinding left by an older operator", func() {
+		opA := newNodeOp(nsA)
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opA)).To(Succeed())
+
+		legacy := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: legacyRebootClusterRoleBindingName(opA)},
+			Subjects: []rbacv1.Subject{{
+				Kind:      kindServiceAccount,
+				Name:      rebootServiceAccountName(opA),
+				Namespace: nsA,
+			}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacAPIGroup,
+				Kind:     kindClusterRole,
+				Name:     rebootClusterRoleName,
+			},
+		}
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, opA)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: opA.Name, Namespace: nsA}, opA)).To(Succeed())
+		_, err := reconciler.handleDeletion(ctx, opA)
+		Expect(err).NotTo(HaveOccurred())
+
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: legacy.Name}, &rbacv1.ClusterRoleBinding{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"a legacy binding whose only subject is this NodeOp must not outlive it")
+	})
+
+	It("leaves a namespace-less ClusterRoleBinding that grants another namespace alone", func() {
+		opA := newNodeOp(nsA)
+		opB := newNodeOp(nsB)
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opA)).To(Succeed())
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opB)).To(Succeed())
+
+		// The legacy binding is named after opB too, but it grants nsA: that is
+		// exactly the collision the namespaced name fixes, and deleting opB must
+		// not revoke nsA's only grant.
+		legacy := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: legacyRebootClusterRoleBindingName(opB)},
+			Subjects: []rbacv1.Subject{{
+				Kind:      kindServiceAccount,
+				Name:      rebootServiceAccountName(opA),
+				Namespace: nsA,
+			}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacAPIGroup,
+				Kind:     kindClusterRole,
+				Name:     rebootClusterRoleName,
+			},
+		}
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, opB)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: opB.Name, Namespace: nsB}, opB)).To(Succeed())
+		_, err := reconciler.handleDeletion(ctx, opB)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(rebootGrantExists(opA)).To(BeTrue())
+	})
+
+	It("keeps a same-named NodeOp in another namespace granted when one is deleted", func() {
+		opA := newNodeOp(nsA)
+		opB := newNodeOp(nsB)
+
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opA)).To(Succeed())
+		Expect(reconciler.ensureNodeOpServiceAccount(ctx, opB)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, opA)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: opA.Name, Namespace: nsA}, opA)).To(Succeed())
+		_, err := reconciler.handleDeletion(ctx, opA)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(rebootGrantExists(opB)).To(BeTrue(),
+			"deleting a NodeOp must not revoke the reboot grant of a same-named NodeOp elsewhere")
 	})
 })
