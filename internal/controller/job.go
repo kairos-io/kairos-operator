@@ -734,7 +734,7 @@ func lookupArtifactsPVC(ctx context.Context, cl client.Client, artifact *buildv1
 	var pvcs corev1.PersistentVolumeClaimList
 	if err := cl.List(ctx, &pvcs, &client.ListOptions{
 		Namespace:     artifact.Namespace,
-		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+		LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifactLabelValue(artifact)}),
 	}); err != nil {
 		return nil, err
 	}
