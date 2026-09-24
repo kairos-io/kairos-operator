@@ -579,10 +579,30 @@ func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
 	return ""
 }
 
+// pruneSourceISO reports whether the ISO netboot extracted from is an
+// intermediate the user never asked for, and can be deleted.
+//
+// The test is on the resolved basenames, not on the artifact flags: netboot
+// always reads the unsigned ISO (see isoBasenameForNetboot), while build-uki
+// normally writes to a different basename (<name>-uki).
+//
+// The source ISO must be kept only when the resolved UKI ISO basename equals
+// the unsigned ISO basename (i.e. both builds write /artifacts/<base>.iso due to name overrides).
+func pruneSourceISO(artifact *buildv1alpha2.OSArtifact, artifacts *buildv1alpha2.ArtifactSpec) bool {
+	if artifacts == nil || artifacts.ISO {
+		return false
+	}
+	if artifacts.UKI != nil && artifacts.UKI.ISO &&
+		ukiArtifactName(artifact) == isoBasenameForNetboot(artifact) {
+		return false
+	}
+	return true
+}
+
 func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, mounts []corev1.VolumeMount, artifacts *buildv1alpha2.ArtifactSpec) corev1.Container {
 	isoBasename := isoBasenameForNetboot(artifact)
 	baseName := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindNetboot)
-	removeSourceISO := artifacts != nil && !artifacts.ISO && (artifacts.UKI == nil || !artifacts.UKI.ISO)
+	removeSourceISO := pruneSourceISO(artifact, artifacts)
 
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
