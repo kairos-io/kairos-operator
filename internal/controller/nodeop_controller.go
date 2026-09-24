@@ -52,6 +52,15 @@ const (
 	// semantic label like "kairos.io/managed"). Other Kairos components are not
 	// expected to read it.
 	cordonedByAnnotation = "operator.kairos.io/cordoned-by"
+	// Annotation the reboot Pod patches onto itself immediately before it calls
+	// reboot. Its presence proves the reboot was issued; it says nothing about
+	// whether the host came back.
+	rebootStateAnnotation = "kairos.io/reboot-state"
+	// Annotation recording the node's boot ID as it was when the reboot Pod was
+	// created. The kubelet rewrites status.nodeInfo.bootID on every boot, so a
+	// node reporting a different boot ID has rebooted since, which is evidence
+	// that survives the reboot Pod never running again.
+	preRebootBootIDAnnotation = "operator.kairos.io/pre-reboot-boot-id"
 	// Reboot status constants
 	rebootStatusNotRequested = "not-requested"
 	rebootStatusCancelled    = "cancelled"
@@ -1084,8 +1093,9 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 // full name (not just the jobBaseName prefix) so the watch pattern
 // "<jobName>-*" matches exactly one Job's sentinel — see startMainJob for the
 // rationale.
-func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, jobName string) error {
 	log := logf.FromContext(ctx)
+	nodeName := node.Name
 
 	// Ensure service account for reboot pod
 	if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
@@ -1103,10 +1113,20 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
 	rebootPrefix := utils.TruncateNameWithHash(nodeOp.Name+"-reboot", utils.KubernetesNameLengthLimit-6) + "-"
 
+	// Record the boot ID the node reports now, so that after the reboot the
+	// controller can tell "the host came back" from "the reboot Pod is stuck".
+	// An empty boot ID simply leaves the annotation off and the fallback
+	// unavailable; it is never treated as a reboot.
+	var podAnnotations map[string]string
+	if bootID := node.Status.NodeInfo.BootID; bootID != "" {
+		podAnnotations = map[string]string{preRebootBootIDAnnotation: bootID}
+	}
+
 	rebootPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: rebootPrefix,
 			Namespace:    nodeOp.Namespace,
+			Annotations:  podAnnotations,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
 				labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
@@ -1290,15 +1310,74 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 
 	if len(podList.Items) > 0 {
 		pod := podList.Items[0]
-		// Check if pod has succeeded AND has the reboot completion annotation
-		if pod.Status.Phase == corev1.PodSucceeded {
-			if rebootState, exists := pod.Annotations["kairos.io/reboot-state"]; exists && rebootState == rebootStatusCompleted {
-				return true, nil
-			}
+		// The Pod patches this annotation onto itself in the moment between
+		// deleting the sentinel and calling reboot, so without it nothing was
+		// ever asked to reboot.
+		if pod.Annotations[rebootStateAnnotation] != rebootStatusCompleted {
+			return false, nil
 		}
+
+		// The happy path: the container ran again after the host came back, saw
+		// its own annotation and exited 0.
+		if pod.Status.Phase == corev1.PodSucceeded {
+			return true, nil
+		}
+
+		// The Pod may never run again on the rebooted node: an upgrade that
+		// moves the kubelet outside the apiserver's version skew window leaves
+		// it unable to start any new container ("services have not yet been
+		// read at least once"), and a Pod stuck that way would hold the
+		// operation at rebootStatus=pending and the node cordoned forever.
+		// Ask the node itself instead.
+		rebooted, err := r.nodeRebootedSince(ctx, nodeName, pod.Annotations[preRebootBootIDAnnotation])
+		if err != nil {
+			return false, err
+		}
+		if rebooted {
+			log.Info("Node reports a new boot ID, accepting the reboot as done even though its reboot pod did not run again",
+				"node", nodeName,
+				"pod", pod.Name,
+				"podPhase", pod.Status.Phase)
+		}
+		return rebooted, nil
 	}
 
 	return false, nil
+}
+
+// nodeRebootedSince reports whether nodeName is back up on a different boot
+// than preRebootBootID. The kubelet refreshes status.nodeInfo.bootID on every
+// boot, so this is a level-triggered fact: unlike a Ready=True -> Ready=False
+// -> Ready=True transition it cannot be missed between two reconciles. The node
+// must also be Ready, so that a node observed mid-reboot is not called done.
+func (r *NodeOpReconciler) nodeRebootedSince(ctx context.Context, nodeName, preRebootBootID string) (bool, error) {
+	if preRebootBootID == "" {
+		return false, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if node.Status.NodeInfo.BootID == "" || node.Status.NodeInfo.BootID == preRebootBootID {
+		return false, nil
+	}
+
+	return isNodeReady(node), nil
+}
+
+// isNodeReady reports whether the node's Ready condition is currently True.
+func isNodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // handleDeletion handles the finalization process when a NodeOp is being deleted
@@ -1504,7 +1583,7 @@ func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1a
 	jobName := jobBaseName + "-" + rand.String(5)
 
 	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
+		if err := r.createRebootPod(ctx, nodeOp, node, jobName); err != nil {
 			return err
 		}
 	}
