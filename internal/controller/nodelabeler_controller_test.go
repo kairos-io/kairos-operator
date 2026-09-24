@@ -172,5 +172,102 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(initialJobCount))
 		})
+
+		It("should replace a job that failed, so the node is labeled on a retry", func() {
+			controllerReconciler := &NodeLabelerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			selector := client.MatchingLabels(map[string]string{
+				"node": nodeName,
+				"app":  "kairos-node-labeler",
+			})
+
+			By("Reconciling the node to create the first job")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: nodeName,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"), selector)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			firstJob := jobList.Items[0].DeepCopy()
+
+			By("Letting that job exhaust its backoff limit")
+			now := metav1.Now()
+			firstJob.Status.Failed = 1
+			firstJob.Status.StartTime = &now
+			firstJob.Status.Conditions = []batchv1.JobCondition{
+				{
+					Type:               batchv1.JobFailureTarget,
+					Status:             corev1.ConditionTrue,
+					Reason:             "BackoffLimitExceeded",
+					LastProbeTime:      now,
+					LastTransitionTime: now,
+				},
+				{
+					Type:               batchv1.JobFailed,
+					Status:             corev1.ConditionTrue,
+					Reason:             "BackoffLimitExceeded",
+					LastProbeTime:      now,
+					LastTransitionTime: now,
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, firstJob)).To(Succeed())
+
+			By("Reconciling the node again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: nodeName,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Expecting a fresh job, not the failed one")
+			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"), selector)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(jobList.Items[0].UID).NotTo(Equal(firstJob.UID))
+			Expect(jobList.Items[0].Status.Conditions).To(BeEmpty())
+		})
+
+		It("should not touch a job that is still running", func() {
+			controllerReconciler := &NodeLabelerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			selector := client.MatchingLabels(map[string]string{
+				"node": nodeName,
+				"app":  "kairos-node-labeler",
+			})
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: nodeName,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"), selector)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			running := jobList.Items[0].DeepCopy()
+
+			running.Status.Active = 1
+			Expect(k8sClient.Status().Update(ctx, running)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: nodeName,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.List(ctx, jobList, client.InNamespace("default"), selector)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(jobList.Items[0].UID).To(Equal(running.UID))
+		})
 	})
 })
