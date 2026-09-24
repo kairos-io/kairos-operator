@@ -65,11 +65,12 @@ func ownedByDaemonSet(pod *corev1.Pod) {
 func onAnotherNode(pod *corev1.Pod) { pod.Spec.NodeName = "node-b" }
 
 // runDrain drains drainTestNode over a fake client seeded with pods, and
-// returns the drain error plus the names of the pods that survived.
-func runDrain(t *testing.T, opts *kairosiov1alpha1.DrainOptions, pods ...*corev1.Pod) (error, []string) {
+// returns the names of the pods that survived plus the drain error.
+func runDrain(t *testing.T, opts *kairosiov1alpha1.DrainOptions, pods ...*corev1.Pod) ([]string, error) {
 	t.Helper()
 
-	objs := []client.Object{&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: drainTestNode}}}
+	objs := make([]client.Object, 0, 1+len(pods))
+	objs = append(objs, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: drainTestNode}})
 	for _, p := range pods {
 		objs = append(objs, p)
 	}
@@ -94,7 +95,7 @@ func runDrain(t *testing.T, opts *kairosiov1alpha1.DrainOptions, pods ...*corev1
 			t.Fatalf("reading pod %s back: %v", p.Name, err)
 		}
 	}
-	return drainErr, alive
+	return alive, drainErr
 }
 
 func TestDrainRefusesToDestroyEmptyDirData(t *testing.T) {
@@ -105,7 +106,7 @@ func TestDrainRefusesToDestroyEmptyDirData(t *testing.T) {
 	withData := drainTestPod("cache", withEmptyDir)
 	plain := drainTestPod("stateless")
 
-	err, alive := runDrain(t, &kairosiov1alpha1.DrainOptions{}, withData, plain)
+	alive, err := runDrain(t, &kairosiov1alpha1.DrainOptions{}, withData, plain)
 	if err == nil {
 		t.Fatal("expected the drain to be refused, got nil")
 	}
@@ -120,7 +121,7 @@ func TestDrainRefusesToDestroyEmptyDirData(t *testing.T) {
 func TestDrainDeletesEmptyDirDataWhenAllowed(t *testing.T) {
 	withData := drainTestPod("cache", withEmptyDir)
 
-	err, alive := runDrain(t, &kairosiov1alpha1.DrainOptions{DeleteEmptyDirData: asBool(true)}, withData)
+	alive, err := runDrain(t, &kairosiov1alpha1.DrainOptions{DeleteEmptyDirData: asBool(true)}, withData)
 	if err != nil {
 		t.Fatalf("an opted-in drain should succeed, got %v", err)
 	}
@@ -138,7 +139,7 @@ func TestDrainIgnoresEmptyDirOnPodsItWouldNotEvict(t *testing.T) {
 	elsewhere := drainTestPod("other-node-cache", withEmptyDir, onAnotherNode)
 	plain := drainTestPod("stateless")
 
-	err, alive := runDrain(t, &kairosiov1alpha1.DrainOptions{}, daemon, elsewhere, plain)
+	alive, err := runDrain(t, &kairosiov1alpha1.DrainOptions{}, daemon, elsewhere, plain)
 	if err != nil {
 		t.Fatalf("expected the drain to proceed, got %v", err)
 	}
@@ -160,7 +161,7 @@ func TestDrainProceedsWithoutEmptyDirVolumes(t *testing.T) {
 		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "creds"}},
 	}}
 
-	err, alive := runDrain(t, &kairosiov1alpha1.DrainOptions{}, hostPath)
+	alive, err := runDrain(t, &kairosiov1alpha1.DrainOptions{}, hostPath)
 	if err != nil {
 		t.Fatalf("expected the drain to proceed, got %v", err)
 	}
