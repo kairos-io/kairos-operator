@@ -41,6 +41,16 @@ const (
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
+	// Name of the cluster-scoped Role the reboot Pod's ServiceAccount is bound to.
+	rebootClusterRoleName = "nodeop-reboot"
+	// RBAC subject and roleRef spellings, shared by the NodeOp and node-labeler
+	// controllers.
+	rbacAPIGroup       = "rbac.authorization.k8s.io"
+	kindClusterRole    = "ClusterRole"
+	kindServiceAccount = "ServiceAccount"
+	// ClusterRoleBinding names are DNS subdomains, so they get the 253-char
+	// limit rather than the 63-char one that applies to Pods and labels.
+	clusterRoleBindingNameLengthLimit = 253
 	// Annotation marking a node as cordoned by a specific NodeOp.
 	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
 	// unschedulable; including the UID prevents a recreated NodeOp with the same
@@ -996,7 +1006,7 @@ func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	// Create cluster role
 	clusterRole := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "nodeop-reboot",
+			Name: rebootClusterRoleName,
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
@@ -1016,12 +1026,78 @@ func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	return nil
 }
 
+// rebootClusterRoleBindingName returns the name of the ClusterRoleBinding that
+// grants this NodeOp's reboot ServiceAccount the nodeop-reboot ClusterRole.
+//
+// ClusterRoleBindings are cluster-scoped while NodeOps are namespaced, so the
+// name has to carry the namespace too. Without it two NodeOps that share a name
+// in different namespaces - which is exactly what applying the same
+// NodeOpUpgrade manifest to two namespaces produces, since the NodeOp inherits
+// its name - would contend for one binding: the second Create fails with
+// AlreadyExists, the binding keeps listing only the first namespace's
+// ServiceAccount, and the second NodeOp's reboot Pod cannot annotate itself.
+func rebootClusterRoleBindingName(nodeOp *kairosiov1alpha1.NodeOp) string {
+	return utils.TruncateNameWithHash(
+		fmt.Sprintf("%s-%s-%s", rebootClusterRoleName, nodeOp.Namespace, nodeOp.Name),
+		clusterRoleBindingNameLengthLimit,
+	)
+}
+
+// legacyRebootClusterRoleBindingName returns the namespace-less name used
+// before rebootClusterRoleBindingName existed.
+func legacyRebootClusterRoleBindingName(nodeOp *kairosiov1alpha1.NodeOp) string {
+	return fmt.Sprintf("%s-%s", rebootClusterRoleName, nodeOp.Name)
+}
+
+// deleteLegacyRebootClusterRoleBinding removes the namespace-less
+// ClusterRoleBinding a NodeOp created before the name was qualified, so that
+// upgrading the operator does not leak one per NodeOp.
+//
+// It only deletes a binding whose sole subject is this NodeOp's own
+// ServiceAccount. A binding left over from a same-named NodeOp in another
+// namespace is still that NodeOp's only grant, and revoking it would strand a
+// reboot that is already in flight.
+func (r *NodeOpReconciler) deleteLegacyRebootClusterRoleBinding(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	log := logf.FromContext(ctx)
+
+	legacy := &rbacv1.ClusterRoleBinding{}
+	name := legacyRebootClusterRoleBindingName(nodeOp)
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, legacy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		log.Error(err, "Failed to get legacy ClusterRoleBinding", "clusterRoleBinding", name)
+		return err
+	}
+
+	saName := rebootServiceAccountName(nodeOp)
+	if len(legacy.Subjects) != 1 ||
+		legacy.Subjects[0].Name != saName ||
+		legacy.Subjects[0].Namespace != nodeOp.Namespace {
+		log.Info("Leaving legacy ClusterRoleBinding in place, it grants another NodeOp",
+			"clusterRoleBinding", name)
+		return nil
+	}
+
+	if err := r.Delete(ctx, legacy); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "Failed to delete legacy ClusterRoleBinding", "clusterRoleBinding", name)
+		return err
+	}
+	return nil
+}
+
+// rebootServiceAccountName returns the name of the ServiceAccount the reboot
+// Pod runs as. It lives in the NodeOp's own namespace.
+func rebootServiceAccountName(nodeOp *kairosiov1alpha1.NodeOp) string {
+	return fmt.Sprintf("%s-reboot", nodeOp.Name)
+}
+
 // ensureNodeOpServiceAccount creates the service account for a specific NodeOp
 func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
 
 	// Create service account for this NodeOp
-	saName := fmt.Sprintf("%s-reboot", nodeOp.Name)
+	saName := rebootServiceAccountName(nodeOp)
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      saName,
@@ -1040,22 +1116,21 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 	}
 
 	// Create cluster role binding for this NodeOp's service account
-	crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
 	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: crbName,
+			Name: rebootClusterRoleBindingName(nodeOp),
 		},
 		Subjects: []rbacv1.Subject{
 			{
-				Kind:      "ServiceAccount",
+				Kind:      kindServiceAccount,
 				Name:      saName,
 				Namespace: nodeOp.Namespace,
 			},
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     "nodeop-reboot",
+			APIGroup: rbacAPIGroup,
+			Kind:     kindClusterRole,
+			Name:     rebootClusterRoleName,
 		},
 	}
 	if err := r.Create(ctx, clusterRoleBinding); err != nil {
@@ -1196,7 +1271,7 @@ done`,
 				},
 			},
 			RestartPolicy:      corev1.RestartPolicyOnFailure,
-			ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
+			ServiceAccountName: rebootServiceAccountName(nodeOp),
 			// The reboot pod must survive the NotReady/Unreachable window caused
 			// by the very reboot it triggers. Without infinite NoExecute
 			// tolerations, the taint-eviction controller deletes the pod after
@@ -1311,10 +1386,9 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 
 	if controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
 		// Delete the ClusterRoleBinding
-		crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
 		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: crbName,
+				Name: rebootClusterRoleBindingName(nodeOp),
 			},
 		}
 		if err := r.Delete(ctx, clusterRoleBinding); err != nil {
@@ -1322,6 +1396,10 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 				log.Error(err, "Failed to delete ClusterRoleBinding")
 				return false, err
 			}
+		}
+
+		if err := r.deleteLegacyRebootClusterRoleBinding(ctx, nodeOp); err != nil {
+			return false, err
 		}
 
 		// Remove finalizer
