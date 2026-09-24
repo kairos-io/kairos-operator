@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -359,7 +361,10 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		deleteOpts = append(deleteOpts, client.GracePeriodSeconds(int64(*drainOptions.GracePeriodSeconds)))
 	}
 
-	// Filter pods that are on this node
+	// Filter pods that are on this node. Nothing is evicted inside this loop:
+	// the emptyDir guard below has to be able to refuse the whole drain without
+	// having already taken pods down, the way `kubectl drain` does.
+	var podsToEvict []corev1.Pod
 	for _, pod := range podList.Items {
 		// Skip pods that are not on this node
 		if pod.Spec.NodeName != node.Name {
@@ -417,6 +422,23 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			}
 		}
 
+		podsToEvict = append(podsToEvict, pod)
+	}
+
+	// Refuse the drain when it would destroy emptyDir data the operator has not
+	// agreed to lose. This runs after the skip rules above, so a pod the drain
+	// was never going to touch does not block it, and before any eviction, so a
+	// refused drain leaves the node exactly as it found it.
+	if !getBool(drainOptions.DeleteEmptyDirData, DrainDeleteEmptyDirDataDefault) {
+		if withData := podsWithEmptyDirData(podsToEvict); len(withData) > 0 {
+			err := fmt.Errorf("refusing to drain node %s: %w: %s",
+				node.Name, errEmptyDirDataWouldBeLost, strings.Join(withData, ", "))
+			log.Error(err, "Refusing to drain node", "node", node.Name)
+			return err
+		}
+	}
+
+	for _, pod := range podsToEvict {
 		// Delete the pod
 		if err := r.Delete(ctx, &pod, deleteOpts...); err != nil {
 			log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
@@ -426,6 +448,31 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 
 	log.Info("Successfully drained node", "node", node.Name)
 	return nil
+}
+
+// errEmptyDirDataWouldBeLost is the reason a drain is refused when a pod it
+// would evict has an emptyDir volume and DrainOptions.DeleteEmptyDirData is not
+// set. It mirrors `kubectl drain`, which reports "pods with local storage (use
+// --delete-emptydir-data to override)" and aborts rather than evicting them.
+var errEmptyDirDataWouldBeLost = errors.New(
+	"pods with local storage would lose it (set drainOptions.deleteEmptyDirData to true to allow this)")
+
+// podsWithEmptyDirData returns the namespace/name of every pod carrying an
+// emptyDir volume. An emptyDir lives and dies with its pod, so evicting the pod
+// destroys whatever it holds. A memory-backed emptyDir holds nothing across the
+// eviction either way, but kubectl makes no exception for it and neither does
+// this, so the two agree on which pods block a drain.
+func podsWithEmptyDirData(pods []corev1.Pod) []string {
+	var names []string
+	for _, pod := range pods {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.EmptyDir != nil {
+				names = append(names, pod.Namespace+"/"+pod.Name)
+				break
+			}
+		}
+	}
+	return names
 }
 
 // getNodeOpImage returns the image to use for NodeOp containers.
