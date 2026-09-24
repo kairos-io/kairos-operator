@@ -8,6 +8,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,11 +32,14 @@ import (
 )
 
 const (
-	kindNodeOp     = "NodeOp"
-	phasePending   = "Pending"
-	phaseFailed    = "Failed"
-	phaseRunning   = "Running"
-	phaseCompleted = "Completed"
+	kindNodeOp = "NodeOp"
+	// subResourceEviction is the Pod subresource that enforces
+	// PodDisruptionBudgets; a plain DELETE on the Pod does not.
+	subResourceEviction = "eviction"
+	phasePending        = "Pending"
+	phaseFailed         = "Failed"
+	phaseRunning        = "Running"
+	phaseCompleted      = "Completed"
 	// Environment variables for controller pod identification
 	controllerPodNameEnv      = "CONTROLLER_POD_NAME"
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
@@ -97,6 +101,7 @@ type NodeOpReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -335,7 +340,13 @@ func (r *NodeOpReconciler) uncordonNode(ctx context.Context, nodeOp *kairosiov1a
 	return nil
 }
 
-// drainNode evicts all pods from a node
+// drainNode evicts all pods from a node.
+//
+// Eviction goes through the pods/eviction subresource rather than a plain
+// DELETE, because that is the only route the API server checks against a
+// PodDisruptionBudget. A DELETE would drain the node while quietly taking a
+// guarded workload below its budget, which is exactly what an operator that
+// drains node after node has a budget for.
 func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, drainOptions *kairosiov1alpha1.DrainOptions) error {
 	log := logf.FromContext(ctx)
 
@@ -350,13 +361,14 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		return err
 	}
 
-	// The grace period is a property of the DELETE request, so it travels as a
-	// client.DeleteOption. A negative value means "use the grace period the Pod
-	// declares", which is what the API server applies to a request that carries
-	// no grace period.
-	var deleteOpts []client.DeleteOption
+	// The grace period is a property of the deletion the eviction performs, so
+	// it travels inside the Eviction's DeleteOptions. A negative value means
+	// "use the grace period the Pod declares", which is what the API server
+	// applies to a request that carries none.
+	var deleteOptions *metav1.DeleteOptions
 	if drainOptions.GracePeriodSeconds != nil && *drainOptions.GracePeriodSeconds >= 0 {
-		deleteOpts = append(deleteOpts, client.GracePeriodSeconds(int64(*drainOptions.GracePeriodSeconds)))
+		grace := int64(*drainOptions.GracePeriodSeconds)
+		deleteOptions = &metav1.DeleteOptions{GracePeriodSeconds: &grace}
 	}
 
 	// Filter pods that are on this node
@@ -417,10 +429,34 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			}
 		}
 
-		// Delete the pod
-		if err := r.Delete(ctx, &pod, deleteOpts...); err != nil {
-			log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
-			return err
+		// Evict the pod through the eviction subresource, so the API server
+		// weighs the request against any PodDisruptionBudget that covers it.
+		eviction := &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			},
+			DeleteOptions: deleteOptions,
+		}
+		if err := r.SubResource(subResourceEviction).Create(ctx, &pod, eviction); err != nil {
+			switch {
+			case apierrors.IsNotFound(err):
+				// Something else removed the Pod between the List and now,
+				// which is the outcome the drain wanted anyway.
+				continue
+			case apierrors.IsTooManyRequests(err):
+				// A budget covering this Pod has no disruption left. The drain
+				// has to wait rather than take the workload down, so report it
+				// and let the caller requeue.
+				log.Info("Eviction denied by a PodDisruptionBudget, the drain will be retried",
+					"pod", pod.Name,
+					"namespace", pod.Namespace,
+					"reason", err.Error())
+				return err
+			default:
+				log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
+				return err
+			}
 		}
 	}
 
