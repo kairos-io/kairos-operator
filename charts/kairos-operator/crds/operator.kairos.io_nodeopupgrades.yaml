@@ -186,6 +186,10 @@ spec:
             required:
             - image
             type: object
+            x-kubernetes-validations:
+            - message: spec is immutable; delete this NodeOpUpgrade and create a new
+                one to change it
+              rule: self == oldSelf
           status:
             properties:
               lastUpdated:
