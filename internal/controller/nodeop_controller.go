@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -350,6 +352,9 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		return err
 	}
 
+	// Pods this drain asked to leave, waited for once every eviction is issued.
+	evicting := make([]evictedPod, 0, len(podList.Items))
+
 	// The grace period is a property of the DELETE request, so it travels as a
 	// client.DeleteOption. A negative value means "use the grace period the Pod
 	// declares", which is what the API server applies to a request that carries
@@ -422,9 +427,103 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
 			return err
 		}
+
+		evicting = append(evicting, evictedPod{
+			name: types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
+			uid:  pod.UID,
+		})
+	}
+
+	// A pod is not gone when the API server accepts the delete, only when it
+	// has finished terminating. Wait for that before reporting the node
+	// drained, so the caller does not start a Job (and, with RebootOnSuccess, a
+	// reboot) on a node still running the workloads we just asked to leave.
+	// This is the wait drainOptions.timeoutSeconds bounds.
+	if err := r.waitForPodsGone(ctx, node.Name, evicting, drainTimeout(drainOptions)); err != nil {
+		return err
 	}
 
 	log.Info("Successfully drained node", "node", node.Name)
+	return nil
+}
+
+// evictedPod identifies a pod the drain asked to leave. The UID is kept
+// because a controller may recreate a pod under the same namespace/name, and
+// that replacement is not the pod we are waiting for.
+type evictedPod struct {
+	name types.NamespacedName
+	uid  types.UID
+}
+
+// drainTimeout returns how long the drain waits for the pods it evicted. A
+// nil, zero or negative TimeoutSeconds means "use the default", which is what
+// the field's doc comment promises for the unset case. An unbounded wait is
+// deliberately not offered: the drain runs inside a reconcile.
+func drainTimeout(drainOptions *kairosiov1alpha1.DrainOptions) time.Duration {
+	if drainOptions == nil || drainOptions.TimeoutSeconds == nil || *drainOptions.TimeoutSeconds <= 0 {
+		return DrainTimeoutDefault
+	}
+	return time.Duration(*drainOptions.TimeoutSeconds) * time.Second
+}
+
+// waitForPodsGone blocks until every pod the drain evicted has left the node,
+// or until timeout expires. A pod counts as gone when it no longer exists,
+// when the object under its name is a different pod (a recreated one carries a
+// new UID), or when it has been rescheduled onto another node.
+//
+// On expiry it returns an error naming the pods that are still there. The
+// caller treats that as a drain failure and uncordons the node, so a node
+// whose workloads refused to terminate is left alone rather than handed a Job.
+func (r *NodeOpReconciler) waitForPodsGone(
+	ctx context.Context,
+	nodeName string,
+	evicting []evictedPod,
+	timeout time.Duration,
+) error {
+	if len(evicting) == 0 {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+	log.Info("Waiting for evicted pods to terminate",
+		"node", nodeName,
+		"pods", len(evicting),
+		"timeout", timeout)
+
+	var remaining []string
+	err := wait.PollUntilContextTimeout(ctx, drainPollInterval, timeout, true, func(ctx context.Context) (bool, error) {
+		stillThere := make([]string, 0, len(evicting))
+		for _, evicted := range evicting {
+			pod := &corev1.Pod{}
+			if err := r.Get(ctx, evicted.name, pod); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return false, err
+			}
+			// A different pod under the same name, or one that has moved off
+			// this node, is not the pod we are draining.
+			if pod.UID != evicted.uid || pod.Spec.NodeName != nodeName {
+				continue
+			}
+			stillThere = append(stillThere, evicted.name.String())
+		}
+		remaining = stillThere
+		return len(stillThere) == 0, nil
+	})
+	if err != nil {
+		// A reconcile whose context ended is not a drain that ran out of time,
+		// and wait.Interrupted cannot tell the two apart.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if wait.Interrupted(err) {
+			return fmt.Errorf("timed out after %s draining node %s, still terminating: %s",
+				timeout, nodeName, strings.Join(remaining, ", "))
+		}
+		return err
+	}
+
 	return nil
 }
 

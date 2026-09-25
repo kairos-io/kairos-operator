@@ -1,5 +1,7 @@
 package controller
 
+import "time"
+
 // Default values for boolean fields
 const (
 	// NodeOp defaults
@@ -47,3 +49,12 @@ func getBool(ptr *bool, defaultValue bool) bool {
 func asBool(value bool) *bool {
 	return &[]bool{value}[0]
 }
+
+// Drain wait tuning. DrainTimeoutDefault is how long a drain waits for the
+// pods it evicted when drainOptions.timeoutSeconds is unset; it matches the
+// value the shipped NodeOp sample sets. drainPollInterval is how often the
+// wait re-reads those pods.
+const (
+	DrainTimeoutDefault = 5 * time.Minute
+	drainPollInterval   = 2 * time.Second
+)

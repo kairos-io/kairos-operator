@@ -228,8 +228,11 @@ type DrainOptions struct {
 	// +kubebuilder:default=false
 	DeleteEmptyDirData *bool `json:"deleteEmptyDirData,omitempty"`
 
-	// TimeoutSeconds is the length of time to wait before giving up on the drain operation.
-	// If not specified, a default timeout will be used.
+	// TimeoutSeconds is the length of time to wait for the evicted pods to
+	// finish terminating before giving up on the drain operation. When it
+	// expires the drain fails, the node is uncordoned and no operation runs on
+	// it.
+	// If not specified, zero or negative, a default timeout of 5 minutes is used.
 	// +optional
 	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
 }
