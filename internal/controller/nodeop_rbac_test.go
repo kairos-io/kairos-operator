@@ -9,7 +9,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 )
@@ -38,7 +40,7 @@ var _ = Describe("ensureClusterRBAC", func() {
 			stale := &rbacv1.ClusterRole{
 				ObjectMeta: metav1.ObjectMeta{Name: rebootClusterRoleName},
 				Rules: []rbacv1.PolicyRule{
-					{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}},
+					{APIGroups: []string{""}, Resources: []string{rbacResourcePods}, Verbs: []string{rbacVerbGet}},
 				},
 			}
 			cl := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(stale).Build()
@@ -85,7 +87,7 @@ var _ = Describe("ensureClusterRBAC", func() {
 			stale := &rbacv1.ClusterRole{
 				ObjectMeta: metav1.ObjectMeta{Name: rebootClusterRoleName},
 				Rules: []rbacv1.PolicyRule{
-					{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}},
+					{APIGroups: []string{""}, Resources: []string{rbacResourcePods}, Verbs: []string{rbacVerbGet}},
 				},
 			}
 			nodeOp := newNodeOpForRBAC("upgrade", "kairos-system")
@@ -107,3 +109,33 @@ func newNodeOpForRBAC(name, namespace string) *kairosiov1alpha1.NodeOp {
 		},
 	}
 }
+
+var _ = Describe("ensureClusterRBAC before the manager is started", func() {
+	// SetupWithManager converges the ClusterRole while the manager is still
+	// being built, so the read cannot go through the manager's cache: an
+	// unstarted cache answers every Get with ErrCacheNotStarted, and the
+	// caller there is an os.Exit(1). The operator Pod would then crash-loop
+	// and never become ready.
+	It("reads the ClusterRole without the cache the manager has not started", func() {
+		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+			Scheme:  scheme.Scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		reconciler := &NodeOpReconciler{
+			Client:    mgr.GetClient(),
+			Scheme:    mgr.GetScheme(),
+			APIReader: mgr.GetAPIReader(),
+		}
+
+		Expect(reconciler.ensureClusterRBAC(context.Background())).To(Succeed())
+
+		role := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(context.Background(),
+			ktypes.NamespacedName{Name: rebootClusterRoleName}, role)).To(Succeed())
+		Expect(role.Rules).To(Equal(rebootClusterRoleRules()))
+
+		Expect(k8sClient.Delete(context.Background(), role)).To(Succeed())
+	})
+})

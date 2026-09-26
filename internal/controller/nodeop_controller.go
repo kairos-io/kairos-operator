@@ -44,6 +44,9 @@ const (
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
 	// Name of the cluster-scoped Role the reboot Pod's ServiceAccount is bound to.
 	rebootClusterRoleName = "nodeop-reboot"
+	// Verb and resource names the RBAC rules in this package are spelled with.
+	rbacVerbGet      = "get"
+	rbacResourcePods = "pods"
 	// Annotation marking a node as cordoned by a specific NodeOp.
 	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
 	// unschedulable; including the UID prevents a recreated NodeOp with the same
@@ -91,6 +94,13 @@ var sentinelResources = corev1.ResourceList{
 type NodeOpReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads straight from the API server, bypassing the manager's
+	// cache. ensureClusterRBAC needs it: it runs from SetupWithManager, before
+	// the cache is started, where a cached read answers ErrCacheNotStarted. It
+	// also keeps the operator from watching every ClusterRole in the cluster
+	// just to read one. SetupWithManager fills it in from the manager when the
+	// caller left it nil.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
@@ -154,6 +164,10 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
+
 	// Ensure cluster-wide RBAC resources are created when the controller starts
 	if err := r.ensureClusterRBAC(context.Background()); err != nil {
 		log := logf.Log.WithName("setup")
@@ -1001,10 +1015,19 @@ func rebootClusterRoleRules() []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{""},
-			Resources: []string{"pods"},
-			Verbs:     []string{"get", "patch"},
+			Resources: []string{rbacResourcePods},
+			Verbs:     []string{rbacVerbGet, "patch"},
 		},
 	}
+}
+
+// clusterRoleReader is the reader ensureClusterRBAC looks the ClusterRole up
+// with. See the APIReader field for why the cached client will not do.
+func (r *NodeOpReconciler) clusterRoleReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // ensureClusterRBAC converges the cluster-wide RBAC the reboot Pod needs on
@@ -1022,7 +1045,7 @@ func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 
 	existing := &rbacv1.ClusterRole{}
-	err := r.Get(ctx, types.NamespacedName{Name: rebootClusterRoleName}, existing)
+	err := r.clusterRoleReader().Get(ctx, types.NamespacedName{Name: rebootClusterRoleName}, existing)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Error(err, "Failed to get cluster role", "clusterRole", rebootClusterRoleName)
