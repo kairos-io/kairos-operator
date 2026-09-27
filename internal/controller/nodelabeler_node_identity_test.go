@@ -74,7 +74,9 @@ var _ = Describe("NodeLabeler Controller node identity", func() {
 				NamespacedName: types.NamespacedName{Name: name},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			if !result.Requeue && result.RequeueAfter == 0 {
+			// NodeLabeler only ever asks for a delayed requeue, never the
+			// deprecated immediate one.
+			if result.RequeueAfter == 0 {
 				return
 			}
 		}
