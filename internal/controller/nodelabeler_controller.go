@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,8 @@ const (
 	// Host /etc bind mount used by the node-labeler to read kairos-release
 	hostEtcVolumeName = "host-etc"
 	hostEtcMountPath  = "/host/etc"
+	// Records which Node object incarnation a Job was created for
+	labelKeyNodeUID = "kairos.io/node-uid"
 	// Common label keys
 	labelKeyKairosManaged = "kairos.io/managed"
 )
@@ -61,7 +64,11 @@ func getOperatorNamespace() string {
 	return namespace
 }
 
-func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string, nodeName string) (bool, error) {
+// jobsForNode returns the node-labeler Jobs that currently exist for nodeName.
+// The Job name and the node label are both derived from the host name, which a
+// re-provisioned machine keeps, so the caller must still decide which Node
+// object each Job belongs to.
+func (r *NodeLabelerReconciler) jobsForNode(ctx context.Context, namespace string, nodeName string) ([]batchv1.Job, error) {
 	jobList := &batchv1.JobList{}
 	if err := r.List(ctx, jobList,
 		client.InNamespace(namespace),
@@ -70,10 +77,17 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 			labelKeyApp:     labelValueNodeLabelerApp,
 		}),
 	); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return len(jobList.Items) > 0, nil
+	return jobList.Items, nil
+}
+
+// jobLabelsNode reports whether job was created for this Node object, and not
+// for an earlier one that happened to carry the same host name. A Job with no
+// recorded UID predates this check, so it cannot be shown to belong to node.
+func jobLabelsNode(job *batchv1.Job, node *corev1.Node) bool {
+	return job.Labels[labelKeyNodeUID] == string(node.UID)
 }
 
 func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespace string) *batchv1.Job {
@@ -94,6 +108,7 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 			Labels: map[string]string{
 				labelKeyApp:     labelValueNodeLabelerApp,
 				labelKeyJobNode: node.Name,
+				labelKeyNodeUID: string(node.UID),
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -228,21 +243,48 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	namespace := getOperatorNamespace()
 
 	// Check if a labeler job already exists for this node
-	exists, err := r.jobExists(ctx, namespace, node.Name)
+	existing, err := r.jobsForNode(ctx, namespace, node.Name)
 	if err != nil {
 		log.Error(err, "Failed to check for existing jobs")
 		return ctrl.Result{}, err
 	}
 
-	if exists {
-		// Job already exists for this node
-		return ctrl.Result{}, nil
+	for i := range existing {
+		if jobLabelsNode(&existing[i], node) {
+			// Job already exists for this node
+			return ctrl.Result{}, nil
+		}
+	}
+
+	// Every Job under this host name was created for a different Node object,
+	// so the machine was re-provisioned and comes back unlabeled. Drop them, so
+	// the deterministic Job name is free for the replacement.
+	for i := range existing {
+		outdated := &existing[i]
+		propagation := metav1.DeletePropagationBackground
+		// The UID precondition keeps a stale cache read from deleting the
+		// replacement Job, which carries the same name.
+		err := r.Delete(ctx, outdated,
+			client.PropagationPolicy(propagation),
+			client.Preconditions{UID: &outdated.UID},
+		)
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			log.Error(err, "Failed to delete outdated node-labeler job", "job", outdated.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Deleted node-labeler job of a previous node",
+			"node", node.Name, "job", outdated.Name, "nodeUID", outdated.Labels[labelKeyNodeUID])
 	}
 
 	// Create the node-labeler job
 	job := r.createNodeLabelerJob(node, namespace)
 
 	if err := r.Create(ctx, job); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// The name is still held by the Job we just deleted, or another
+			// reconcile won the race. Come back for it.
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		log.Error(err, "Failed to create node-labeler job")
 		return ctrl.Result{}, err
 	}
