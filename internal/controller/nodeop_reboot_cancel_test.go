@@ -100,7 +100,7 @@ var _ = Describe("processRebootStatus cancelling a reboot", func() {
 		failed = kairosiov1alpha1.NodeStatus{
 			Phase:        phaseFailed,
 			JobName:      nodeOp.Name + "-" + nodeName,
-			Message:      "Job failed",
+			Message:      msgJobFailed,
 			RebootStatus: rebootStatusPending,
 		}
 	})
