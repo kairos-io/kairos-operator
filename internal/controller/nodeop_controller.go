@@ -36,6 +36,8 @@ const (
 	phaseFailed    = "Failed"
 	phaseRunning   = "Running"
 	phaseCompleted = "Completed"
+	// msgJobFailed is the NodeOpNodeStatus message set when a node's Job fails.
+	msgJobFailed = "Job failed"
 	// Environment variables for controller pod identification
 	controllerPodNameEnv      = "CONTROLLER_POD_NAME"
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
@@ -842,7 +844,7 @@ func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosi
 			switch condition.Type {
 			case batchv1.JobFailed, batchv1.JobFailureTarget:
 				status.Phase = phaseFailed
-				status.Message = "Job failed"
+				status.Message = msgJobFailed
 				status.LastUpdated = metav1.Now()
 				return status, nil
 			case batchv1.JobSuccessCriteriaMet, batchv1.JobComplete:
