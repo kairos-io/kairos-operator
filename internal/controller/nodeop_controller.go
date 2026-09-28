@@ -879,14 +879,20 @@ func (r *NodeOpReconciler) processRebootStatus(ctx context.Context, nodeOp *kair
 	// Handle reboot cleanup for failed or missing jobs
 	if status.Phase == phaseFailed && getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 		if status.RebootStatus != rebootStatusCancelled {
+			// Delete the reboot Pod before recording the cancellation. This
+			// write is the only thing that makes this branch a no-op on the
+			// next reconcile, so recording it first turns one failed Delete
+			// into a privileged Pod nothing ever removes: it polls forever,
+			// and its infinite NoExecute tolerations keep taint eviction off
+			// it. Leaving rebootStatus alone keeps the branch live, and the
+			// RequeueAfter in Reconcile brings us back to try again.
+			if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
+				log.Error(err, "Failed to cleanup reboot pod for failed job, will retry", "node", nodeName)
+				return status, nil
+			}
+
 			status.RebootStatus = rebootStatusCancelled
 			status.LastUpdated = metav1.Now()
-
-			// Clean up reboot pod for failed job
-			if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
-				log.Error(err, "Failed to cleanup reboot pod for failed job", "node", nodeName)
-				// Don't return error, just log it and continue
-			}
 		}
 		return status, nil
 	}
