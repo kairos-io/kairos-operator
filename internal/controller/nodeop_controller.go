@@ -56,10 +56,14 @@ const (
 	// reboot. Its presence proves the reboot was issued; it says nothing about
 	// whether the host came back.
 	rebootStateAnnotation = "kairos.io/reboot-state"
-	// Annotation recording the node's boot ID as it was when the reboot Pod was
-	// created. The kubelet rewrites status.nodeInfo.bootID on every boot, so a
-	// node reporting a different boot ID has rebooted since, which is evidence
-	// that survives the reboot Pod never running again.
+	// Annotation recording the boot the host was running when it was told to
+	// reboot. The reboot Pod reads it from the host and writes it in the same
+	// patch as rebootStateAnnotation, so the baseline is taken at the instant
+	// the reboot is issued and cannot have been overtaken by an unrelated
+	// reboot earlier in the operation. The kubelet rewrites
+	// status.nodeInfo.bootID on every boot, so a node reporting a different
+	// boot ID has rebooted since, which is evidence that survives the reboot
+	// Pod never running again.
 	preRebootBootIDAnnotation = "operator.kairos.io/pre-reboot-boot-id"
 	// Reboot status constants
 	rebootStatusNotRequested = "not-requested"
@@ -1113,20 +1117,10 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 	// within the 63-char Pod-name limit even when nodeOp.Name is near the limit.
 	rebootPrefix := utils.TruncateNameWithHash(nodeOp.Name+"-reboot", utils.KubernetesNameLengthLimit-6) + "-"
 
-	// Record the boot ID the node reports now, so that after the reboot the
-	// controller can tell "the host came back" from "the reboot Pod is stuck".
-	// An empty boot ID simply leaves the annotation off and the fallback
-	// unavailable; it is never treated as a reboot.
-	var podAnnotations map[string]string
-	if bootID := node.Status.NodeInfo.BootID; bootID != "" {
-		podAnnotations = map[string]string{preRebootBootIDAnnotation: bootID}
-	}
-
 	rebootPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: rebootPrefix,
 			Namespace:    nodeOp.Namespace,
-			Annotations:  podAnnotations,
 			Labels: map[string]string{
 				labelKeyNodeOp: nodeOp.Name,
 				labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
@@ -1162,8 +1156,12 @@ while true; do
 		echo "Found sentinel file: $SENTINEL_FILE"
 		echo "Deleting sentinel file before reboot..."
 		rm -f "$SENTINEL_FILE"
+		echo "Reading the boot this host is about to leave..."
+		BOOT_ID=$(nsenter -m -t 1 -- cat /proc/sys/kernel/random/boot_id 2>/dev/null || cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+		BOOT_ID=$(echo "$BOOT_ID" | tr -d '[:space:]')
+		echo "Boot ID being left behind: '$BOOT_ID'"
 		echo "Attempting to patch pod..."
-		kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"` + rebootStatusCompleted + `"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
+		kubectl patch pod $POD_NAME -p "{\"metadata\":{\"annotations\":{\"` + preRebootBootIDAnnotation + `\":\"$BOOT_ID\",\"kairos.io/reboot-state\":\"` + rebootStatusCompleted + `\"}}}" --namespace $POD_NAMESPACE || echo "kubectl patch failed"
 		echo "Giving 5 seconds to the Job Pod to exit gracefully..."
 		sleep 5
 		echo "Attempting reboot with nsenter..."
@@ -1312,7 +1310,8 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 		pod := podList.Items[0]
 		// The Pod patches this annotation onto itself in the moment between
 		// deleting the sentinel and calling reboot, so without it nothing was
-		// ever asked to reboot.
+		// ever asked to reboot. The same patch carries the boot ID the host
+		// was running at that instant, so the two are always consistent.
 		if pod.Annotations[rebootStateAnnotation] != rebootStatusCompleted {
 			return false, nil
 		}
@@ -1350,6 +1349,12 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 // boot, so this is a level-triggered fact: unlike a Ready=True -> Ready=False
 // -> Ready=True transition it cannot be missed between two reconciles. The node
 // must also be Ready, so that a node observed mid-reboot is not called done.
+//
+// An empty preRebootBootID means the reboot Pod could not read the host's boot
+// ID, so there is no baseline to compare against and no reboot can be proven
+// this way. That is deliberately the safe answer: the operation falls back to
+// waiting for the Pod to succeed, which is what it did before this signal
+// existed.
 func (r *NodeOpReconciler) nodeRebootedSince(ctx context.Context, nodeName, preRebootBootID string) (bool, error) {
 	if preRebootBootID == "" {
 		return false, nil
