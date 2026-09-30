@@ -41,6 +41,12 @@ const (
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
+	// RBAC subject, roleRef and verb spellings, shared by the NodeOp and
+	// node-labeler controllers.
+	rbacAPIGroup       = "rbac.authorization.k8s.io"
+	kindClusterRole    = "ClusterRole"
+	kindServiceAccount = "ServiceAccount"
+	rbacVerbGet        = "get"
 	// Annotation marking a node as cordoned by a specific NodeOp.
 	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
 	// unschedulable; including the UID prevents a recreated NodeOp with the same
@@ -1015,7 +1021,7 @@ func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 			{
 				APIGroups: []string{""},
 				Resources: []string{"pods"},
-				Verbs:     []string{"get", "patch"},
+				Verbs:     []string{rbacVerbGet, "patch"},
 			},
 		},
 	}
@@ -1060,14 +1066,14 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 		},
 		Subjects: []rbacv1.Subject{
 			{
-				Kind:      "ServiceAccount",
+				Kind:      kindServiceAccount,
 				Name:      saName,
 				Namespace: nodeOp.Namespace,
 			},
 		},
 		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
+			APIGroup: rbacAPIGroup,
+			Kind:     kindClusterRole,
 			Name:     "nodeop-reboot",
 		},
 	}
