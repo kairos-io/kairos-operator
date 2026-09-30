@@ -423,18 +423,9 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 				return ctrl.Result{Requeue: true}, err
 			}
 
-		} else if job.Spec.Completions == nil || *job.Spec.Completions == 1 {
-			if job.Status.Succeeded > 0 {
-				succeeded++
-			} else if exportJobFailed(job) {
-				artifact.Status.Phase = buildv1alpha2.Error
-				artifact.Status.Message = exportJobFailureMessage(job)
-				if err := r.Status().Update(ctx, artifact); err != nil {
-					return ctrl.Result{Requeue: true}, err
-				}
-				return ctrl.Result{}, nil
-			}
-		} else if *job.Spec.BackoffLimit <= job.Status.Failed {
+		} else if job.Status.Succeeded >= exportJobCompletions(job) {
+			succeeded++
+		} else if exportJobFailed(job) {
 			artifact.Status.Phase = buildv1alpha2.Error
 			artifact.Status.Message = exportJobFailureMessage(job)
 			if err := r.Status().Update(ctx, artifact); err != nil {
@@ -452,6 +443,15 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// exportJobCompletions returns how many Pods must succeed before the Job is
+// done. A nil completions field means one, which is the Kubernetes default.
+func exportJobCompletions(job *batchv1.Job) int32 {
+	if job.Spec.Completions == nil {
+		return 1
+	}
+	return *job.Spec.Completions
 }
 
 // exportJobFailed returns true when the Job has permanently failed (e.g. backoffLimit exceeded).
