@@ -21,12 +21,14 @@ import (
 	"fmt"
 
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
+	"github.com/kairos-io/kairos-operator/internal/utils"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -43,10 +45,20 @@ const (
 	CompatibleAurorabootVersion     = "v0.24.0"
 	CompatibleBuildahVersion        = "v1.43.1"
 	artifactLabel                   = "build.kairos.io/artifact"
+	osArtifactKind                  = "OSArtifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
 	// OCISpecSecretKey is the Secret data key for the OCI build definition.
 	OCISpecSecretKey = "ociSpec"
 )
+
+// artifactLabelValue returns the value artifactLabel carries on every child object.
+// An OSArtifact name is a DNS subdomain and may be up to 253 characters, while a label
+// value stops at 63, so the name goes through the same truncation the child object names
+// use. Children are mapped back to their OSArtifact through the owner reference, never by
+// reading this value back as a name.
+func artifactLabelValue(artifact *buildv1alpha2.OSArtifact) string {
+	return utils.TruncateNameWithHash(artifact.Name, utils.KubernetesNameLengthLimit)
+}
 
 // OSArtifactReconciler reconciles a OSArtifact object
 type OSArtifactReconciler struct {
@@ -124,7 +136,7 @@ func (r *OSArtifactReconciler) CreateConfigMap(ctx context.Context, artifact *bu
 	if cm.Labels == nil {
 		cm.Labels = map[string]string{}
 	}
-	cm.Labels[artifactLabel] = artifact.Name
+	cm.Labels[artifactLabel] = artifactLabelValue(artifact)
 	if err := controllerutil.SetOwnerReference(artifact, cm, r.Scheme); err != nil {
 		return err
 	}
@@ -141,7 +153,7 @@ func (r *OSArtifactReconciler) createPVC(ctx context.Context,
 	if pvc.Labels == nil {
 		pvc.Labels = map[string]string{}
 	}
-	pvc.Labels[artifactLabel] = artifact.Name
+	pvc.Labels[artifactLabel] = artifactLabelValue(artifact)
 	if err := controllerutil.SetOwnerReference(artifact, pvc, r.Scheme); err != nil {
 		return pvc, err
 	}
@@ -166,7 +178,7 @@ func (r *OSArtifactReconciler) createBuilderPod(ctx context.Context, artifact *b
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
-	pod.Labels[artifactLabel] = artifact.Name
+	pod.Labels[artifactLabel] = artifactLabelValue(artifact)
 	if err := controllerutil.SetOwnerReference(artifact, pod, r.Scheme); err != nil {
 		return pod, err
 	}
@@ -279,7 +291,7 @@ func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact
 		if renderedSecret.Labels == nil {
 			renderedSecret.Labels = make(map[string]string)
 		}
-		renderedSecret.Labels[artifactLabel] = artifact.Name
+		renderedSecret.Labels[artifactLabel] = artifactLabelValue(artifact)
 		renderedSecret.StringData = map[string]string{OCISpecSecretKey: final}
 		return controllerutil.SetControllerReference(artifact, renderedSecret, r.Scheme)
 	}); err != nil {
@@ -335,7 +347,7 @@ func (r *OSArtifactReconciler) checkBuild(ctx context.Context,
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, &client.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{
-			artifactLabel: artifact.Name,
+			artifactLabel: artifactLabelValue(artifact),
 		}),
 	}); err != nil {
 		return ctrl.Result{Requeue: true}, err
@@ -362,7 +374,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, &client.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{
-			artifactLabel: artifact.Name,
+			artifactLabel: artifactLabelValue(artifact),
 		}),
 	}); err != nil {
 		return ctrl.Result{Requeue: true}, err
@@ -391,13 +403,13 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 		if job == nil {
 			job = &batchv1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s-export-%s", artifact.Name, idx),
+					Name:      utils.TruncateNameWithHash(fmt.Sprintf("%s-export-%s", artifact.Name, idx), utils.KubernetesNameLengthLimit),
 					Namespace: artifact.Namespace,
 					Annotations: map[string]string{
 						artifactExporterIndexAnnotation: idx,
 					},
 					Labels: map[string]string{
-						artifactLabel: artifact.Name,
+						artifactLabel: artifactLabelValue(artifact),
 					},
 				},
 				Spec: artifact.Spec.Exporters[i],
@@ -498,15 +510,21 @@ func (r *OSArtifactReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *OSArtifactReconciler) findOwningArtifact(_ context.Context, obj client.Object) []reconcile.Request {
-	if obj.GetLabels() == nil {
-		return nil
-	}
-
-	if artifactName, ok := obj.GetLabels()[artifactLabel]; ok {
+	// The artifactLabel value is truncated, so it cannot be read back as a name. The
+	// owner reference carries the full name and is set on every child this controller
+	// creates.
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind != osArtifactKind {
+			continue
+		}
+		gv, err := schema.ParseGroupVersion(ref.APIVersion)
+		if err != nil || gv.Group != buildv1alpha2.GroupVersion.Group {
+			continue
+		}
 		return []reconcile.Request{
 			{
 				NamespacedName: types.NamespacedName{
-					Name:      artifactName,
+					Name:      ref.Name,
 					Namespace: obj.GetNamespace(),
 				},
 			},
