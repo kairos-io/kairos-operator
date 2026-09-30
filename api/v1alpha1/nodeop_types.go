@@ -224,6 +224,9 @@ type DrainOptions struct {
 
 	// DeleteEmptyDirData specifies whether to delete local data in emptyDir volumes.
 	// When true, data in emptyDir volumes will be deleted during the drain operation.
+	// When false, the drain is refused if any pod it would evict has an emptyDir
+	// volume, and the node is left untouched. This mirrors `kubectl drain`, whose
+	// --delete-emptydir-data flag this field corresponds to.
 	// +optional
 	// +kubebuilder:default=false
 	DeleteEmptyDirData *bool `json:"deleteEmptyDirData,omitempty"`
