@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM docker.io/golang:1.27.1@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.27.1@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -21,6 +21,11 @@ COPY internal/ internal/
 # was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
 # the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
+# The builder stage is pinned to BUILDPLATFORM so this always runs natively
+# and cross-compiles to TARGETARCH. buildkit still sets TARGETARCH from the
+# requested platform, so the binary is for the target; only the Go toolchain
+# runs on the host. Without the pin, a linux/riscv64 build runs the golang
+# image itself under QEMU, which is slow enough to time the job out.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
@@ -30,9 +35,13 @@ ARG TARGETARCH
 WORKDIR /
 # Create a non-root user with numeric UID
 RUN adduser -D -u 65532 -s /bin/sh manager
-# Install kubectl and other necessary tools
+# Install kubectl and other necessary tools.
+# -f matters here: without it curl saves the 404 body as a file called kubectl
+# and the image builds green with an XML error document installed as kubectl.
+# Upstream publishes the client for a fixed set of platforms only, so a
+# TARGETARCH it does not build has to fail this build, not ship broken.
 RUN apk add --no-cache curl ca-certificates && \
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
+    curl -fLO "https://dl.k8s.io/release/$(curl -fLs https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
     chmod +x kubectl && \
     mv kubectl /usr/local/bin/
 COPY --from=builder /workspace/manager .
