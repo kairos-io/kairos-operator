@@ -150,6 +150,11 @@ type NodeOpUpgrade struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// Spec is fixed at creation time. The whole spec is handed to the NodeOp
+	// this upgrade creates, once, and is never read again, so an edit would be
+	// silently dropped while the rollout kept running the old image. To change
+	// an upgrade, delete this NodeOpUpgrade and create a new one.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; delete this NodeOpUpgrade and create a new one to change it"
 	Spec   NodeOpUpgradeSpec   `json:"spec,omitempty"`
 	Status NodeOpUpgradeStatus `json:"status,omitempty"`
 }
