@@ -49,8 +49,17 @@ jobs:
     needs: setup
     strategy:
       matrix:
-        platform: [linux/amd64, linux/arm64]
-    runs-on: ${{ matrix.platform == 'linux/amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+        # The operator image installs kubectl, and upstream Kubernetes does not
+        # publish a linux/riscv64 client (KUBE_SUPPORTED_CLIENT_PLATFORMS in
+        # hack/lib/golang.sh), so this image stays on the two platforms it can
+        # actually be built for. The operator runs on the control plane, not on
+        # every node, so a RISC-V worker does not need it.
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
       packages: write
@@ -75,9 +84,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ matrix.platform }}
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          tags: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.arch }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:buildcache,mode=max
           build-args: |
@@ -89,8 +98,19 @@ jobs:
     needs: setup
     strategy:
       matrix:
-        platform: [linux/amd64, linux/arm64]
-    runs-on: ${{ matrix.platform == 'linux/amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+        # The node-labeler runs on every node, so every node architecture the
+        # cluster can have needs an image. There is no GitHub-hosted riscv64
+        # runner, so that leg cross-compiles on amd64: the builder stage in
+        # Dockerfile.node-labeler is pinned to BUILDPLATFORM and only the
+        # distroless runtime layer is riscv64.
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: riscv64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
       packages: write
@@ -115,9 +135,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.node-labeler
-          platforms: ${{ matrix.platform }}
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          tags: ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-${{ matrix.arch }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:buildcache,mode=max
           build-args: |
@@ -129,6 +149,11 @@ jobs:
     needs: [build-operator, build-node-labeler]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.version }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
@@ -139,23 +164,21 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
+      # ARCHES has to name every arch the matching build matrix above produced.
+      # push-manifest.sh reads back the index it pushed and fails if the two
+      # disagree, so an arch added to a matrix and forgotten here is a red
+      # release job rather than an index that silently omits a platform.
       - name: Create and push operator manifest
-        run: |
-          docker manifest create ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-arm64
-          docker manifest annotate ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }} ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-amd64 --os linux --arch amd64
-          docker manifest annotate ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }} ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}-arm64 --os linux --arch arm64
-          docker manifest push ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}
+          ARCHES: amd64 arm64
+        run: ./hack/push-manifest.sh
 
       - name: Create and push node-labeler manifest
-        run: |
-          docker manifest create ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-arm64
-          docker manifest annotate ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }} ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-amd64 --os linux --arch amd64
-          docker manifest annotate ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }} ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}-arm64 --os linux --arch arm64
-          docker manifest push ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NODE_LABELER_IMAGE_NAME }}:${{ inputs.version }}
+          ARCHES: amd64 arm64 riscv64
+        run: ./hack/push-manifest.sh
 
   update-kustomization:
     needs: combine-manifests
