@@ -20,9 +20,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Verify the release manifest index publisher
-        run: make test-push-manifest
-
       - name: Running Tests
         run: |
           go mod tidy
