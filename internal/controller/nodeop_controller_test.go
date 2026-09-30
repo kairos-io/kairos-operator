@@ -4110,3 +4110,271 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 		})
 	})
 })
+
+var _ = Describe("Reboot completion when the reboot Pod never runs again", func() {
+	var (
+		ctx          context.Context
+		nodeName     string
+		node         *corev1.Node
+		nodeOp       *kairosiov1alpha1.NodeOp
+		reconciler   *NodeOpReconciler
+		reconcileNow func()
+		rebootPodFor func() *corev1.Pod
+		nodeStatus   func() kairosiov1alpha1.NodeStatus
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		Expect(os.Setenv("CONTROLLER_POD_NAMESPACE", "default")).To(Succeed())
+
+		unique := fmt.Sprintf("bootid-%d", time.Now().UnixNano())
+		nodeName = unique + "-node"
+
+		node = &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   nodeName,
+				Labels: map[string]string{"kubernetes.io/hostname": nodeName},
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-before"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		nodeOp = &kairosiov1alpha1.NodeOp{
+			TypeMeta: metav1.TypeMeta{APIVersion: "kairos.io/v1alpha1", Kind: kindNodeOp},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      unique,
+				Namespace: "default",
+			},
+			Spec: kairosiov1alpha1.NodeOpSpec{
+				Command:         []string{"echo", "test"},
+				RebootOnSuccess: asBool(true),
+				NodeSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/hostname": nodeName},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+
+		DeferCleanup(func() {
+			Expect(os.Unsetenv("CONTROLLER_POD_NAMESPACE")).To(Succeed())
+			Eventually(func() error {
+				return client.IgnoreNotFound(k8sClient.Delete(ctx, nodeOp))
+			}, timeout, interval).Should(Succeed())
+			Eventually(func() error {
+				return client.IgnoreNotFound(k8sClient.Delete(ctx, node))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		reconciler = &NodeOpReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		reconcileNow = func() {
+			GinkgoHelper()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeOp.Name, Namespace: nodeOp.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		rebootPodFor = func() *corev1.Pod {
+			GinkgoHelper()
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace(nodeOp.Namespace),
+				client.MatchingLabels(map[string]string{
+					labelKeyNodeOp: nodeOp.Name,
+					labelKeyReboot: "true",
+					labelKeyNode:   nodeName,
+				}))).To(Succeed())
+			Expect(podList.Items).To(HaveLen(1))
+			return &podList.Items[0]
+		}
+
+		nodeStatus = func() kairosiov1alpha1.NodeStatus {
+			GinkgoHelper()
+			updated := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: nodeOp.Name, Namespace: nodeOp.Namespace,
+			}, updated)).To(Succeed())
+			Expect(updated.Status.NodeStatuses).To(HaveKey(nodeName))
+			return updated.Status.NodeStatuses[nodeName]
+		}
+	})
+
+	// Stands in for the single kubectl patch the reboot Pod issues between
+	// deleting the sentinel and calling reboot: the boot ID it reads off the
+	// host and the reboot-state marker land together.
+	podAnnouncesReboot := func(bootID string) {
+		GinkgoHelper()
+		pod := rebootPodFor()
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations[preRebootBootIDAnnotation] = bootID
+		pod.Annotations[rebootStateAnnotation] = rebootStatusCompleted
+		Expect(k8sClient.Update(ctx, pod)).To(Succeed())
+	}
+
+	// Runs the Job to completion, leaving the operation waiting on the reboot.
+	upgradeJobDone := func() {
+		GinkgoHelper()
+
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending))
+
+		jobList := &batchv1.JobList{}
+		Expect(k8sClient.List(ctx, jobList,
+			client.InNamespace(nodeOp.Namespace),
+			client.MatchingLabels(map[string]string{labelKeyNodeOp: nodeOp.Name}))).To(Succeed())
+		Expect(jobList.Items).To(HaveLen(1))
+		Expect(markJobAsCompleted(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+		reconcileNow()
+		Expect(nodeStatus().Phase).To(Equal(phaseCompleted))
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending))
+	}
+
+	// Drives the operation up to the point the node has been told to reboot but
+	// its reboot Pod is stuck: the Job is done, the Pod has announced the
+	// reboot it is about to perform, and it is then never able to start a
+	// container again.
+	stuckAfterReboot := func() {
+		GinkgoHelper()
+		upgradeJobDone()
+		podAnnouncesReboot("boot-before")
+	}
+
+	It("does not stamp a boot ID on the reboot Pod before one is asked for", func() {
+		reconcileNow()
+		Expect(rebootPodFor().Annotations).NotTo(HaveKey(preRebootBootIDAnnotation),
+			"the baseline must be taken when the reboot is issued, not when the Pod is created")
+	})
+
+	It("sends the boot ID and the reboot-state marker in one patch", func() {
+		reconcileNow()
+
+		script := strings.Join(rebootPodFor().Spec.Containers[0].Command, "\n")
+		Expect(script).To(ContainSubstring("/proc/sys/kernel/random/boot_id"),
+			"the reboot Pod must read the host's boot ID for itself, at reboot time")
+
+		patch := ""
+		for _, line := range strings.Split(script, "\n") {
+			if strings.Contains(line, "kubectl patch pod $POD_NAME") {
+				patch = line
+			}
+		}
+		Expect(patch).NotTo(BeEmpty())
+		Expect(patch).To(ContainSubstring(preRebootBootIDAnnotation))
+		Expect(patch).To(ContainSubstring(rebootStateAnnotation),
+			"both annotations must land in the same patch so a baseline can never outlive the reboot it belongs to")
+	})
+
+	It("stays pending when the node rebooted before the reboot was issued", func() {
+		upgradeJobDone()
+
+		By("the node rebooting for an unrelated reason while the Job was running")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-unrelated"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		By("the Pod announcing the reboot it is about to perform, from that new boot")
+		podAnnouncesReboot("boot-unrelated")
+
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending),
+			"the requested reboot has not happened yet, so the node must stay cordoned")
+
+		By("completing only once the requested reboot lands")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-after"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusCompleted))
+	})
+
+	It("stays pending when the Pod could not read the host's boot ID", func() {
+		upgradeJobDone()
+		podAnnouncesReboot("")
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-after"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending),
+			"with no baseline the reboot cannot be proven, so only a succeeding Pod may complete it")
+	})
+
+	It("completes the reboot once the node reports a new boot ID, without the Pod succeeding", func() {
+		stuckAfterReboot()
+
+		By("staying pending while the node still reports the boot it was asked to leave")
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending))
+
+		By("completing once the node is back on a different boot")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-after"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		reconcileNow()
+		Expect(rebootPodFor().Status.Phase).NotTo(Equal(corev1.PodSucceeded),
+			"the point of this test is that the reboot Pod never succeeded")
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusCompleted))
+	})
+
+	It("stays pending while the rebooted node is not Ready yet", func() {
+		stuckAfterReboot()
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-after"
+		setNodeReady(node, corev1.ConditionFalse)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		reconcileNow()
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending))
+	})
+
+	It("stays pending when the reboot was never issued, even after an unrelated reboot", func() {
+		reconcileNow()
+
+		jobList := &batchv1.JobList{}
+		Expect(k8sClient.List(ctx, jobList,
+			client.InNamespace(nodeOp.Namespace),
+			client.MatchingLabels(map[string]string{labelKeyNodeOp: nodeOp.Name}))).To(Succeed())
+		Expect(jobList.Items).To(HaveLen(1))
+		Expect(markJobAsCompleted(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+		node.Status.NodeInfo.BootID = "boot-after"
+		setNodeReady(node, corev1.ConditionTrue)
+		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+		reconcileNow()
+		Expect(rebootPodFor().Annotations).NotTo(HaveKey(rebootStateAnnotation))
+		Expect(nodeStatus().RebootStatus).To(Equal(rebootStatusPending),
+			"a boot ID change alone must not be read as this operation's reboot")
+	})
+})
+
+// setNodeReady sets the node's Ready condition, replacing any existing one.
+func setNodeReady(node *corev1.Node, status corev1.ConditionStatus) {
+	conditions := []corev1.NodeCondition{}
+	for _, c := range node.Status.Conditions {
+		if c.Type != corev1.NodeReady {
+			conditions = append(conditions, c)
+		}
+	}
+	node.Status.Conditions = append(conditions, corev1.NodeCondition{
+		Type:               corev1.NodeReady,
+		Status:             status,
+		LastHeartbeatTime:  metav1.Now(),
+		LastTransitionTime: metav1.Now(),
+	})
+}

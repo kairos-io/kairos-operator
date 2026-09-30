@@ -52,6 +52,19 @@ const (
 	// semantic label like "kairos.io/managed"). Other Kairos components are not
 	// expected to read it.
 	cordonedByAnnotation = "operator.kairos.io/cordoned-by"
+	// Annotation the reboot Pod patches onto itself immediately before it calls
+	// reboot. Its presence proves the reboot was issued; it says nothing about
+	// whether the host came back.
+	rebootStateAnnotation = "kairos.io/reboot-state"
+	// Annotation recording the boot the host was running when it was told to
+	// reboot. The reboot Pod reads it from the host and writes it in the same
+	// patch as rebootStateAnnotation, so the baseline is taken at the instant
+	// the reboot is issued and cannot have been overtaken by an unrelated
+	// reboot earlier in the operation. The kubelet rewrites
+	// status.nodeInfo.bootID on every boot, so a node reporting a different
+	// boot ID has rebooted since, which is evidence that survives the reboot
+	// Pod never running again.
+	preRebootBootIDAnnotation = "operator.kairos.io/pre-reboot-boot-id"
 	// Reboot status constants
 	rebootStatusNotRequested = "not-requested"
 	rebootStatusCancelled    = "cancelled"
@@ -1084,8 +1097,9 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 // full name (not just the jobBaseName prefix) so the watch pattern
 // "<jobName>-*" matches exactly one Job's sentinel — see startMainJob for the
 // rationale.
-func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, jobName string) error {
 	log := logf.FromContext(ctx)
+	nodeName := node.Name
 
 	// Ensure service account for reboot pod
 	if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
@@ -1142,8 +1156,12 @@ while true; do
 		echo "Found sentinel file: $SENTINEL_FILE"
 		echo "Deleting sentinel file before reboot..."
 		rm -f "$SENTINEL_FILE"
+		echo "Reading the boot this host is about to leave..."
+		BOOT_ID=$(nsenter -m -t 1 -- cat /proc/sys/kernel/random/boot_id 2>/dev/null || cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+		BOOT_ID=$(echo "$BOOT_ID" | tr -d '[:space:]')
+		echo "Boot ID being left behind: '$BOOT_ID'"
 		echo "Attempting to patch pod..."
-		kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"` + rebootStatusCompleted + `"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
+		kubectl patch pod $POD_NAME -p "{\"metadata\":{\"annotations\":{\"` + preRebootBootIDAnnotation + `\":\"$BOOT_ID\",\"kairos.io/reboot-state\":\"` + rebootStatusCompleted + `\"}}}" --namespace $POD_NAMESPACE || echo "kubectl patch failed"
 		echo "Giving 5 seconds to the Job Pod to exit gracefully..."
 		sleep 5
 		echo "Attempting reboot with nsenter..."
@@ -1290,15 +1308,81 @@ func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kai
 
 	if len(podList.Items) > 0 {
 		pod := podList.Items[0]
-		// Check if pod has succeeded AND has the reboot completion annotation
-		if pod.Status.Phase == corev1.PodSucceeded {
-			if rebootState, exists := pod.Annotations["kairos.io/reboot-state"]; exists && rebootState == rebootStatusCompleted {
-				return true, nil
-			}
+		// The Pod patches this annotation onto itself in the moment between
+		// deleting the sentinel and calling reboot, so without it nothing was
+		// ever asked to reboot. The same patch carries the boot ID the host
+		// was running at that instant, so the two are always consistent.
+		if pod.Annotations[rebootStateAnnotation] != rebootStatusCompleted {
+			return false, nil
 		}
+
+		// The happy path: the container ran again after the host came back, saw
+		// its own annotation and exited 0.
+		if pod.Status.Phase == corev1.PodSucceeded {
+			return true, nil
+		}
+
+		// The Pod may never run again on the rebooted node: an upgrade that
+		// moves the kubelet outside the apiserver's version skew window leaves
+		// it unable to start any new container ("services have not yet been
+		// read at least once"), and a Pod stuck that way would hold the
+		// operation at rebootStatus=pending and the node cordoned forever.
+		// Ask the node itself instead.
+		rebooted, err := r.nodeRebootedSince(ctx, nodeName, pod.Annotations[preRebootBootIDAnnotation])
+		if err != nil {
+			return false, err
+		}
+		if rebooted {
+			log.Info("Node reports a new boot ID, accepting the reboot as done even though its reboot pod did not run again",
+				"node", nodeName,
+				"pod", pod.Name,
+				"podPhase", pod.Status.Phase)
+		}
+		return rebooted, nil
 	}
 
 	return false, nil
+}
+
+// nodeRebootedSince reports whether nodeName is back up on a different boot
+// than preRebootBootID. The kubelet refreshes status.nodeInfo.bootID on every
+// boot, so this is a level-triggered fact: unlike a Ready=True -> Ready=False
+// -> Ready=True transition it cannot be missed between two reconciles. The node
+// must also be Ready, so that a node observed mid-reboot is not called done.
+//
+// An empty preRebootBootID means the reboot Pod could not read the host's boot
+// ID, so there is no baseline to compare against and no reboot can be proven
+// this way. That is deliberately the safe answer: the operation falls back to
+// waiting for the Pod to succeed, which is what it did before this signal
+// existed.
+func (r *NodeOpReconciler) nodeRebootedSince(ctx context.Context, nodeName, preRebootBootID string) (bool, error) {
+	if preRebootBootID == "" {
+		return false, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if node.Status.NodeInfo.BootID == "" || node.Status.NodeInfo.BootID == preRebootBootID {
+		return false, nil
+	}
+
+	return isNodeReady(node), nil
+}
+
+// isNodeReady reports whether the node's Ready condition is currently True.
+func isNodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // handleDeletion handles the finalization process when a NodeOp is being deleted
@@ -1504,7 +1588,7 @@ func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1a
 	jobName := jobBaseName + "-" + rand.String(5)
 
 	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
+		if err := r.createRebootPod(ctx, nodeOp, node, jobName); err != nil {
 			return err
 		}
 	}
