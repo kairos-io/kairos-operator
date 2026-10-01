@@ -178,7 +178,7 @@ func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namesp
 			{
 				APIGroups: []string{""},
 				Resources: []string{"nodes"},
-				Verbs:     []string{"get", "list", "watch", "update", "patch"},
+				Verbs:     []string{rbacVerbGet, "list", "watch", "update", "patch"},
 			},
 		},
 	}

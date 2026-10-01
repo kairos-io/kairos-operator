@@ -19,6 +19,7 @@ import (
 	"github.com/kairos-io/kairos-operator/internal/utils"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +42,11 @@ const (
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
 	// Finalizer for cleaning up ClusterRoleBinding
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
+	// Name of the cluster-scoped Role the reboot Pod's ServiceAccount is bound to.
+	rebootClusterRoleName = "nodeop-reboot"
+	// Verb and resource names the RBAC rules in this package are spelled with.
+	rbacVerbGet      = "get"
+	rbacResourcePods = "pods"
 	// Annotation marking a node as cordoned by a specific NodeOp.
 	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
 	// unschedulable; including the UID prevents a recreated NodeOp with the same
@@ -101,6 +107,13 @@ var sentinelResources = corev1.ResourceList{
 type NodeOpReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads straight from the API server, bypassing the manager's
+	// cache. ensureClusterRBAC needs it: it runs from SetupWithManager, before
+	// the cache is started, where a cached read answers ErrCacheNotStarted. It
+	// also keeps the operator from watching every ClusterRole in the cluster
+	// just to read one. SetupWithManager fills it in from the manager when the
+	// caller left it nil.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
@@ -164,6 +177,10 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
+
 	// Ensure cluster-wide RBAC resources are created when the controller starts
 	if err := r.ensureClusterRBAC(context.Background()); err != nil {
 		log := logf.Log.WithName("setup")
@@ -1002,36 +1019,121 @@ func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj clie
 	return nil
 }
 
-// ensureClusterRBAC creates the cluster-wide RBAC resources for the reboot pod
+// rebootClusterRoleRules is the grant the reboot Pod's kubectl calls need: it
+// reads its own Pod to see whether a previous attempt already annotated it,
+// and patches that Pod with kairos.io/reboot-state once the sentinel appears.
+// This is the single declaration of those rules, so ensureClusterRBAC can
+// compare what the cluster holds against what this operator version wants.
+func rebootClusterRoleRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{""},
+			Resources: []string{rbacResourcePods},
+			Verbs:     []string{rbacVerbGet, "patch"},
+		},
+	}
+}
+
+// clusterRoleReader is the reader ensureClusterRBAC looks the ClusterRole up
+// with. See the APIReader field for why the cached client will not do.
+func (r *NodeOpReconciler) clusterRoleReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
+// ensureClusterRBACAttempts bounds the create-or-converge loop below. Every
+// lost race costs one attempt: an AlreadyExists on the create, a Conflict on
+// the update. A handful covers the writers that can realistically contend for
+// a single ClusterRole, and the bound keeps a writer that fights us forever
+// from pinning the reconcile.
+const ensureClusterRBACAttempts = 5
+
+// ensureClusterRBAC converges the cluster-wide RBAC the reboot Pod needs on
+// the rules this operator version declares.
+//
+// It cannot be a bare Create that swallows AlreadyExists. The ClusterRole
+// outlives the operator Pod, so the first version ever installed in a cluster
+// would own its rules forever: an upgrade that widens them rolls a new Pod,
+// calls this again, gets AlreadyExists, and keeps the old grant. The reboot
+// Pod's "kubectl patch ... || echo" then swallows the denial, the
+// kairos.io/reboot-state annotation is never written, and the NodeOp sits at
+// rebootStatus=pending with the node cordoned. The same applies to a
+// ClusterRole an administrator or a policy controller has since narrowed.
+//
+// For the same reason a lost race cannot end the function either. Whoever
+// created the ClusterRole between our Get and our Create need not have
+// written these rules: during an upgrade the winner can be a replica of the
+// older version, and an admission webhook can rewrite what any of us sent. So
+// a lost race goes back to the Get and converges on what actually landed. The
+// caller is ensureNodeOpServiceAccount, which creates the reboot Pod in this
+// same pass, so a stale grant left here is one the Pod runs with.
 func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	log := logf.FromContext(ctx)
+	want := rebootClusterRoleRules()
 
-	// Create cluster role
-	clusterRole := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "nodeop-reboot",
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{""},
-				Resources: []string{"pods"},
-				Verbs:     []string{"get", "patch"},
-			},
-		},
-	}
-	if err := r.Create(ctx, clusterRole); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create cluster role")
-			return err
+	for attempt := 0; attempt < ensureClusterRBACAttempts; attempt++ {
+		existing := &rbacv1.ClusterRole{}
+		err := r.clusterRoleReader().Get(ctx, types.NamespacedName{Name: rebootClusterRoleName}, existing)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.Error(err, "Failed to get cluster role", "clusterRole", rebootClusterRoleName)
+				return err
+			}
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: rebootClusterRoleName},
+				Rules:      rebootClusterRoleRules(),
+			}
+			createErr := r.Create(ctx, clusterRole)
+			if createErr == nil {
+				return nil
+			}
+			if apierrors.IsAlreadyExists(createErr) {
+				// Someone landed a ClusterRole under this name first. Read it
+				// back and converge on whatever rules it carries.
+				continue
+			}
+			log.Error(createErr, "Failed to create cluster role", "clusterRole", rebootClusterRoleName)
+			return createErr
 		}
+
+		if equality.Semantic.DeepEqual(existing.Rules, want) {
+			return nil
+		}
+
+		log.Info("Updating the reboot ClusterRole, its rules do not match this operator version",
+			"clusterRole", rebootClusterRoleName)
+		existing.Rules = want
+		updateErr := r.Update(ctx, existing)
+		if updateErr == nil {
+			return nil
+		}
+		if apierrors.IsConflict(updateErr) {
+			// A concurrent writer moved the object under us. Re-read rather
+			// than forcing our stale copy over theirs.
+			continue
+		}
+		log.Error(updateErr, "Failed to update cluster role", "clusterRole", rebootClusterRoleName)
+		return updateErr
 	}
 
-	return nil
+	return fmt.Errorf("cluster role %q still does not carry the rules this operator version declares after %d attempts",
+		rebootClusterRoleName, ensureClusterRBACAttempts)
 }
 
 // ensureNodeOpServiceAccount creates the service account for a specific NodeOp
 func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
+
+	// Converge the ClusterRole the binding below points at, here rather than
+	// only in SetupWithManager: this is the moment a reboot Pod is about to
+	// need the grant, and a ClusterRole that drifted while the operator was
+	// running would otherwise stay wrong until the process restarts.
+	if err := r.ensureClusterRBAC(ctx); err != nil {
+		return err
+	}
 
 	// Create service account for this NodeOp
 	saName := fmt.Sprintf("%s-reboot", nodeOp.Name)
@@ -1068,7 +1170,7 @@ func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeO
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "nodeop-reboot",
+			Name:     rebootClusterRoleName,
 		},
 	}
 	if err := r.Create(ctx, clusterRoleBinding); err != nil {
