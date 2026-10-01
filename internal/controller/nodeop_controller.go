@@ -1030,6 +1030,13 @@ func (r *NodeOpReconciler) clusterRoleReader() client.Reader {
 	return r.Client
 }
 
+// ensureClusterRBACAttempts bounds the create-or-converge loop below. Every
+// lost race costs one attempt: an AlreadyExists on the create, a Conflict on
+// the update. A handful covers the writers that can realistically contend for
+// a single ClusterRole, and the bound keeps a writer that fights us forever
+// from pinning the reconcile.
+const ensureClusterRBACAttempts = 5
+
 // ensureClusterRBAC converges the cluster-wide RBAC the reboot Pod needs on
 // the rules this operator version declares.
 //
@@ -1041,47 +1048,66 @@ func (r *NodeOpReconciler) clusterRoleReader() client.Reader {
 // kairos.io/reboot-state annotation is never written, and the NodeOp sits at
 // rebootStatus=pending with the node cordoned. The same applies to a
 // ClusterRole an administrator or a policy controller has since narrowed.
+//
+// For the same reason a lost race cannot end the function either. Whoever
+// created the ClusterRole between our Get and our Create need not have
+// written these rules: during an upgrade the winner can be a replica of the
+// older version, and an admission webhook can rewrite what any of us sent. So
+// a lost race goes back to the Get and converges on what actually landed. The
+// caller is ensureNodeOpServiceAccount, which creates the reboot Pod in this
+// same pass, so a stale grant left here is one the Pod runs with.
 func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
 	log := logf.FromContext(ctx)
+	want := rebootClusterRoleRules()
 
-	existing := &rbacv1.ClusterRole{}
-	err := r.clusterRoleReader().Get(ctx, types.NamespacedName{Name: rebootClusterRoleName}, existing)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "Failed to get cluster role", "clusterRole", rebootClusterRoleName)
-			return err
-		}
-		clusterRole := &rbacv1.ClusterRole{
-			ObjectMeta: metav1.ObjectMeta{Name: rebootClusterRoleName},
-			Rules:      rebootClusterRoleRules(),
-		}
-		if createErr := r.Create(ctx, clusterRole); createErr != nil {
-			// Another replica, or an earlier pass of this one, won the race.
-			// Its rules come from this same function, so there is nothing
-			// left to converge.
-			if apierrors.IsAlreadyExists(createErr) {
+	for attempt := 0; attempt < ensureClusterRBACAttempts; attempt++ {
+		existing := &rbacv1.ClusterRole{}
+		err := r.clusterRoleReader().Get(ctx, types.NamespacedName{Name: rebootClusterRoleName}, existing)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.Error(err, "Failed to get cluster role", "clusterRole", rebootClusterRoleName)
+				return err
+			}
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: rebootClusterRoleName},
+				Rules:      rebootClusterRoleRules(),
+			}
+			createErr := r.Create(ctx, clusterRole)
+			if createErr == nil {
 				return nil
+			}
+			if apierrors.IsAlreadyExists(createErr) {
+				// Someone landed a ClusterRole under this name first. Read it
+				// back and converge on whatever rules it carries.
+				continue
 			}
 			log.Error(createErr, "Failed to create cluster role", "clusterRole", rebootClusterRoleName)
 			return createErr
 		}
-		return nil
+
+		if equality.Semantic.DeepEqual(existing.Rules, want) {
+			return nil
+		}
+
+		log.Info("Updating the reboot ClusterRole, its rules do not match this operator version",
+			"clusterRole", rebootClusterRoleName)
+		existing.Rules = want
+		updateErr := r.Update(ctx, existing)
+		if updateErr == nil {
+			return nil
+		}
+		if apierrors.IsConflict(updateErr) {
+			// A concurrent writer moved the object under us. Re-read rather
+			// than forcing our stale copy over theirs.
+			continue
+		}
+		log.Error(updateErr, "Failed to update cluster role", "clusterRole", rebootClusterRoleName)
+		return updateErr
 	}
 
-	want := rebootClusterRoleRules()
-	if equality.Semantic.DeepEqual(existing.Rules, want) {
-		return nil
-	}
-
-	log.Info("Updating the reboot ClusterRole, its rules do not match this operator version",
-		"clusterRole", rebootClusterRoleName)
-	existing.Rules = want
-	if err := r.Update(ctx, existing); err != nil {
-		log.Error(err, "Failed to update cluster role", "clusterRole", rebootClusterRoleName)
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("cluster role %q still does not carry the rules this operator version declares after %d attempts",
+		rebootClusterRoleName, ensureClusterRBACAttempts)
 }
 
 // ensureNodeOpServiceAccount creates the service account for a specific NodeOp
