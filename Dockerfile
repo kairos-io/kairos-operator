@@ -31,19 +31,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-ARG TARGETARCH
 WORKDIR /
 # Create a non-root user with numeric UID
 RUN adduser -D -u 65532 -s /bin/sh manager
-# Install kubectl and other necessary tools.
-# -f matters here: without it curl saves the 404 body as a file called kubectl
-# and the image builds green with an XML error document installed as kubectl.
-# Upstream publishes the client for a fixed set of platforms only, so a
-# TARGETARCH it does not build has to fail this build, not ship broken.
-RUN apk add --no-cache curl ca-certificates && \
-    curl -fLO "https://dl.k8s.io/release/$(curl -fLs https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
-    chmod +x kubectl && \
-    mv kubectl /usr/local/bin/
+# ca-certificates lets the manager talk to https apiservers and OCI
+# registries. nsenter, which the reboot Pod uses for the host reboot, ships with
+# alpine's busybox and does not need to be installed separately.
+RUN apk add --no-cache ca-certificates
 COPY --from=builder /workspace/manager .
 
 USER 65532:65532

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -14,6 +18,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -25,7 +30,9 @@ import (
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
+	"github.com/kairos-io/kairos-operator/internal/bootid"
 	"github.com/kairos-io/kairos-operator/internal/controller"
+	"github.com/kairos-io/kairos-operator/internal/rebootwatcher"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -44,6 +51,17 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// The manager binary also runs the reboot Pod's program, so the image
+	// ships a single binary. The first argument picks the program; without
+	// one, the binary runs the operator.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case rebootwatcher.SubcommandName:
+			runRebootWatcher()
+			return
+		}
+	}
+
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
@@ -199,8 +217,9 @@ func main() {
 	}
 
 	if err = (&controller.NodeOpReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeOp")
 		os.Exit(1)
@@ -269,6 +288,41 @@ func main() {
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+// runRebootWatcher runs the reboot Pod's program. It reads the upgrade Job's
+// name and namespace from the environment variables the operator set on the
+// reboot Pod, and hands off to the rebootwatcher package, which reads the
+// upgrade Job through the Kubernetes API.
+func runRebootWatcher() {
+	jobName := os.Getenv(rebootwatcher.JobNameEnv)
+	namespace := os.Getenv(rebootwatcher.NamespaceEnv)
+
+	logger := zap.New(zap.UseDevMode(true)).WithName(rebootwatcher.SubcommandName)
+
+	if jobName == "" || namespace == "" {
+		logger.Info("missing required environment",
+			rebootwatcher.JobNameEnv, jobName, rebootwatcher.NamespaceEnv, namespace)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	err := rebootwatcher.Run(ctx, rebootwatcher.Deps{
+		Kube:          kubernetes.NewForConfigOrDie(ctrl.GetConfigOrDie()),
+		Namespace:     namespace,
+		JobName:       jobName,
+		PollInterval:  10 * time.Second,
+		RebootTimeout: 5 * time.Minute,
+		Reboot:        rebootwatcher.NsenterReboot,
+		ReadBootID:    bootid.ReadHost,
+		Logger:        logger,
+	})
+	if err != nil {
+		logger.Error(err, "reboot watcher failed")
 		os.Exit(1)
 	}
 }

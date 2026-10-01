@@ -207,6 +207,8 @@ spec:
                       type: string
                     phase:
                       type: string
+                    preRebootBootID:
+                      type: string
                     rebootStatus:
                       type: string
                   required:
