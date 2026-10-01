@@ -49,11 +49,9 @@ jobs:
     needs: setup
     strategy:
       matrix:
-        # The operator image installs kubectl, and upstream Kubernetes does not
-        # publish a linux/riscv64 client (KUBE_SUPPORTED_CLIENT_PLATFORMS in
-        # hack/lib/golang.sh), so this image stays on the two platforms it can
-        # actually be built for. The operator runs on the control plane, not on
-        # every node, so a RISC-V worker does not need it.
+        # This image is built for amd64 and arm64. The reboot Pod runs it on
+        # every node a NodeOp reboots, so rebooting RISC-V nodes needs a
+        # riscv64 build of this image.
         include:
           - arch: amd64
             runner: ubuntu-latest
