@@ -64,6 +64,10 @@ const (
 	rebootStatusCancelled    = "cancelled"
 	rebootStatusPending      = "pending"
 	rebootStatusCompleted    = "completed"
+	// Status messages of a node whose upgrade Job completed, before and after
+	// its reboot is confirmed.
+	jobCompletedMessage          = "Job completed successfully"
+	jobAndRebootCompletedMessage = "Job and reboot completed successfully"
 	// Label keys used on Jobs and Pods created by the NodeOp controller
 	labelKeyNodeOp    = "kairos.io/nodeop"
 	labelKeyNode      = "kairos.io/node"
@@ -902,7 +906,13 @@ func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosi
 				return status, nil
 			case batchv1.JobSuccessCriteriaMet, batchv1.JobComplete:
 				status.Phase = phaseCompleted
-				status.Message = "Job completed successfully"
+				status.Message = jobCompletedMessage
+				// processRebootStatus sets the reboot message only on the
+				// pass that confirms the reboot. Every later pass comes
+				// through here first, so it keeps that message.
+				if status.RebootStatus == rebootStatusCompleted {
+					status.Message = jobAndRebootCompletedMessage
+				}
 				status.LastUpdated = metav1.Now()
 				return status, nil
 			}
@@ -956,7 +966,7 @@ func (r *NodeOpReconciler) processRebootStatus(ctx context.Context, nodeOp *kair
 
 		if rebootCompleted {
 			status.RebootStatus = rebootStatusCompleted
-			status.Message = "Job and reboot completed successfully"
+			status.Message = jobAndRebootCompletedMessage
 			status.LastUpdated = metav1.Now()
 		}
 	}

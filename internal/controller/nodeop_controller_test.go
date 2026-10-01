@@ -1365,6 +1365,18 @@ var _ = Describe("NodeOp Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
 			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after reboot is completed")
 
+			By("Keeping the completion message on the reconciles that follow")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rebootNodeOp.Name,
+					Namespace: rebootNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rebootNodeOp), rebootNodeOp)).To(Succeed())
+			Expect(rebootNodeOp.Status.NodeStatuses[nodeName].RebootStatus).To(Equal("completed"))
+			Expect(rebootNodeOp.Status.NodeStatuses[nodeName].Message).To(Equal("Job and reboot completed successfully"))
+
 			By("Verifying the read-only reboot RBAC was created in the NodeOp's namespace")
 			expectRebootRBAC(ctx, rebootNodeOp)
 
