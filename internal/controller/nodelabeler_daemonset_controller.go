@@ -149,11 +149,20 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 										},
 									},
 								},
+								{
+									Name:  envHostFirmwarePath,
+									Value: hostFirmwareMountPath,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      hostEtcVolumeName,
 									MountPath: hostEtcMountPath,
+									ReadOnly:  true,
+								},
+								{
+									Name:      hostFirmwareVolumeName,
+									MountPath: hostFirmwareMountPath,
 									ReadOnly:  true,
 								},
 							},
@@ -165,6 +174,14 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/etc",
+								},
+							},
+						},
+						{
+							Name: hostFirmwareVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: hostFirmwareHostPath,
 								},
 							},
 						},
