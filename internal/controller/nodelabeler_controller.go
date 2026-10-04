@@ -33,6 +33,14 @@ const (
 	// Host /etc bind mount used by the node-labeler to read kairos-release
 	hostEtcVolumeName = "host-etc"
 	hostEtcMountPath  = "/host/etc"
+	// Host /sys/firmware bind mount, where a UKI boot records which loader entry
+	// it booted. /sys/firmware exists on every Linux node, EFI or not, so the
+	// mount is safe on a BIOS node, where efi/efivars is simply absent and the
+	// boot state still comes from the kernel command line.
+	hostFirmwareVolumeName = "host-firmware"
+	hostFirmwareMountPath  = "/host/sys/firmware"
+	hostFirmwareHostPath   = "/sys/firmware"
+	envHostFirmwarePath    = "HOST_FIRMWARE_PATH"
 	// Common label keys
 	labelKeyKairosManaged = "kairos.io/managed"
 )
@@ -128,11 +136,20 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 									Name:  "HOST_ETC_PATH",
 									Value: hostEtcMountPath,
 								},
+								{
+									Name:  envHostFirmwarePath,
+									Value: hostFirmwareMountPath,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      hostEtcVolumeName,
 									MountPath: hostEtcMountPath,
+									ReadOnly:  true,
+								},
+								{
+									Name:      hostFirmwareVolumeName,
+									MountPath: hostFirmwareMountPath,
 									ReadOnly:  true,
 								},
 							},
@@ -144,6 +161,14 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/etc",
+								},
+							},
+						},
+						{
+							Name: hostFirmwareVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: hostFirmwareHostPath,
 								},
 							},
 						},
