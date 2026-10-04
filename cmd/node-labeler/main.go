@@ -36,7 +36,8 @@ func main() {
 		ticker := time.NewTicker(time.Duration(*every) * time.Second)
 		defer ticker.Stop()
 		for {
-			if err := syncLabels(ctx, clientset, nodeName, hostEtcPath(), "/proc/cmdline"); err != nil && ctx.Err() == nil {
+			err := syncLabels(ctx, clientset, nodeName, hostEtcPath(), "/proc/cmdline", hostFirmwarePath())
+			if err != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "error syncing labels: %v\n", err)
 			}
 			select {
@@ -46,7 +47,7 @@ func main() {
 			}
 		}
 	} else {
-		if err := syncLabels(ctx, clientset, nodeName, hostEtcPath(), "/proc/cmdline"); err != nil {
+		if err := syncLabels(ctx, clientset, nodeName, hostEtcPath(), "/proc/cmdline", hostFirmwarePath()); err != nil {
 			fmt.Fprintf(os.Stderr, "error syncing labels: %v\n", err)
 			os.Exit(1)
 		}
@@ -66,4 +67,14 @@ func buildClientset() (kubernetes.Interface, error) {
 		return nil, err
 	}
 	return kubernetes.NewForConfig(config)
+}
+
+// hostFirmwarePath returns the mount point of the host's /sys/firmware, where a
+// UKI boot records which loader entry it booted. An empty value leaves the boot
+// state unknown on a Trusted Boot node rather than failing the sync.
+func hostFirmwarePath() string {
+	if p := os.Getenv("HOST_FIRMWARE_PATH"); p != "" {
+		return p
+	}
+	return "/host/sys/firmware"
 }
