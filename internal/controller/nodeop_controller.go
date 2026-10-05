@@ -22,6 +22,7 @@ import (
 	"github.com/kairos-io/kairos-operator/internal/utils"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -89,6 +90,9 @@ const (
 	// RBAC verbs used in rules the controllers create
 	verbGet  = "get"
 	verbList = "list"
+	// RBAC resource names used in those rules
+	resourceJobs = "jobs"
+	resourcePods = "pods"
 )
 
 // bootIDReporterResources are the fixed resources of the upgrade Job's
@@ -125,7 +129,8 @@ func (r *NodeOpReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;create
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;create;update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -1059,48 +1064,111 @@ func rebootRBACName(nodeOp *kairosiov1alpha1.NodeOp) string {
 	return nodeOp.Name + "-reboot"
 }
 
+// rebootRoleRules returns the permissions a reboot Pod needs: getting its
+// upgrade Job, to see when Kubernetes marks it Complete, and listing Pods, to
+// read the boot ID from that upgrade Job's succeeded Pod.
+func rebootRoleRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{APIGroups: []string{batchv1.GroupName}, Resources: []string{resourceJobs}, Verbs: []string{verbGet}},
+		{APIGroups: []string{corev1.GroupName}, Resources: []string{resourcePods}, Verbs: []string{verbList}},
+	}
+}
+
 // ensureRebootRBAC creates, in the NodeOp's namespace, what a reboot Pod needs
-// to read its upgrade Job: a ServiceAccount, a Role that allows getting Jobs
-// and listing Pods, and a RoleBinding that grants the Role to the
+// to read its upgrade Job: a ServiceAccount, a Role with the permissions from
+// rebootRoleRules, and a RoleBinding that grants the Role to the
 // ServiceAccount. All three belong to the NodeOp, so Kubernetes deletes them
-// together with it. Objects that already exist are kept as they are: an
-// earlier reconcile may have created them, and a released operator version
-// may have created a ServiceAccount with the same name for the same NodeOp.
+// together with it.
+//
+// The ServiceAccount and the RoleBinding are only created when they are
+// missing. An existing one is left as it is: an earlier reconcile may have
+// created it, and a released operator version may have created a
+// ServiceAccount with the same name for the same NodeOp. The Role is also
+// corrected when it exists with other permissions (see ensureRebootRole).
 func (r *NodeOpReconciler) ensureRebootRBAC(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	name := rebootRBACName(nodeOp)
-	objects := []client.Object{
-		&corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
-		},
-		&rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
-			Rules: []rbacv1.PolicyRule{
-				{APIGroups: []string{batchv1.GroupName}, Resources: []string{"jobs"}, Verbs: []string{verbGet}},
-				{APIGroups: []string{corev1.GroupName}, Resources: []string{"pods"}, Verbs: []string{verbList}},
-			},
-		},
-		&rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
-			Subjects: []rbacv1.Subject{{
-				Kind:      rbacv1.ServiceAccountKind,
-				Name:      name,
-				Namespace: nodeOp.Namespace,
-			}},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "Role",
-				Name:     name,
-			},
-		},
+
+	if err := r.createRebootRBACObject(ctx, nodeOp, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
+	}); err != nil {
+		return err
 	}
 
-	for _, obj := range objects {
-		if err := controllerutil.SetControllerReference(nodeOp, obj, r.Scheme); err != nil {
-			return fmt.Errorf("setting controller reference on reboot %T %s: %w", obj, name, err)
+	// The Role is set up before the RoleBinding, so the reboot Pod's
+	// permissions are complete as soon as the RoleBinding exists.
+	if err := r.ensureRebootRole(ctx, nodeOp); err != nil {
+		return err
+	}
+
+	return r.createRebootRBACObject(ctx, nodeOp, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      name,
+			Namespace: nodeOp.Namespace,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     name,
+		},
+	})
+}
+
+// createRebootRBACObject makes obj belong to nodeOp and creates it. An object
+// that already exists is not an error.
+func (r *NodeOpReconciler) createRebootRBACObject(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, obj client.Object) error {
+	name := rebootRBACName(nodeOp)
+	if err := controllerutil.SetControllerReference(nodeOp, obj, r.Scheme); err != nil {
+		return fmt.Errorf("setting controller reference on reboot %T %s: %w", obj, name, err)
+	}
+	if err := r.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating reboot %T %s: %w", obj, name, err)
+	}
+	return nil
+}
+
+// ensureRebootRole creates the reboot Pod's Role, or updates it when it exists
+// with other permissions than rebootRoleRules. That happens when an operator
+// version that granted other permissions created it, or when someone changed
+// it by hand. Without the update, the reboot Pod could miss a permission it
+// needs: it would then never see its upgrade Job finish, and the node would
+// stay cordoned without being rebooted.
+//
+// The Role is read directly from the API server, so the operator does not
+// need to keep a copy of every Role in the cluster. When creating or updating
+// the Role fails, for example because the Role was created or changed at the
+// same moment, the error is returned and the operator tries again on its next
+// pass, which reads the Role again.
+func (r *NodeOpReconciler) ensureRebootRole(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	name := rebootRBACName(nodeOp)
+	role := &rbacv1.Role{}
+	err := r.apiReader().Get(ctx, types.NamespacedName{Name: name, Namespace: nodeOp.Namespace}, role)
+	if apierrors.IsNotFound(err) {
+		role = &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
+			Rules:      rebootRoleRules(),
 		}
-		if err := r.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating reboot %T %s: %w", obj, name, err)
+		if err := controllerutil.SetControllerReference(nodeOp, role, r.Scheme); err != nil {
+			return fmt.Errorf("setting controller reference on reboot Role %s: %w", name, err)
 		}
+		if err := r.Create(ctx, role); err != nil {
+			return fmt.Errorf("creating reboot Role %s: %w", name, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting reboot Role %s: %w", name, err)
+	}
+
+	if equality.Semantic.DeepEqual(role.Rules, rebootRoleRules()) {
+		return nil
+	}
+	logf.FromContext(ctx).Info("Updating the reboot Role to the permissions this operator version needs",
+		"role", name, "namespace", nodeOp.Namespace)
+	role.Rules = rebootRoleRules()
+	if err := r.Update(ctx, role); err != nil {
+		return fmt.Errorf("updating reboot Role %s: %w", name, err)
 	}
 	return nil
 }
