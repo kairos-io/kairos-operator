@@ -8,53 +8,23 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 )
 
-// roleHidingReader answers NotFound for the first hideRoleReads Role reads and
-// delegates everything else. That is what a reader that has not caught up with
-// the cluster looks like from inside ensureRebootRole, and it is the only way
-// the function can reach its create path while the Role is already there.
-type roleHidingReader struct {
-	client.Reader
-	hideRoleReads int
-	roleReads     int
-}
-
-func (r *roleHidingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if _, isRole := obj.(*rbacv1.Role); isRole {
-		r.roleReads++
-		if r.roleReads <= r.hideRoleReads {
-			return apierrors.NewNotFound(schema.GroupResource{Group: rbacv1.GroupName, Resource: "roles"}, key.Name)
-		}
-	}
-	return r.Reader.Get(ctx, key, obj, opts...)
-}
-
-// roleWriteSpy counts the Role updates ensureRebootRole issues, and can make
-// the first of them lose to a writer that moved the object in between.
-type roleWriteSpy struct {
+// roleUpdateCounter counts the Role updates made through it, so a test can
+// check that a correct Role is left untouched.
+type roleUpdateCounter struct {
 	client.Client
-	roleUpdates   int
-	conflictFirst int
+	roleUpdates int
 }
 
-func (c *roleWriteSpy) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+func (c *roleUpdateCounter) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
 	if _, isRole := obj.(*rbacv1.Role); isRole {
 		c.roleUpdates++
-		if c.roleUpdates <= c.conflictFirst {
-			return apierrors.NewConflict(
-				schema.GroupResource{Group: rbacv1.GroupName, Resource: "roles"},
-				obj.GetName(),
-				fmt.Errorf("the object has been modified"),
-			)
-		}
 	}
 	return c.Client.Update(ctx, obj, opts...)
 }
@@ -77,10 +47,9 @@ var _ = Describe("ensureRebootRBAC", func() {
 		return fetched
 	}
 
-	// createNarrowRole puts a Role under the reboot Role's name carrying less
-	// than this operator version grants, which is what an operator version
-	// that only knew about the upgrade Job would have written.
-	createNarrowRole := func() {
+	// createOutdatedRole creates the reboot Role with fewer permissions than
+	// this operator version gives it, as an older operator version could have.
+	createOutdatedRole := func() {
 		GinkgoHelper()
 		Expect(k8sClient.Create(ctx, &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{Name: roleKey.Name, Namespace: roleKey.Namespace},
@@ -127,55 +96,21 @@ var _ = Describe("ensureRebootRBAC", func() {
 		Expect(k8sClient.Get(ctx, roleKey, &rbacv1.RoleBinding{})).To(Succeed())
 	})
 
-	It("converges a Role whose rules an earlier operator version wrote", func() {
-		createNarrowRole()
+	It("updates a Role that has other permissions", func() {
+		createOutdatedRole()
 
 		Expect(reconciler.ensureRebootRBAC(ctx, nodeOp)).To(Succeed())
 
 		Expect(role().Rules).To(Equal(rebootRoleRules()))
 	})
 
-	It("does not write a Role that already carries these rules", func() {
+	It("leaves a Role with the right permissions untouched", func() {
 		Expect(reconciler.ensureRebootRBAC(ctx, nodeOp)).To(Succeed())
-		spy := &roleWriteSpy{Client: k8sClient}
-		reconciler.Client = spy
-
-		Expect(reconciler.ensureRebootRBAC(ctx, nodeOp)).To(Succeed())
-
-		// Kubernetes drops a no-op update without bumping the resource
-		// version, so the cost of writing unconditionally is not visible on
-		// the object: it is one more API call per reconcile, per NodeOp.
-		Expect(spy.roleUpdates).To(BeZero())
-	})
-
-	It("converges a Role a concurrent writer moved under it", func() {
-		createNarrowRole()
-		spy := &roleWriteSpy{Client: k8sClient, conflictFirst: 1}
-		reconciler.Client = spy
+		updates := &roleUpdateCounter{Client: k8sClient}
+		reconciler.Client = updates
 
 		Expect(reconciler.ensureRebootRBAC(ctx, nodeOp)).To(Succeed())
 
-		Expect(role().Rules).To(Equal(rebootRoleRules()))
-		Expect(spy.roleUpdates).To(Equal(2))
-	})
-
-	It("converges the Role it lost the create race for", func() {
-		createNarrowRole()
-		reconciler.APIReader = &roleHidingReader{Reader: k8sClient, hideRoleReads: 1}
-
-		Expect(reconciler.ensureRebootRBAC(ctx, nodeOp)).To(Succeed())
-
-		Expect(role().Rules).To(Equal(rebootRoleRules()))
-	})
-
-	It("gives up instead of looping when it never gets to see the Role", func() {
-		createNarrowRole()
-		reader := &roleHidingReader{Reader: k8sClient, hideRoleReads: ensureRebootRoleAttempts + 1}
-		reconciler.APIReader = reader
-
-		err := reconciler.ensureRebootRBAC(ctx, nodeOp)
-
-		Expect(err).To(MatchError(ContainSubstring("after 5 attempts")))
-		Expect(reader.roleReads).To(Equal(ensureRebootRoleAttempts))
+		Expect(updates.roleUpdates).To(BeZero())
 	})
 })
