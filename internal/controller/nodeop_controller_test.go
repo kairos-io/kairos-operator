@@ -1461,21 +1461,7 @@ var _ = Describe("NodeOp Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, legacyNodeOp)).To(Succeed())
 
-			crb := &rbacv1.ClusterRoleBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: fmt.Sprintf("nodeop-reboot-%s", legacyNodeOp.Name),
-				},
-				Subjects: []rbacv1.Subject{{
-					Kind:      "ServiceAccount",
-					Name:      fmt.Sprintf("%s-reboot", legacyNodeOp.Name),
-					Namespace: "default",
-				}},
-				RoleRef: rbacv1.RoleRef{
-					APIGroup: "rbac.authorization.k8s.io",
-					Kind:     "ClusterRole",
-					Name:     "nodeop-reboot",
-				},
-			}
+			crb := legacyRebootClusterRoleBinding(legacyNodeOp.Name, "default")
 			Expect(k8sClient.Create(ctx, crb)).To(Succeed())
 
 			Expect(k8sClient.Delete(ctx, legacyNodeOp)).To(Succeed())
@@ -1536,6 +1522,64 @@ var _ = Describe("NodeOp Controller", func() {
 			}, &kairosiov1alpha1.NodeOp{})
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 				"removing the finalizer should let the NodeOp deletion complete, got err=%v", err)
+		})
+
+		// The legacy binding is cluster-scoped and named after the NodeOp
+		// alone, so two same-named NodeOps in different namespaces address one
+		// object. Only the one that created it holds its reboot Pod's
+		// permissions through it (kairos-io/kairos#4898).
+		It("should keep the reboot ClusterRoleBinding of a same-named NodeOp in another namespace", func() {
+			otherNamespace := "legacy-crb-other"
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: otherNamespace},
+			}))).To(Succeed())
+
+			name := fmt.Sprintf("%s-legacy-shared", resourceName)
+
+			// The binding belongs to the NodeOp in otherNamespace: its sole
+			// subject is that one's reboot ServiceAccount.
+			crb := legacyRebootClusterRoleBinding(name, otherNamespace)
+			Expect(k8sClient.Create(ctx, crb)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, crb))).To(Succeed())
+			})
+
+			// The NodeOp being deleted is the same-named one in "default".
+			legacyNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       name,
+					Namespace:  "default",
+					Finalizers: []string{"nodeop-reboot.kairos.io/clusterrolebinding"},
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, legacyNodeOp)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, legacyNodeOp)).To(Succeed())
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      legacyNodeOp.Name,
+					Namespace: legacyNodeOp.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crb.Name}, &rbacv1.ClusterRoleBinding{})).To(Succeed(),
+				"deleting a NodeOp must not revoke the reboot grant of a same-named NodeOp in another namespace")
+
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      legacyNodeOp.Name,
+				Namespace: legacyNodeOp.Namespace,
+			}, &kairosiov1alpha1.NodeOp{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"the finalizer should still be removed so the NodeOp can go away, got err=%v", err)
 		})
 
 		It("should NOT create reboot pods when RebootOnSuccess is false", func() {
@@ -5117,6 +5161,29 @@ func setNodeReady(node *corev1.Node, status corev1.ConditionStatus) {
 		LastHeartbeatTime:  metav1.Now(),
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+// legacyRebootClusterRoleBinding builds the cluster-wide reboot binding that
+// released operator versions created for a NodeOp named nodeOpName: named
+// after the NodeOp alone, granting the reboot ServiceAccount in saNamespace.
+// Passing a saNamespace other than the NodeOp's own models the binding being
+// owned by a same-named NodeOp elsewhere.
+func legacyRebootClusterRoleBinding(nodeOpName, saNamespace string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("nodeop-reboot-%s", nodeOpName),
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      fmt.Sprintf("%s-reboot", nodeOpName),
+			Namespace: saNamespace,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "nodeop-reboot",
+		},
+	}
 }
 
 // expectRebootRBAC asserts that the ServiceAccount, Role and RoleBinding that

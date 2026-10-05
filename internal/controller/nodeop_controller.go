@@ -1497,22 +1497,13 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 	// NodeOps created by released operator versions carry
 	// clusterRoleBindingFinalizer and a cluster-wide ClusterRoleBinding named
 	// nodeop-reboot-<name>, which gave their reboot Pod its permissions.
-	// Deleting such a NodeOp deletes that binding, if it still exists, and
+	// Deleting such a NodeOp deletes that binding, if it is still theirs, and
 	// then removes the finalizer so the NodeOp can go away. The ServiceAccount
 	// the binding points to belongs to the NodeOp, so Kubernetes deletes it
 	// with the NodeOp.
 	if controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
-		crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
-		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: crbName,
-			},
-		}
-		if err := r.Delete(ctx, clusterRoleBinding); err != nil {
-			if !apierrors.IsNotFound(err) {
-				log.Error(err, "Failed to delete ClusterRoleBinding")
-				return false, err
-			}
+		if err := r.deleteLegacyRebootClusterRoleBinding(ctx, nodeOp); err != nil {
+			return false, err
 		}
 
 		// Remove finalizer
@@ -1523,6 +1514,60 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 		}
 	}
 	return true, nil
+}
+
+// deleteLegacyRebootClusterRoleBinding deletes the cluster-wide
+// nodeop-reboot-<name> ClusterRoleBinding that a released operator version
+// created for nodeOp, but only while that binding is still nodeOp's own.
+//
+// The binding is named after the NodeOp alone, and a NodeOp is namespaced, so
+// two same-named NodeOps in different namespaces address one cluster-scoped
+// object. Only one of them ever created it, and only that one's reboot Pod
+// holds its permissions through it; deleting the other NodeOp must not revoke
+// them, or the surviving reboot Pod can no longer annotate itself and its
+// NodeOp never leaves Running (kairos-io/kairos#4898).
+//
+// So the binding goes only when its sole subject is nodeOp's own reboot
+// ServiceAccount. A binding that lists anything else is in use elsewhere and
+// is left alone: the NodeOp that owns it removes it when it is itself deleted.
+func (r *NodeOpReconciler) deleteLegacyRebootClusterRoleBinding(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	log := logf.FromContext(ctx)
+	crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
+
+	clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
+	if err := r.Get(ctx, types.NamespacedName{Name: crbName}, clusterRoleBinding); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		log.Error(err, "Failed to read ClusterRoleBinding", "clusterRoleBinding", crbName)
+		return err
+	}
+
+	if !bindsOnlyRebootServiceAccountOf(clusterRoleBinding, nodeOp) {
+		log.Info("Keeping the reboot ClusterRoleBinding: it grants a NodeOp in another namespace",
+			"clusterRoleBinding", crbName, "namespace", nodeOp.Namespace)
+		return nil
+	}
+
+	if err := r.Delete(ctx, clusterRoleBinding); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete ClusterRoleBinding")
+			return err
+		}
+	}
+	return nil
+}
+
+// bindsOnlyRebootServiceAccountOf reports whether crb grants exactly nodeOp's
+// own reboot ServiceAccount and nothing else.
+func bindsOnlyRebootServiceAccountOf(crb *rbacv1.ClusterRoleBinding, nodeOp *kairosiov1alpha1.NodeOp) bool {
+	if len(crb.Subjects) != 1 {
+		return false
+	}
+	subject := crb.Subjects[0]
+	return subject.Kind == rbacv1.ServiceAccountKind &&
+		subject.Name == rebootRBACName(nodeOp) &&
+		subject.Namespace == nodeOp.Namespace
 }
 
 // isMasterNode returns true if the node has a master or control-plane label
