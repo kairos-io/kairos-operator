@@ -12,7 +12,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -172,5 +175,53 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(jobList.Items).To(HaveLen(initialJobCount))
 		})
+	})
+})
+
+var _ = Describe("Startup tasks", func() {
+	// failingCreates returns a client whose first n Create calls fail, as they
+	// do while the API server is unreachable, and counts every Create call.
+	failingCreates := func(n int, calls *int) client.Client {
+		return fake.NewClientBuilder().WithScheme(scheme.Scheme).WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				*calls++
+				if *calls <= n {
+					return fmt.Errorf("dial tcp 10.43.0.1:443: connect: connection refused")
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	}
+
+	ensure := func(r *NodeLabelerReconciler) func(context.Context) error {
+		return func(ctx context.Context) error { return r.ensureServiceAccount(ctx, "default") }
+	}
+
+	It("retries until the API server accepts the objects", func() {
+		calls := 0
+		r := &NodeLabelerReconciler{Client: failingCreates(2, &calls)}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		runUntilDone(ctx, "node-labeler ServiceAccount and RBAC", 10*time.Millisecond, ensure(r))
+
+		Expect(ctx.Err()).NotTo(HaveOccurred(), "it should return once the objects exist, not at the deadline")
+		Expect(calls).To(BeNumerically(">", 2))
+		Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: nodeLabelerServiceAccount},
+			&corev1.ServiceAccount{})).To(Succeed())
+	})
+
+	It("stops retrying when the operator shuts down", func() {
+		calls := 0
+		r := &NodeLabelerReconciler{Client: failingCreates(1<<30, &calls)}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			runUntilDone(ctx, "node-labeler ServiceAccount and RBAC", 10*time.Millisecond, ensure(r))
+			close(done)
+		}()
+		Eventually(done).WithTimeout(2 * time.Second).Should(BeClosed())
 	})
 })

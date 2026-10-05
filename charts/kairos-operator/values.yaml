@@ -44,10 +44,11 @@ buildahImage: ""
 nodeops:
   defaultImage: "busybox:latest@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616"
 
-# Image for the reboot sentinel container, used only when NodeOp.spec.rebootOnSuccess is true.
-# When a NodeOp Job completes, this container writes a trigger file to /usr/local/.kairos/ on
-# the host (via hostPath). The node agent reads that file and initiates the reboot.
-# Only needs sh + tee — busybox:latest is the correct default.
+# Image for the boot-id-reporter container of the upgrade Job, used only when
+# NodeOp.spec.rebootOnSuccess is true. The container reports the host boot ID
+# as its termination message, which the reboot watcher and the controller use
+# as the baseline to detect the reboot. Only needs sh and printf, so
+# busybox:latest is the correct default.
 # Override for air-gapped or private registry environments where busybox is not directly pullable.
 # Priority: this value > NodeOp.spec.image > "busybox:latest".
 sentinelImage: ""
