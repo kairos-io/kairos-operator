@@ -44,10 +44,9 @@ type NodeLabelerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	// APIReader reads straight from the API server, bypassing the manager's
-	// cache. ensureServiceAccount needs it: it runs from SetupWithManager,
-	// before the cache is started, where a cached read answers
-	// ErrCacheNotStarted. It also keeps the operator from watching every
-	// ClusterRole and ClusterRoleBinding in the cluster just to read two.
+	// cache. The ensure* helpers below read a ClusterRole and a
+	// ClusterRoleBinding by name; a cached Get would make the operator watch
+	// every ClusterRole and ClusterRoleBinding in the cluster to read two.
 	// SetupWithManager fills it in from the manager when the caller left it nil.
 	APIReader client.Reader
 }
@@ -173,7 +172,7 @@ func nodeLabelerClusterRoleRules() []rbacv1.PolicyRule {
 		{
 			APIGroups: []string{""},
 			Resources: []string{"nodes"},
-			Verbs:     []string{rbacVerbGet, "list", "watch", "update", "patch"},
+			Verbs:     []string{verbGet, verbList, "watch", "update", "patch"},
 		},
 	}
 }
@@ -183,7 +182,7 @@ func nodeLabelerClusterRoleRules() []rbacv1.PolicyRule {
 // cluster-scoped binding below cannot be written once and left alone.
 func nodeLabelerSubject(namespace string) rbacv1.Subject {
 	return rbacv1.Subject{
-		Kind:      kindServiceAccount,
+		Kind:      rbacv1.ServiceAccountKind,
 		Name:      nodeLabelerServiceAccount,
 		Namespace: namespace,
 	}
@@ -292,8 +291,8 @@ func (r *NodeLabelerReconciler) ensureClusterRoleBinding(ctx context.Context, na
 			ObjectMeta: metav1.ObjectMeta{Name: nodeLabelerServiceAccount},
 			Subjects:   []rbacv1.Subject{want},
 			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacAPIGroup,
-				Kind:     kindClusterRole,
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
 				Name:     nodeLabelerServiceAccount,
 			},
 		}
@@ -361,11 +360,11 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 
-	// Ensure RBAC resources are created when the controller starts
 	namespace := getOperatorNamespace()
-	if err := r.ensureServiceAccount(context.Background(), namespace); err != nil {
-		setupLog.Error(err, "Failed to ensure service account and RBAC")
-		os.Exit(1)
+	if err := addStartupTask(mgr, "node-labeler ServiceAccount and RBAC", func(ctx context.Context) error {
+		return r.ensureServiceAccount(ctx, namespace)
+	}); err != nil {
+		return err
 	}
 
 	// Define selector for nodes that should be ignored

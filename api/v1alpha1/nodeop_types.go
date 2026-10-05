@@ -106,8 +106,8 @@ type NodeOpSpec struct {
 
 	// Resources sets resource requests and limits on the main "nodeop"
 	// container (the Job container, or its init container in reboot
-	// mode). It does not affect the sentinel-creator container of the
-	// reboot Job, which is not constrained by this field.
+	// mode). It does not affect the upgrade Job's boot-id-reporter
+	// container, which reports the node's boot ID and uses fixed resources.
 	//   - unset (nil): no resource constraints are set.
 	//   - set: requests and limits are used.
 	// +optional
@@ -269,6 +269,12 @@ type NodeStatus struct {
 	// due to job failure), "pending" (reboot requested but not completed), or "completed" (reboot finished)
 	// +optional
 	RebootStatus string `json:"rebootStatus,omitempty"`
+
+	// PreRebootBootID is the node's boot ID as reported by the upgrade Job
+	// when the upgrade finished. The reboot is confirmed once the Node
+	// reports a different boot ID.
+	// +optional
+	PreRebootBootID string `json:"preRebootBootID,omitempty"`
 
 	// LastUpdated is the timestamp of the last status update for this node.
 	// +optional

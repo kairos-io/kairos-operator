@@ -68,8 +68,8 @@ var _ = Describe("NodeLabelerReconciler ensureServiceAccount", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: nodeLabelerServiceAccount},
 			Subjects:   []rbacv1.Subject{nodeLabelerSubject(namespace)},
 			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacAPIGroup,
-				Kind:     kindClusterRole,
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
 				Name:     nodeLabelerServiceAccount,
 			},
 		}

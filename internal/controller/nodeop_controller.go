@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -16,6 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	"github.com/kairos-io/kairos-operator/internal/bootid"
+	"github.com/kairos-io/kairos-operator/internal/rebootwatcher"
 	"github.com/kairos-io/kairos-operator/internal/utils"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -39,14 +42,12 @@ const (
 	// Environment variables for controller pod identification
 	controllerPodNameEnv      = "CONTROLLER_POD_NAME"
 	controllerPodNamespaceEnv = "CONTROLLER_POD_NAMESPACE"
-	// Finalizer for cleaning up ClusterRoleBinding
+	// clusterRoleBindingFinalizer is on NodeOps created by released operator
+	// versions, which gave the reboot Pod its permissions through a
+	// cluster-wide ClusterRoleBinding. When such a NodeOp is deleted,
+	// handleDeletion deletes that binding and then removes this finalizer.
+	// This operator never adds it.
 	clusterRoleBindingFinalizer = "nodeop-reboot.kairos.io/clusterrolebinding"
-	// RBAC subject, roleRef and verb spellings, shared by the NodeOp and
-	// node-labeler controllers.
-	rbacAPIGroup       = "rbac.authorization.k8s.io"
-	kindClusterRole    = "ClusterRole"
-	kindServiceAccount = "ServiceAccount"
-	rbacVerbGet        = "get"
 	// Annotation marking a node as cordoned by a specific NodeOp.
 	// Value is "<namespace>/<name>@<uid>" of the NodeOp that flipped the node to
 	// unschedulable; including the UID prevents a recreated NodeOp with the same
@@ -63,6 +64,10 @@ const (
 	rebootStatusCancelled    = "cancelled"
 	rebootStatusPending      = "pending"
 	rebootStatusCompleted    = "completed"
+	// Status messages of a node whose upgrade Job completed, before and after
+	// its reboot is confirmed.
+	jobCompletedMessage          = "Job completed successfully"
+	jobAndRebootCompletedMessage = "Job and reboot completed successfully"
 	// Label keys used on Jobs and Pods created by the NodeOp controller
 	labelKeyNodeOp    = "kairos.io/nodeop"
 	labelKeyNode      = "kairos.io/node"
@@ -72,6 +77,8 @@ const (
 	phasePreflight = "Preflight"
 	// preflightContainerName is the single container name inside every preflight Pod.
 	preflightContainerName = "preflight"
+	// rebootContainerName is the name of the only container in a reboot Pod.
+	rebootContainerName = "reboot"
 	// preflightDefaultActiveDeadlineSeconds bounds total preflight Pod lifetime
 	// (used as a controller-side fallback when Spec.Preflight.ActiveDeadlineSeconds
 	// is nil; the CRD's kubebuilder:default applies the same value at admission).
@@ -79,13 +86,14 @@ const (
 	// Volume constants
 	hostRootVolumeName = "host-root"
 	hostDirEnv         = "HOST_DIR"
-	sentinelVolumeName = "sentinel-volume"
+	// RBAC verbs used in rules the controllers create
+	verbGet  = "get"
+	verbList = "list"
 )
 
-// sentinelResources is the built-in Guaranteed floor (same values in both
-// requests and limits) applied to the sentinel-creator container of the
-// reboot Job.
-var sentinelResources = corev1.ResourceList{
+// bootIDReporterResources are the fixed resources of the upgrade Job's
+// boot-id-reporter container, used for both requests and limits.
+var bootIDReporterResources = corev1.ResourceList{
 	corev1.ResourceCPU:    resource.MustParse("10m"),
 	corev1.ResourceMemory: resource.MustParse("32Mi"),
 }
@@ -94,6 +102,19 @@ var sentinelResources = corev1.ResourceList{
 type NodeOpReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads directly from the API server instead of the
+	// controller's local copy, which can lag behind. It is used where acting
+	// on an out-of-date read would repeat something, such as draining a node
+	// again for an upgrade Job that already exists. When nil, Client is used.
+	APIReader client.Reader
+}
+
+// apiReader returns APIReader, or Client when APIReader is not set.
+func (r *NodeOpReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=operator.kairos.io,resources=nodeops,verbs=get;list;watch;create;update;patch;delete
@@ -103,9 +124,9 @@ type NodeOpReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -157,13 +178,6 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeOpReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Ensure cluster-wide RBAC resources are created when the controller starts
-	if err := r.ensureClusterRBAC(context.Background()); err != nil {
-		log := logf.Log.WithName("setup")
-		log.Error(err, "Failed to ensure cluster RBAC")
-		os.Exit(1)
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kairosiov1alpha1.NodeOp{}).
 		Watches(
@@ -446,9 +460,20 @@ func getNodeOpImage(nodeOp *kairosiov1alpha1.NodeOp) string {
 	return "busybox:latest"
 }
 
-// getSentinelImage returns the image for the sentinel creator container.
-// Priority: SENTINEL_IMAGE env var > NodeOp Spec.Image > "busybox:latest".
-func getSentinelImage(nodeOp *kairosiov1alpha1.NodeOp) string {
+// bootIDReporterScript returns the shell script of the upgrade Job's
+// boot-id-reporter container, which runs after the upgrade has succeeded. It
+// writes the node's boot ID to the container's termination message. The
+// operator stores that boot ID in the NodeOp status, the reboot Pod reads it
+// too, and both compare it with the node's boot ID after the reboot.
+func bootIDReporterScript() string {
+	return "read -r boot_id < /proc/sys/kernel/random/boot_id" +
+		" && printf '%s' \"$boot_id\" > /dev/termination-log"
+}
+
+// bootIDReporterImage returns the image of the upgrade Job's boot-id-reporter
+// container. Priority: the operator's SENTINEL_IMAGE environment variable (the
+// sentinelImage Helm value), then NodeOp Spec.Image, then "busybox:latest".
+func bootIDReporterImage(nodeOp *kairosiov1alpha1.NodeOp) string {
 	if img := os.Getenv("SENTINEL_IMAGE"); img != "" {
 		return img
 	}
@@ -501,33 +526,20 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 				},
 				Containers: []corev1.Container{
 					{
-						Name:  "sentinel-creator",
-						Image: getSentinelImage(nodeOp),
+						Name:  bootid.ReporterContainerName,
+						Image: bootIDReporterImage(nodeOp),
 						Resources: corev1.ResourceRequirements{
-							Requests: sentinelResources.DeepCopy(),
-							Limits:   sentinelResources.DeepCopy(),
+							Requests: bootIDReporterResources.DeepCopy(),
+							Limits:   bootIDReporterResources.DeepCopy(),
 						},
 						Command: []string{
 							"/bin/sh", //nolint:goconst // path literal; not worth a constant
 							"-c",
-							"echo 'Job completed at $(date)' | tee /sentinel/$(JOB_NAME)-$(date +%s)",
+							bootIDReporterScript(),
 						},
-						Env: []corev1.EnvVar{
-							{
-								Name: "JOB_NAME",
-								ValueFrom: &corev1.EnvVarSource{
-									FieldRef: &corev1.ObjectFieldSelector{
-										FieldPath: "metadata.labels['batch.kubernetes.io/job-name']",
-									},
-								},
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      sentinelVolumeName,
-								MountPath: "/sentinel",
-							},
-						},
+						// The operator and the reboot Pod read the boot ID
+						// from this container's termination message.
+						TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 					},
 				},
 				Volumes: []corev1.Volume{
@@ -536,15 +548,6 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/",
-							},
-						},
-					},
-					{
-						Name: sentinelVolumeName,
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/usr/local/.kairos",
-								Type: &[]corev1.HostPathType{corev1.HostPathDirectoryOrCreate}[0],
 							},
 						},
 					},
@@ -603,9 +606,26 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 	}
 }
 
-// createNodeJob creates a Job for a specific node
+// createNodeJob cordons and drains nodeName, creates its upgrade Job named
+// jobName and records that upgrade Job in the NodeOp status. If an upgrade Job
+// with that name already exists and belongs to nodeOp, an earlier reconcile
+// created it but failed to record it. It is then only recorded: cordoning and
+// draining again would delete the upgrade Job's running Pod.
 func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node, jobName string) error {
 	log := logf.FromContext(ctx)
+
+	existing := &batchv1.Job{}
+	err := r.apiReader().Get(ctx, types.NamespacedName{Namespace: nodeOp.Namespace, Name: jobName}, existing)
+	switch {
+	case err == nil:
+		if !metav1.IsControlledBy(existing, nodeOp) {
+			return fmt.Errorf("job %s exists and is not controlled by NodeOp %s", jobName, nodeOp.Name)
+		}
+		log.Info("Job already exists; recording it", "node", node.Name, "job", jobName)
+		return r.recordNodeJob(ctx, nodeOp, node.Name, jobName)
+	case !apierrors.IsNotFound(err):
+		return err
+	}
 
 	// If cordoning is requested, cordon the node first
 	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
@@ -658,14 +678,29 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	}
 
 	if err := r.Create(ctx, job); err != nil {
-		log.Error(err, "Failed to create Job for node",
-			"nodeOp", nodeOp.Name,
-			"node", node.Name)
-		return err
+		adopted, adoptErr := r.adoptExistingJob(ctx, nodeOp, jobName, err)
+		if !adopted {
+			log.Error(adoptErr, "Failed to create Job for node",
+				"nodeOp", nodeOp.Name,
+				"node", node.Name)
+			return adoptErr
+		}
+		log.Info("Job already exists; recording it", "node", node.Name, "job", jobName)
 	}
 
-	actualJobName := job.Name
+	if err := r.recordNodeJob(ctx, nodeOp, node.Name, job.Name); err != nil {
+		return err
+	}
+	log.Info("Created Job for node",
+		"nodeOp", nodeOp.Name,
+		"node", node.Name,
+		"job", job.Name)
+	return nil
+}
 
+// recordNodeJob records jobName as the upgrade Job of nodeName in the NodeOp
+// status.
+func (r *NodeOpReconciler) recordNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
 	// Initialize node status
 	if nodeOp.Status.NodeStatuses == nil {
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
@@ -677,26 +712,39 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 		rebootStatus = rebootStatusPending
 	}
 
-	nodeOp.Status.NodeStatuses[node.Name] = kairosiov1alpha1.NodeStatus{
+	nodeOp.Status.NodeStatuses[nodeName] = kairosiov1alpha1.NodeStatus{
 		Phase:        phasePending,
-		JobName:      actualJobName,
+		JobName:      jobName,
 		Message:      "Job created",
 		RebootStatus: rebootStatus,
 		LastUpdated:  metav1.Now(),
 	}
 
-	// Update NodeOp status
 	if err := r.Status().Update(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to update NodeOp status after Job creation")
+		logf.FromContext(ctx).Error(err, "Failed to update NodeOp status after Job creation")
 		return err
 	}
-
-	log.Info("Created Job for node",
-		"nodeOp", nodeOp.Name,
-		"node", node.Name,
-		"job", actualJobName)
-
 	return nil
+}
+
+// adoptExistingJob is called when creating the upgrade Job named jobName failed
+// with createErr. It reports whether the error says that upgrade Job already
+// exists and the existing one belongs to nodeOp. That happens when this
+// operator created the same upgrade Job between the check at the top of
+// createNodeJob and the create call, so recording it is safe. Any other error
+// is returned unchanged.
+func (r *NodeOpReconciler) adoptExistingJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, jobName string, createErr error) (bool, error) {
+	if !apierrors.IsAlreadyExists(createErr) {
+		return false, createErr
+	}
+	existing := &batchv1.Job{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: nodeOp.Namespace, Name: jobName}, existing); err != nil {
+		return false, err
+	}
+	if !metav1.IsControlledBy(existing, nodeOp) {
+		return false, fmt.Errorf("job %s exists and is not controlled by NodeOp %s: %w", jobName, nodeOp.Name, createErr)
+	}
+	return true, nil
 }
 
 // updateNodeOpStatus updates the status of the NodeOp based on Job statuses
@@ -716,6 +764,11 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Nodes still in the Preflight phase have no Job yet; their state is
 		// driven by manageJobCreation via the preflight Pod.
 		if status.Phase == phasePreflight {
+			continue
+		}
+		// A node waiting for its reboot Pod has no upgrade Job yet either;
+		// manageJobCreation creates it once the reboot Pod is ready.
+		if awaitingRebootPod(status) {
 			continue
 		}
 		// Skipped-by-preflight nodes are terminal: Phase=Completed, no Job,
@@ -772,7 +825,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 
 		// Count completed nodes based on whether reboot is required
 		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-			// Node is only completed when both job and reboot pod are completed
+			// The node is completed only when its upgrade Job completed and the node rebooted
 			if status.Phase == phaseCompleted && status.RebootStatus == rebootStatusCompleted {
 				completedNodes++
 			}
@@ -853,7 +906,13 @@ func (r *NodeOpReconciler) processJobStatus(ctx context.Context, nodeOp *kairosi
 				return status, nil
 			case batchv1.JobSuccessCriteriaMet, batchv1.JobComplete:
 				status.Phase = phaseCompleted
-				status.Message = "Job completed successfully"
+				status.Message = jobCompletedMessage
+				// processRebootStatus sets the reboot message only on the
+				// pass that confirms the reboot. Every later pass comes
+				// through here first, so it keeps that message.
+				if status.RebootStatus == rebootStatusCompleted {
+					status.Message = jobAndRebootCompletedMessage
+				}
 				status.LastUpdated = metav1.Now()
 				return status, nil
 			}
@@ -899,16 +958,15 @@ func (r *NodeOpReconciler) processRebootStatus(ctx context.Context, nodeOp *kair
 
 	// Process reboot completion for successfully completed jobs
 	if status.Phase == phaseCompleted && status.RebootStatus == rebootStatusPending {
-		// Check if reboot pod is completed
-		rebootCompleted, err := r.isRebootPodCompleted(ctx, nodeOp, nodeName)
+		rebootCompleted, err := r.isRebootCompleted(ctx, nodeOp, nodeName, &status)
 		if err != nil {
-			log.Error(err, "Failed to check reboot pod status", "node", nodeName)
+			log.Error(err, "Failed to check reboot completion", "node", nodeName)
 			return status, err
 		}
 
 		if rebootCompleted {
 			status.RebootStatus = rebootStatusCompleted
-			status.Message = "Job and reboot completed successfully"
+			status.Message = jobAndRebootCompletedMessage
 			status.LastUpdated = metav1.Now()
 		}
 	}
@@ -995,108 +1053,69 @@ func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj clie
 	return nil
 }
 
-// ensureClusterRBAC creates the cluster-wide RBAC resources for the reboot pod
-func (r *NodeOpReconciler) ensureClusterRBAC(ctx context.Context) error {
-	log := logf.FromContext(ctx)
-
-	// Create cluster role
-	clusterRole := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "nodeop-reboot",
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{""},
-				Resources: []string{"pods"},
-				Verbs:     []string{rbacVerbGet, "patch"},
-			},
-		},
-	}
-	if err := r.Create(ctx, clusterRole); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create cluster role")
-			return err
-		}
-	}
-
-	return nil
+// rebootRBACName is the name of the ServiceAccount, Role and RoleBinding that
+// nodeOp's reboot Pods run under.
+func rebootRBACName(nodeOp *kairosiov1alpha1.NodeOp) string {
+	return nodeOp.Name + "-reboot"
 }
 
-// ensureNodeOpServiceAccount creates the service account for a specific NodeOp
-func (r *NodeOpReconciler) ensureNodeOpServiceAccount(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
-	log := logf.FromContext(ctx)
-
-	// Create service account for this NodeOp
-	saName := fmt.Sprintf("%s-reboot", nodeOp.Name)
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      saName,
-			Namespace: nodeOp.Namespace,
+// ensureRebootRBAC creates, in the NodeOp's namespace, what a reboot Pod needs
+// to read its upgrade Job: a ServiceAccount, a Role that allows getting Jobs
+// and listing Pods, and a RoleBinding that grants the Role to the
+// ServiceAccount. All three belong to the NodeOp, so Kubernetes deletes them
+// together with it. Objects that already exist are kept as they are: an
+// earlier reconcile may have created them, and a released operator version
+// may have created a ServiceAccount with the same name for the same NodeOp.
+func (r *NodeOpReconciler) ensureRebootRBAC(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	name := rebootRBACName(nodeOp)
+	objects := []client.Object{
+		&corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
 		},
-	}
-	if err := controllerutil.SetControllerReference(nodeOp, sa, r.Scheme); err != nil {
-		log.Error(err, "Failed to set controller reference for service account")
-		return err
-	}
-	if err := r.Create(ctx, sa); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create service account")
-			return err
-		}
-	}
-
-	// Create cluster role binding for this NodeOp's service account
-	crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
-	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: crbName,
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{batchv1.GroupName}, Resources: []string{"jobs"}, Verbs: []string{verbGet}},
+				{APIGroups: []string{corev1.GroupName}, Resources: []string{"pods"}, Verbs: []string{verbList}},
+			},
 		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      kindServiceAccount,
-				Name:      saName,
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeOp.Namespace},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      name,
 				Namespace: nodeOp.Namespace,
+			}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     name,
 			},
 		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacAPIGroup,
-			Kind:     kindClusterRole,
-			Name:     "nodeop-reboot",
-		},
-	}
-	if err := r.Create(ctx, clusterRoleBinding); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create cluster role binding")
-			return err
-		}
 	}
 
-	// Add finalizer to NodeOp if not present
-	if !controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
-		controllerutil.AddFinalizer(nodeOp, clusterRoleBindingFinalizer)
-		if err := r.Update(ctx, nodeOp); err != nil {
-			log.Error(err, "Failed to add finalizer to NodeOp")
-			return err
+	for _, obj := range objects {
+		if err := controllerutil.SetControllerReference(nodeOp, obj, r.Scheme); err != nil {
+			return fmt.Errorf("setting controller reference on reboot %T %s: %w", obj, name, err)
+		}
+		if err := r.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating reboot %T %s: %w", obj, name, err)
 		}
 	}
-
 	return nil
 }
 
-// createRebootPod creates a reboot pod that waits for a sentinel file before rebooting
-// createRebootPod schedules a long-lived Pod on nodeName whose only job is to
-// watch /usr/local/.kairos for a sentinel file written by the upgrade Job's
-// sentinel-creator container, then reboot the host. We pass the upgrade Job's
-// full name (not just the jobBaseName prefix) so the watch pattern
-// "<jobName>-*" matches exactly one Job's sentinel — see startMainJob for the
-// rationale.
-func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) error {
+// createRebootPod creates the reboot Pod on nodeName for the upgrade Job named
+// jobName. The reboot Pod is created before its upgrade Job, so it is given
+// the upgrade Job's name up front (see startMainJob). It waits for the upgrade
+// Job to complete and then reboots the node, using the read-only permissions
+// from ensureRebootRBAC.
+func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) (*corev1.Pod, error) {
 	log := logf.FromContext(ctx)
 
-	// Ensure service account for reboot pod
-	if err := r.ensureNodeOpServiceAccount(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to ensure service account for reboot pod")
-		return err
+	if err := r.ensureRebootRBAC(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to ensure reboot RBAC", "node", nodeName)
+		return nil, err
 	}
 
 	// Get the operator image from environment variable
@@ -1124,91 +1143,40 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			HostPID:  true,
 			Containers: []corev1.Container{
 				{
-					Name:      "reboot",
+					Name:      rebootContainerName,
 					Image:     operatorImage,
 					Resources: nodeOp.RebootResourcesOrDefault(),
-					Command: []string{
-						"/bin/sh", //nolint:goconst // path literal; not worth a constant
-						"-c",
-						`echo "=== Checking for existing reboot annotation ==="
-EXISTING_ANNOTATION=$(kubectl get pod $POD_NAME --namespace $POD_NAMESPACE -o jsonpath='{.metadata.annotations.kairos\.io/reboot-state}' 2>/dev/null || echo "")
-if [ "$EXISTING_ANNOTATION" = "` + rebootStatusCompleted + `" ]; then
-	echo "Reboot annotation already exists, reboot was already performed. Exiting successfully."
-	exit 0
-fi
-echo "No reboot annotation found, proceeding with reboot process..."
-
-ls -la /sentinel/ || echo "Cannot list /sentinel directory"
-
-# Watch only for THIS Job's sentinel (` + jobName + `-*). Stale sentinels left by
-# previous runs use different Job names and can't match.
-while true; do
-	SENTINEL_FILE=$(find /sentinel -name "` + jobName + `-*" -type f 2>/dev/null | head -1)
-	if [ -n "$SENTINEL_FILE" ]; then
-		echo "Found sentinel file: $SENTINEL_FILE"
-		echo "Deleting sentinel file before reboot..."
-		rm -f "$SENTINEL_FILE"
-		echo "Attempting to patch pod..."
-		kubectl patch pod $POD_NAME -p '{"metadata":{"annotations":{"kairos.io/reboot-state":"` + rebootStatusCompleted + `"}}}' --namespace $POD_NAMESPACE || echo "kubectl patch failed"
-		echo "Giving 5 seconds to the Job Pod to exit gracefully..."
-		sleep 5
-		echo "Attempting reboot with nsenter..."
-		nsenter -i -m -t 1 -- reboot || echo "nsenter reboot failed"
-		break
-	fi
-	echo "No matching sentinel file found, sleeping..."
-	sleep 10
-done`,
-					},
+					// The reboot Pod runs the manager image's reboot-watcher
+					// program. It reads its upgrade Job through the API,
+					// compares the boot ID the upgrade Job reported with the
+					// node's current one, and reboots the node while they are
+					// equal.
+					Command: rebootwatcher.Command(),
 					SecurityContext: &corev1.SecurityContext{
 						Privileged: asBool(true),
 						RunAsUser:  &[]int64{0}[0],
 					},
 					Env: []corev1.EnvVar{
 						{
-							Name: "POD_NAME",
-							ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{
-									FieldPath: "metadata.name",
-								},
-							},
+							Name:  rebootwatcher.JobNameEnv,
+							Value: jobName,
 						},
 						{
-							Name: "POD_NAMESPACE",
+							Name: rebootwatcher.NamespaceEnv,
 							ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{
-									FieldPath: "metadata.namespace",
-								},
+								FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 							},
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      sentinelVolumeName,
-							MountPath: "/sentinel",
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: sentinelVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						HostPath: &corev1.HostPathVolumeSource{
-							Path: "/usr/local/.kairos",
-							Type: &[]corev1.HostPathType{corev1.HostPathDirectory}[0],
 						},
 					},
 				},
 			},
 			RestartPolicy:      corev1.RestartPolicyOnFailure,
-			ServiceAccountName: fmt.Sprintf("%s-reboot", nodeOp.Name),
+			ServiceAccountName: rebootRBACName(nodeOp),
 			// The reboot pod must survive the NotReady/Unreachable window caused
 			// by the very reboot it triggers. Without infinite NoExecute
 			// tolerations, the taint-eviction controller deletes the pod after
-			// the defaulted tolerationSeconds (300s stock), destroying the
-			// completion evidence and leaving the NodeOp with
-			// rebootStatus=pending and the node cordoned forever.
+			// the defaulted tolerationSeconds (300s stock), so it cannot run
+			// again after the node comes back, see the new boot ID and exit.
 			//
 			// TolerationSeconds is deliberately omitted: a NoExecute toleration
 			// without it tolerates the taint indefinitely, which is what makes
@@ -1230,81 +1198,224 @@ done`,
 
 	if err := controllerutil.SetControllerReference(nodeOp, rebootPod, r.Scheme); err != nil {
 		log.Error(err, "Failed to set controller reference for reboot pod")
-		return err
+		return nil, err
 	}
 
 	if err := r.Create(ctx, rebootPod); err != nil {
 		log.Error(err, "Failed to create reboot pod", "node", nodeName)
-		return err
+		return nil, err
 	}
 
 	log.Info("Created reboot pod", "node", nodeName, "pod", rebootPod.Name)
-	return nil
+	return rebootPod, nil
 }
 
-// cleanupRebootPodForNode removes the reboot pod for a failed job
-func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
-	log := logf.FromContext(ctx)
+// keepOneRebootPod leaves nodeName with at most one usable reboot Pod for
+// nodeOp. It deletes the node's other reboot Pods and returns the one it
+// kept, or nil when there is none and the caller has to create one.
+//
+// It is only called for a node whose upgrade Job does not exist yet, so none
+// of the node's reboot Pods has rebooted it in the current run. It sorts the
+// node's reboot Pods into three groups:
+//
+//   - Reboot Pods that are already being deleted are left alone.
+//   - Reboot Pods that have stopped (phase Succeeded or Failed) can no longer
+//     reboot the node, so they are deleted, and the caller creates a new one.
+//   - Reboot Pods that are running or starting can be used. If there is more
+//     than one, the oldest is kept and the others are deleted, so the node has
+//     a single reboot Pod and a single upgrade Job name.
+//
+// The reboot Pods are read directly from the API server. The controller's
+// local copy can lag behind, and missing a reboot Pod that the previous
+// reconcile created would make the caller create a second one.
+func (r *NodeOpReconciler) keepOneRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (*corev1.Pod, error) {
+	pods, err := r.listRebootPods(ctx, r.apiReader(), nodeOp, nodeName)
+	if err != nil {
+		return nil, err
+	}
+	var live, finished []corev1.Pod
+	for _, pod := range pods {
+		switch {
+		case !pod.DeletionTimestamp.IsZero():
+			// Already being deleted: not used, and not deleted a second time.
+		case pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed:
+			finished = append(finished, pod)
+		default:
+			live = append(live, pod)
+		}
+	}
+	if err := r.deleteRebootPods(ctx, finished); err != nil {
+		return nil, err
+	}
+	if len(live) == 0 {
+		return nil, nil
+	}
+	sort.Slice(live, func(i, j int) bool {
+		ti, tj := live[i].CreationTimestamp, live[j].CreationTimestamp
+		if !ti.Equal(&tj) {
+			return ti.Before(&tj)
+		}
+		return live[i].Name < live[j].Name
+	})
+	if err := r.deleteRebootPods(ctx, live[1:]); err != nil {
+		return nil, err
+	}
+	return &live[0], nil
+}
 
-	// Get the reboot pod for the failed job
+// listRebootPods returns all of nodeOp's reboot Pods on nodeName, read
+// through reader.
+func (r *NodeOpReconciler) listRebootPods(ctx context.Context, reader client.Reader, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
-	err := r.List(
+	if err := reader.List(
 		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
-		client.MatchingLabels(map[string]string{
+		client.MatchingLabels{
 			labelKeyNodeOp: nodeOp.Name,
 			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
 			labelKeyNode:   nodeName,
-		}),
-	)
-	if err != nil {
-		log.Error(err, "Failed to list reboot pods", "node", nodeName)
-		return err
+		},
+	); err != nil {
+		return nil, err
 	}
+	return podList.Items, nil
+}
 
-	if len(podList.Items) > 0 {
-		pod := podList.Items[0]
-		log.Info("Deleting reboot pod for failed job", "node", nodeName, "pod", pod.Name)
-		if err := r.Delete(ctx, &pod); err != nil {
-			log.Error(err, "Failed to delete reboot pod for failed job", "node", nodeName)
+// deleteRebootPods deletes the given reboot Pods. Reboot Pods that are already
+// being deleted are skipped, and reboot Pods that are already gone are not an
+// error.
+func (r *NodeOpReconciler) deleteRebootPods(ctx context.Context, pods []corev1.Pod) error {
+	log := logf.FromContext(ctx)
+	for i := range pods {
+		pod := &pods[i]
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		log.Info("Deleting reboot pod", "node", pod.Spec.NodeName, "pod", pod.Name, "phase", pod.Status.Phase)
+		if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+			log.Error(err, "Failed to delete reboot pod", "node", pod.Spec.NodeName, "pod", pod.Name)
 			return err
 		}
 	}
-
 	return nil
 }
 
-// isRebootPodCompleted checks if the reboot pod for a node is completed
-func (r *NodeOpReconciler) isRebootPodCompleted(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (bool, error) {
-	log := logf.FromContext(ctx)
-
-	// Get the reboot pod for the node
-	podList := &corev1.PodList{}
-	err := r.List(
-		ctx, podList,
-		client.InNamespace(nodeOp.Namespace),
-		client.MatchingLabels(map[string]string{
-			labelKeyNodeOp: nodeOp.Name,
-			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
-			labelKeyNode:   nodeName,
-		}),
-	)
-	if err != nil {
-		log.Error(err, "Failed to list reboot pods", "node", nodeName)
-		return false, err
-	}
-
-	if len(podList.Items) > 0 {
-		pod := podList.Items[0]
-		// Check if pod has succeeded AND has the reboot completion annotation
-		if pod.Status.Phase == corev1.PodSucceeded {
-			if rebootState, exists := pod.Annotations["kairos.io/reboot-state"]; exists && rebootState == rebootStatusCompleted {
-				return true, nil
+// rebootPodJobName returns the name of the upgrade Job that the reboot Pod
+// waits for, or "" when the reboot Pod does not name one.
+func rebootPodJobName(pod *corev1.Pod) string {
+	for _, container := range pod.Spec.Containers {
+		for _, env := range container.Env {
+			if env.Name == rebootwatcher.JobNameEnv {
+				return env.Value
 			}
 		}
 	}
+	return ""
+}
 
-	return false, nil
+// cleanupRebootPodForNode deletes all of nodeOp's reboot Pods on nodeName.
+func (r *NodeOpReconciler) cleanupRebootPodForNode(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
+	pods, err := r.listRebootPods(ctx, r.Client, nodeOp, nodeName)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list reboot pods", "node", nodeName)
+		return err
+	}
+	return r.deleteRebootPods(ctx, pods)
+}
+
+// isRebootCompleted reports whether nodeName has rebooted since its upgrade
+// Job finished.
+//
+// The comparison point is the boot ID that the upgrade Job's boot-id-reporter
+// container wrote to its termination message. Kubernetes stores that message
+// in the same status update that marks the upgrade Job's Pod as finished, so
+// it is in the cluster as soon as the upgrade has finished, whether or not
+// the operator was running at that moment. The first call that finds it
+// copies it to status.PreRebootBootID, which is saved with the rest of the
+// NodeOp status, so it is kept even if the upgrade Job's Pod is deleted later.
+//
+// The reboot Pod is not involved: the Node's own boot ID is the proof. This
+// still works when the reboot Pod never runs again after the reboot, for
+// example when the upgraded kubelet cannot start containers yet. Without a
+// valid boot ID from the upgrade Job no reboot can be proven, so the node
+// stays cordoned and its reboot stays pending.
+func (r *NodeOpReconciler) isRebootCompleted(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, status *kairosiov1alpha1.NodeStatus) (bool, error) {
+	log := logf.FromContext(ctx)
+
+	if status.PreRebootBootID == "" {
+		bootID, err := r.jobPodBootID(ctx, nodeOp.Namespace, status.JobName)
+		if err != nil {
+			return false, err
+		}
+		if !bootid.Valid(bootID) {
+			log.V(1).Info("No Succeeded Job Pod with a valid boot ID is available yet; leaving the reboot pending",
+				"node", nodeName,
+				"job", status.JobName)
+			return false, nil
+		}
+		status.PreRebootBootID = bootID
+		status.LastUpdated = metav1.Now()
+		log.Info("Recorded pre-reboot boot ID", "node", nodeName, "bootID", bootID)
+	}
+
+	return r.nodeRebootedSince(ctx, nodeName, status.PreRebootBootID)
+}
+
+// jobPodBootID returns the boot ID reported by the upgrade Job named jobName,
+// read from that upgrade Job's succeeded Pod, or "" when no Pod reports a
+// valid one.
+func (r *NodeOpReconciler) jobPodBootID(ctx context.Context, namespace, jobName string) (string, error) {
+	if jobName == "" {
+		return "", nil
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{batchv1.JobNameLabel: jobName},
+	); err != nil {
+		return "", err
+	}
+
+	return bootid.FromJobPods(podList.Items), nil
+}
+
+// nodeRebootedSince reports whether nodeName is back up on a different boot
+// than preRebootBootID. The kubelet refreshes status.nodeInfo.bootID on every
+// boot, so this is a level-triggered fact: unlike a Ready=True -> Ready=False
+// -> Ready=True transition it cannot be missed between two reconciles. The node
+// must also be Ready, so that a node observed mid-reboot is not called done.
+//
+// An empty preRebootBootID means there is nothing to compare with, so no
+// reboot can be proven and the answer is false.
+func (r *NodeOpReconciler) nodeRebootedSince(ctx context.Context, nodeName, preRebootBootID string) (bool, error) {
+	if preRebootBootID == "" {
+		return false, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if node.Status.NodeInfo.BootID == "" || node.Status.NodeInfo.BootID == preRebootBootID {
+		return false, nil
+	}
+
+	return isNodeReady(node), nil
+}
+
+// isNodeReady reports whether the node's Ready condition is currently True.
+func isNodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // handleDeletion handles the finalization process when a NodeOp is being deleted
@@ -1315,8 +1426,14 @@ func (r *NodeOpReconciler) handleDeletion(ctx context.Context, nodeOp *kairosiov
 
 	log := logf.FromContext(ctx)
 
+	// NodeOps created by released operator versions carry
+	// clusterRoleBindingFinalizer and a cluster-wide ClusterRoleBinding named
+	// nodeop-reboot-<name>, which gave their reboot Pod its permissions.
+	// Deleting such a NodeOp deletes that binding, if it still exists, and
+	// then removes the finalizer so the NodeOp can go away. The ServiceAccount
+	// the binding points to belongs to the NodeOp, so Kubernetes deletes it
+	// with the NodeOp.
 	if controllerutil.ContainsFinalizer(nodeOp, clusterRoleBindingFinalizer) {
-		// Delete the ClusterRoleBinding
 		crbName := fmt.Sprintf("nodeop-reboot-%s", nodeOp.Name)
 		clusterRoleBinding := &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1392,10 +1509,11 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 	return sortedNodes, nil
 }
 
-// manageJobCreation drives per-node state transitions: it advances preflight
-// Pods that already exist, starts preflight or main work for nodes that don't
-// have any state yet (respecting Concurrency and StopOnFailure), and creates
-// the main Job when a preflight has reported "proceed".
+// manageJobCreation moves each node through its states. It advances
+// preflight Pods that already exist, creates the upgrade Job for nodes whose
+// reboot Pod is ready, starts the preflight Pod or the upgrade for nodes that
+// have no state yet (respecting Concurrency and StopOnFailure), and starts the
+// upgrade when a preflight Pod has reported "proceed".
 func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
 	log := logf.FromContext(ctx)
 
@@ -1410,27 +1528,37 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 
 	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
 		log.Info("Stopping job creation due to failure and StopOnFailure=true")
-		return nil
+		return r.releaseWaitingNodes(ctx, nodeOp)
 	}
 
-	// First pass: advance any nodes currently in Preflight. Skipped/Failed
-	// outcomes free their slot; proceed outcomes transition into the normal
-	// Job-creation path inline (slot stays held by the same node).
+	// First pass: advance nodes that are in Preflight or waiting for their
+	// reboot Pod. A preflight Pod that says skip, or that failed, frees the
+	// node's slot. A preflight Pod that says proceed, and a node still waiting
+	// for its reboot Pod, go through startMainJob right away, and the node
+	// keeps its slot.
 	for _, node := range targetNodes {
 		status, exists := nodeOp.Status.NodeStatuses[node.Name]
-		if !exists || status.Phase != phasePreflight {
+		if !exists {
 			continue
 		}
-		if err := r.advancePreflight(ctx, nodeOp, node); err != nil {
-			log.Error(err, "Failed to advance preflight for node", "node", node.Name)
-			return err
+		switch {
+		case status.Phase == phasePreflight:
+			if err := r.advancePreflight(ctx, nodeOp, node); err != nil {
+				log.Error(err, "Failed to advance preflight for node", "node", node.Name)
+				return err
+			}
+		case awaitingRebootPod(status):
+			if err := r.startMainJob(ctx, nodeOp, node); err != nil {
+				log.Error(err, "Failed to start main Job for node", "node", node.Name)
+				return err
+			}
 		}
 	}
 
 	// StopOnFailure may have been tripped by a preflight failure recorded above.
 	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
 		log.Info("Stopping new work after preflight failure (StopOnFailure=true)")
-		return nil
+		return r.releaseWaitingNodes(ctx, nodeOp)
 	}
 
 	// Second pass: start work for nodes that don't have a status entry yet,
@@ -1490,31 +1618,212 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 	return nil
 }
 
-// startMainJob creates the reboot Pod (if RebootOnSuccess) and then the main
-// upgrade Job for a node. Shared by the no-preflight path and the
-// preflight-proceeded path.
+// startMainJob starts the upgrade of a node. Without RebootOnSuccess it
+// creates the upgrade Job right away. With RebootOnSuccess it first makes sure
+// the node has a reboot Pod, and creates the upgrade Job only once that reboot
+// Pod is ready (see rebootPodReady): an upgrade without a working reboot Pod
+// would leave the node upgraded and never rebooted. Until then the node is
+// recorded as waiting. It is called for nodes without preflight, for nodes
+// whose preflight Pod reported "proceed", and again for nodes that are
+// waiting for their reboot Pod.
 //
-// We mint a short per-run ID up-front and use it as the suffix of the Job's
-// explicit Name (instead of relying on Kubernetes' GenerateName, which only
-// reveals the assigned name after Create). The reboot Pod, which is created
-// BEFORE the Job to survive drain, can then be told exactly which Job's
-// sentinel file to watch for ("<jobName>-*"). Without this, the reboot Pod
-// could only watch on "<jobBaseName>-*" — a pattern that matches both the
-// active Job's sentinel and any stale sentinels left behind by a previous
-// interrupted run, which used to require a startup "cleanup" pass that raced
-// the active Job's sentinel-creator. Unique per-run names eliminate that
-// ambiguity (so the cleanup pass is gone).
+// The upgrade Job's name is chosen here, before the upgrade Job exists: a
+// fixed prefix plus a short random suffix. Kubernetes' generateName is not
+// used because it only reveals the name after the upgrade Job is created, and
+// the reboot Pod, which is created first so that the drain leaves it alone,
+// needs the name up front. While the node waits, the name is stored only in
+// the reboot Pod, and later calls read it back from there. Every run gets a
+// new name, so an upgrade Job left over from an earlier run is never mistaken
+// for the current one.
 func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
-	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
-	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
-	jobName := jobBaseName + "-" + rand.String(5)
+	if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
+		return r.createNodeJob(ctx, nodeOp, node, newJobName(nodeOp, node))
+	}
 
-	if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		if err := r.createRebootPod(ctx, nodeOp, node.Name, jobName); err != nil {
+	rebootPod, err := r.keepOneRebootPod(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
+	}
+	if rebootPod == nil {
+		rebootPod, err = r.createRebootPod(ctx, nodeOp, node.Name, newJobName(nodeOp, node))
+		if err != nil {
 			return err
 		}
 	}
+	jobName := rebootPodJobName(rebootPod)
+	if jobName == "" {
+		return fmt.Errorf("reboot Pod %s does not name its upgrade Job in %s", rebootPod.Name, rebootwatcher.JobNameEnv)
+	}
+
+	if !rebootPodReady(rebootPod) {
+		return r.awaitRebootPod(ctx, nodeOp, node.Name, rebootPod)
+	}
 	return r.createNodeJob(ctx, nodeOp, node, jobName)
+}
+
+// rebootPodReady reports whether the reboot Pod's program is running: the
+// Pod's Ready condition is True and its container is running. The Pod's
+// Running phase alone is not enough, because a container that keeps crashing
+// leaves the Pod in the Running phase.
+func rebootPodReady(pod *corev1.Pod) bool {
+	ready := false
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			ready = condition.Status == corev1.ConditionTrue
+		}
+	}
+	if !ready {
+		return false
+	}
+	status := rebootContainerStatus(pod)
+	return status != nil && status.State.Running != nil
+}
+
+// rebootContainerStatus returns the status of the reboot Pod's container, or
+// nil when Kubernetes has not reported it yet.
+func rebootContainerStatus(pod *corev1.Pod) *corev1.ContainerStatus {
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == rebootContainerName {
+			return &pod.Status.ContainerStatuses[i]
+		}
+	}
+	return nil
+}
+
+// newJobName returns a new, unique name for an upgrade Job of nodeOp on node.
+func newJobName(nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) string {
+	fullName := fmt.Sprintf("%s-%s", nodeOp.Name, node.Name)
+	jobBaseName := utils.TruncateNameWithHash(fullName, utils.KubernetesNameLengthLimit-6)
+	return jobBaseName + "-" + rand.String(5)
+}
+
+// awaitingRebootPod reports whether status belongs to a node that is waiting
+// for its reboot Pod to be ready before its upgrade Job is created.
+func awaitingRebootPod(status kairosiov1alpha1.NodeStatus) bool {
+	return status.Phase == phasePending && status.JobName == ""
+}
+
+// awaitRebootPod records in the NodeOp status that nodeName is waiting for
+// rebootPod to be ready before its upgrade Job is created. The node is
+// Pending, so it takes up one of the concurrency slots. The operator watches
+// reboot Pods, so it looks at the node again when rebootPod changes. The
+// status message names the reboot Pod's phase once it is past Pending (for
+// example Unknown, when its node stops reporting) and the reason its
+// container is waiting (for example ImagePullBackOff or CrashLoopBackOff).
+func (r *NodeOpReconciler) awaitRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string, rebootPod *corev1.Pod) error {
+	var details []string
+	if phase := rebootPod.Status.Phase; phase != "" && phase != corev1.PodPending {
+		details = append(details, fmt.Sprintf("reboot Pod phase: %s", phase))
+	}
+	if status := rebootContainerStatus(rebootPod); status != nil && status.State.Waiting != nil && status.State.Waiting.Reason != "" {
+		details = append(details, fmt.Sprintf("container: %s", status.State.Waiting.Reason))
+	}
+	message := "Waiting for the reboot Pod to be ready"
+	if len(details) > 0 {
+		message = fmt.Sprintf("%s (%s)", message, strings.Join(details, ", "))
+	}
+	if status, ok := nodeOp.Status.NodeStatuses[nodeName]; ok && awaitingRebootPod(status) && status.Message == message {
+		return nil
+	}
+	if nodeOp.Status.NodeStatuses == nil {
+		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
+	}
+	nodeOp.Status.NodeStatuses[nodeName] = kairosiov1alpha1.NodeStatus{
+		Phase:        phasePending,
+		Message:      message,
+		RebootStatus: rebootStatusPending,
+		LastUpdated:  metav1.Now(),
+	}
+	if err := r.Status().Update(ctx, nodeOp); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("Waiting for the reboot Pod before creating the upgrade Job",
+		"node", nodeName, "pod", rebootPod.Name, "phase", rebootPod.Status.Phase)
+	return nil
+}
+
+// releaseWaitingNodes runs when StopOnFailure halts the operation after a
+// failure. It handles the nodes that are still waiting for their reboot Pod
+// to be ready. Their upgrade has not started: no upgrade Job exists and the
+// node is not cordoned. Left alone, such a node would wait forever, because
+// the halted operation never starts its upgrade. So the node is dropped from
+// the operation: its reboot Pods are deleted and the node is removed from the
+// NodeOp status, as if it had never been picked.
+//
+// There is one exception. The operator may have created a node's upgrade Job
+// and then failed to save that in the NodeOp status, so the node still looks
+// like it is waiting while its upgrade is already running. For such a node
+// the upgrade Job is saved in the NodeOp status instead, and the reboot Pod
+// is kept, so the node is still rebooted and uncordoned when the upgrade
+// finishes.
+//
+// The reboot Pods are deleted before the node is removed from the NodeOp
+// status. If saving the status fails, the node is still waiting, and the
+// operator tries again the next time it processes the NodeOp.
+func (r *NodeOpReconciler) releaseWaitingNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+	log := logf.FromContext(ctx)
+	var released []string
+	for nodeName, status := range nodeOp.Status.NodeStatuses {
+		if !awaitingRebootPod(status) {
+			continue
+		}
+		jobName, err := r.unrecordedNodeJob(ctx, nodeOp, nodeName)
+		if err != nil {
+			return err
+		}
+		if jobName != "" {
+			log.Info("Job already exists; recording it", "node", nodeName, "job", jobName)
+			if err := r.recordNodeJob(ctx, nodeOp, nodeName, jobName); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
+			return err
+		}
+		released = append(released, nodeName)
+	}
+	if len(released) == 0 {
+		return nil
+	}
+	for _, nodeName := range released {
+		delete(nodeOp.Status.NodeStatuses, nodeName)
+	}
+	if err := r.Status().Update(ctx, nodeOp); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).Info("Released nodes waiting for their reboot Pod (StopOnFailure=true)", "nodes", released)
+	return nil
+}
+
+// unrecordedNodeJob returns the name of the upgrade Job that one of nodeOp's
+// reboot Pods on nodeName names and that belongs to nodeOp, or "" when there
+// is none. It reads directly from the API server: an upgrade Job created
+// moments ago may be missing from the controller's local copy, and releasing
+// its node would leave that upgrade Job running with nothing tracking it.
+func (r *NodeOpReconciler) unrecordedNodeJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (string, error) {
+	pods, err := r.listRebootPods(ctx, r.apiReader(), nodeOp, nodeName)
+	if err != nil {
+		return "", err
+	}
+	for i := range pods {
+		jobName := rebootPodJobName(&pods[i])
+		if jobName == "" {
+			continue
+		}
+		job := &batchv1.Job{}
+		err := r.apiReader().Get(ctx, types.NamespacedName{Namespace: nodeOp.Namespace, Name: jobName}, job)
+		switch {
+		case apierrors.IsNotFound(err):
+			continue
+		case err != nil:
+			return "", err
+		}
+		if metav1.IsControlledBy(job, nodeOp) {
+			return jobName, nil
+		}
+	}
+	return "", nil
 }
 
 // hasFailedJobs checks if any jobs have failed
