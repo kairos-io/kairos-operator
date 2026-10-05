@@ -90,6 +90,9 @@ const (
 	// RBAC verbs used in rules the controllers create
 	verbGet  = "get"
 	verbList = "list"
+	// RBAC resource names used in those rules
+	resourceJobs = "jobs"
+	resourcePods = "pods"
 )
 
 // bootIDReporterResources are the fixed resources of the upgrade Job's
@@ -1069,8 +1072,8 @@ func rebootRBACName(nodeOp *kairosiov1alpha1.NodeOp) string {
 // wants.
 func rebootRoleRules() []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
-		{APIGroups: []string{batchv1.GroupName}, Resources: []string{"jobs"}, Verbs: []string{verbGet}},
-		{APIGroups: []string{corev1.GroupName}, Resources: []string{"pods"}, Verbs: []string{verbList}},
+		{APIGroups: []string{batchv1.GroupName}, Resources: []string{resourceJobs}, Verbs: []string{verbGet}},
+		{APIGroups: []string{corev1.GroupName}, Resources: []string{resourcePods}, Verbs: []string{verbList}},
 	}
 }
 
