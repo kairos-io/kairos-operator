@@ -37,6 +37,11 @@ const (
 	hostEtcMountPath  = "/host/etc"
 	// Common label keys
 	labelKeyKairosManaged = "kairos.io/managed"
+	// clusterRoleKind is the RoleRef kind of a cluster-scoped role. rbacv1
+	// exports the Subject kinds but no RoleRef one, so the string has to be
+	// written somewhere; writing it once keeps the binding this operator
+	// creates and the ones its tests assert on from drifting apart.
+	clusterRoleKind = "ClusterRole"
 )
 
 // NodeLabelerReconciler reconciles nodes to ensure they are labeled
@@ -292,7 +297,7 @@ func (r *NodeLabelerReconciler) ensureClusterRoleBinding(ctx context.Context, na
 			Subjects:   []rbacv1.Subject{want},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: rbacv1.GroupName,
-				Kind:     "ClusterRole",
+				Kind:     clusterRoleKind,
 				Name:     nodeLabelerServiceAccount,
 			},
 		}

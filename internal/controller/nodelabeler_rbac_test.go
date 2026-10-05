@@ -69,7 +69,7 @@ var _ = Describe("NodeLabelerReconciler ensureServiceAccount", func() {
 			Subjects:   []rbacv1.Subject{nodeLabelerSubject(namespace)},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: rbacv1.GroupName,
-				Kind:     "ClusterRole",
+				Kind:     clusterRoleKind,
 				Name:     nodeLabelerServiceAccount,
 			},
 		}
