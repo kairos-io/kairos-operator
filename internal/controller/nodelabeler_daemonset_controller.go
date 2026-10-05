@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
 
@@ -52,10 +51,12 @@ func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, r.ensureDaemonSet(ctx, req.Namespace)
 }
 
-// ensureDaemonSetOnStartup is called from SetupWithManager before the cache is
-// started, so reads must go through apiReader (mgr.GetAPIReader()), not the cached client.
-// On first install it creates the DaemonSet; on subsequent operator startups (e.g. upgrades)
-// it patches the spec so that a new NODE_LABELER_IMAGE is rolled out without manual intervention.
+// ensureDaemonSetOnStartup runs once per operator start, as a startup task (see
+// addStartupTask). On first install it creates the DaemonSet; on later operator
+// starts (e.g. upgrades) it patches the spec so that a new NODE_LABELER_IMAGE is
+// rolled out without manual intervention. It reads the existing DaemonSet
+// through apiReader (mgr.GetAPIReader()), so the patch is based on the live
+// object and not on the cache.
 func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, apiReader client.Reader, namespace string) error {
 	desired := r.buildDaemonSet(namespace)
 	if err := r.Create(ctx, desired); err != nil {
@@ -176,8 +177,11 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 
 func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	namespace := getOperatorNamespace()
-	if err := r.ensureDaemonSetOnStartup(context.Background(), mgr.GetAPIReader(), namespace); err != nil {
-		return fmt.Errorf("ensuring node-labeler DaemonSet: %w", err)
+	apiReader := mgr.GetAPIReader()
+	if err := addStartupTask(mgr, "node-labeler DaemonSet", func(ctx context.Context) error {
+		return r.ensureDaemonSetOnStartup(ctx, apiReader, namespace)
+	}); err != nil {
+		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.DaemonSet{}, builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {

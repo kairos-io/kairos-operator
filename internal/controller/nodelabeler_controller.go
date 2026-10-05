@@ -181,7 +181,7 @@ func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namesp
 			{
 				APIGroups: []string{""},
 				Resources: []string{"nodes"},
-				Verbs:     []string{"get", "list", "watch", "update", "patch"},
+				Verbs:     []string{verbGet, verbList, "watch", "update", "patch"},
 			},
 		},
 	}
@@ -257,11 +257,11 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	setupLog := logf.Log.WithName("setup")
 
-	// Ensure RBAC resources are created when the controller starts
 	namespace := getOperatorNamespace()
-	if err := r.ensureServiceAccount(context.Background(), namespace); err != nil {
-		setupLog.Error(err, "Failed to ensure service account and RBAC")
-		os.Exit(1)
+	if err := addStartupTask(mgr, "node-labeler ServiceAccount and RBAC", func(ctx context.Context) error {
+		return r.ensureServiceAccount(ctx, namespace)
+	}); err != nil {
+		return err
 	}
 
 	// Define selector for nodes that should be ignored
