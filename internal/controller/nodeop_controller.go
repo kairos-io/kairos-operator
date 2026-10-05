@@ -1699,21 +1699,47 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 // fixed prefix plus a short random suffix. Kubernetes' generateName is not
 // used because it only reveals the name after the upgrade Job is created, and
 // the reboot Pod, which is created first so that the drain leaves it alone,
-// needs the name up front. While the node waits, the name is stored only in
-// the reboot Pod, and later calls read it back from there. Every run gets a
-// new name, so an upgrade Job left over from an earlier run is never mistaken
-// for the current one.
+// needs the name up front.
+//
+// A new name is minted only for a node that has no upgrade Job yet. Every
+// early return in createNodeJob (a drain that cannot evict a Pod, a cordon
+// that fails, a Job rejected by a quota or a webhook, a conflicting status
+// update) leaves the node without a NodeStatus entry, so the next reconcile
+// runs this function again from the top. Minting a second name there would
+// run the same command twice on one node, so the name of the Job a previous
+// attempt already created wins, read back from the API server. The reboot
+// Pod holds the name while no Job exists yet, and a reboot Pod naming a Job
+// the node does not have is replaced: it watches for a Job that will never
+// appear, so it can never reboot the node. See kairos-io/kairos#4899.
 func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, node corev1.Node) error {
+	adopted, err := r.existingNodeJobName(ctx, nodeOp, node.Name)
+	if err != nil {
+		return err
+	}
+
 	if !getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
-		return r.createNodeJob(ctx, nodeOp, node, newJobName(nodeOp, node))
+		if adopted == "" {
+			adopted = newJobName(nodeOp, node)
+		}
+		return r.createNodeJob(ctx, nodeOp, node, adopted)
 	}
 
 	rebootPod, err := r.keepOneRebootPod(ctx, nodeOp, node.Name)
 	if err != nil {
 		return err
 	}
+	if rebootPod != nil && adopted != "" && rebootPodJobName(rebootPod) != adopted {
+		if err := r.deleteRebootPods(ctx, []corev1.Pod{*rebootPod}); err != nil {
+			return err
+		}
+		rebootPod = nil
+	}
 	if rebootPod == nil {
-		rebootPod, err = r.createRebootPod(ctx, nodeOp, node.Name, newJobName(nodeOp, node))
+		name := adopted
+		if name == "" {
+			name = newJobName(nodeOp, node)
+		}
+		rebootPod, err = r.createRebootPod(ctx, nodeOp, node.Name, name)
 		if err != nil {
 			return err
 		}
@@ -1727,6 +1753,48 @@ func (r *NodeOpReconciler) startMainJob(ctx context.Context, nodeOp *kairosiov1a
 		return r.awaitRebootPod(ctx, nodeOp, node.Name, rebootPod)
 	}
 	return r.createNodeJob(ctx, nodeOp, node, jobName)
+}
+
+// existingNodeJobName returns the name of the upgrade Job nodeOp already has
+// on nodeName, or "" when it has none. It is read through the API server
+// rather than the cache, because the controller's local copy can lag behind
+// and missing a Job a previous attempt created is what makes a second one
+// appear.
+//
+// Jobs carry the NodeOp's own labels and are owned by it, so a match belongs
+// to this NodeOp's run on this node. Only Jobs this NodeOp controls are
+// considered; a foreign Job with the same labels is left to createNodeJob,
+// which refuses it by name. When more than one matches, the oldest wins, so
+// repeated calls agree on the same Job.
+func (r *NodeOpReconciler) existingNodeJobName(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) (string, error) {
+	jobList := &batchv1.JobList{}
+	if err := r.apiReader().List(
+		ctx, jobList,
+		client.InNamespace(nodeOp.Namespace),
+		client.MatchingLabels{
+			labelKeyNodeOp: nodeOp.Name,
+			labelKeyNode:   nodeName,
+		},
+	); err != nil {
+		return "", err
+	}
+	var owned []batchv1.Job
+	for _, job := range jobList.Items {
+		if metav1.IsControlledBy(&job, nodeOp) {
+			owned = append(owned, job)
+		}
+	}
+	if len(owned) == 0 {
+		return "", nil
+	}
+	sort.Slice(owned, func(i, j int) bool {
+		ti, tj := owned[i].CreationTimestamp, owned[j].CreationTimestamp
+		if !ti.Equal(&tj) {
+			return ti.Before(&tj)
+		}
+		return owned[i].Name < owned[j].Name
+	})
+	return owned[0].Name, nil
 }
 
 // rebootPodReady reports whether the reboot Pod's program is running: the
