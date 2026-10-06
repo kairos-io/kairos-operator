@@ -28,12 +28,14 @@ import (
 type OSArtifactKind string
 
 const (
-	OSArtifactKindISO     OSArtifactKind = "iso"
-	OSArtifactKindCloud   OSArtifactKind = "cloud"
-	OSArtifactKindAzure   OSArtifactKind = "azure"
-	OSArtifactKindGCE     OSArtifactKind = "gce"
-	OSArtifactKindNetboot OSArtifactKind = "netboot"
-	OSArtifactKindUKI     OSArtifactKind = "uki"
+	OSArtifactKindISO            OSArtifactKind = "iso"
+	OSArtifactKindCloud          OSArtifactKind = "cloud"
+	OSArtifactKindAzure          OSArtifactKind = "azure"
+	OSArtifactKindGCE            OSArtifactKind = "gce"
+	OSArtifactKindNetboot        OSArtifactKind = "netboot"
+	OSArtifactKindUKI            OSArtifactKind = "uki"
+	OSArtifactKindBuildah        OSArtifactKind = "buildah"
+	OSArtifactKindImageExtractor OSArtifactKind = "imageExtractor"
 )
 
 var reservedVolumeNames = map[string]bool{
@@ -107,6 +109,10 @@ type ImageSpec struct {
 	// CACertificatesVolume names a volume (from spec.volumes) to mount at /etc/ssl/buildah/certs on the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
+
+	// StorageVolume names a volume (from spec.volumes) to mount at /var/lib/containers for Buildah's image storage. Only used when building (Ref empty). When empty, Buildah uses the container's writable layer.
+	// +optional
+	StorageVolume string `json:"storageVolume,omitempty"`
 
 	// PullInsecureRegistry allows pulling images from registries over plain HTTP or with untrusted/self-signed TLS certificates. It applies wherever the operator pulls an image: the buildah base-image pull during the OCI build step (buildah bud --tls-verify=false), and the auroraboot unpack of a pre-built image.ref and of artifacts.bundles (auroraboot unpack --allow-insecure-registries). Use for HTTP-only or self-signed-cert registries, for example a local or in-cluster registry.
 	// +optional
@@ -206,6 +212,10 @@ type ArtifactSpec struct {
 	// Volume names a volume (from spec.volumes) to use for build outputs (ISO, cloud images, etc.) instead of the operator-created PVC. When set, the operator does not create a PVC; the builder pod and exporter jobs use this volume (mounted at /artifacts). When empty, the operator creates a PVC. Useful for mounting a host directory (e.g. hostPath) so artifacts land directly on the node. Only relevant when at least one artifact type is enabled.
 	// +optional
 	Volume string `json:"volume,omitempty"`
+
+	// RootfsVolume names a volume (from spec.volumes) to use for the unpacked root filesystem. When empty, the builder Pod uses an emptyDir volume.
+	// +optional
+	RootfsVolume string `json:"rootfsVolume,omitempty"`
 }
 
 // UKISpec groups UKI (signed/trusted boot) artifact options. Keys are read from the volume named by KeysVolume.
@@ -344,6 +354,14 @@ type ResourcesSpec struct {
 	// UKI resource requirements for the UKI (signed boot) builder containers.
 	// +optional
 	UKI *corev1.ResourceRequirements `json:"uki,omitempty"`
+
+	// Buildah resource requirements for the buildah-build container.
+	// +optional
+	Buildah *corev1.ResourceRequirements `json:"buildah,omitempty"`
+
+	// ImageExtractor resource requirements for the image-extractor container.
+	// +optional
+	ImageExtractor *corev1.ResourceRequirements `json:"imageExtractor,omitempty"`
 
 	// Pod sets pod-level resource requests and limits on the builder pod. Requires
 	// the PodLevelResources feature gate on the cluster (beta since Kubernetes 1.32);
@@ -497,6 +515,9 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 			return fmt.Errorf("spec.image.caCertificatesVolume references volume %q which is not defined in spec.volumes", img.CACertificatesVolume)
 		}
 	}
+	if img.StorageVolume != "" && !volumeNames[img.StorageVolume] {
+		return fmt.Errorf("spec.image.storageVolume references volume %q which is not defined in spec.volumes", img.StorageVolume)
+	}
 
 	return nil
 }
@@ -516,6 +537,9 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 	}
 	if a.Volume != "" && !volumeNames[a.Volume] {
 		return fmt.Errorf("spec.artifacts.volume references volume %q which is not defined in spec.volumes", a.Volume)
+	}
+	if a.RootfsVolume != "" && !volumeNames[a.RootfsVolume] {
+		return fmt.Errorf("spec.artifacts.rootfsVolume references volume %q which is not defined in spec.volumes", a.RootfsVolume)
 	}
 	if hasUKI {
 		if a.UKI.KeysVolume == "" {
@@ -578,6 +602,10 @@ func (s *OSArtifact) ResourcesFor(kind OSArtifactKind) corev1.ResourceRequiremen
 		resources = s.Spec.Resources.Netboot
 	case OSArtifactKindUKI:
 		resources = s.Spec.Resources.UKI
+	case OSArtifactKindBuildah:
+		resources = s.Spec.Resources.Buildah
+	case OSArtifactKindImageExtractor:
+		resources = s.Spec.Resources.ImageExtractor
 	}
 
 	if resources == nil {

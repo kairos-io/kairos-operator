@@ -34,15 +34,16 @@ import (
 const (
 	aurorabootUnpackCmd = "auroraboot unpack"
 	// Volume names and mount paths shared by the unpack/build/release containers.
-	rootfsVolumeName       = "rootfs"
-	rootfsMountPath        = "/rootfs"
-	artifactsVolumeName    = "artifacts"
-	artifactsMountPath     = "/artifacts"
-	configVolumeName       = "config"
-	overlayISOMountPath    = "/overlay-iso"
-	overlayRootfsMountPath = "/overlay-rootfs"
-	ocispecVolumeName      = "ocispec"
-	cloudConfigMountPath   = "/cloud-config.yaml"
+	rootfsVolumeName        = "rootfs"
+	rootfsMountPath         = "/rootfs"
+	artifactsVolumeName     = "artifacts"
+	artifactsMountPath      = "/artifacts"
+	configVolumeName        = "config"
+	overlayISOMountPath     = "/overlay-iso"
+	overlayRootfsMountPath  = "/overlay-rootfs"
+	ocispecVolumeName       = "ocispec"
+	cloudConfigMountPath    = "/cloud-config.yaml"
+	buildahStorageMountPath = "/var/lib/containers"
 	// ukiCloudConfigDir is a scratch directory the build-uki container fills
 	// with a single config.yaml and hands to --overlay-iso. It is not a volume
 	// mount: a Secret volume mounted as a directory is a symlink farm, which
@@ -266,8 +267,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 
 	if artifacts != nil {
 		if hasOCISpecRef {
-			artifactName := artifact.ArtifactNameFor("base")
-			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifactName))
+			inits = append(inits, imageExtractorContainer(r.ToolImage, arch, artifact))
 		}
 		for i, bundle := range artifacts.Bundles {
 			inits = append(inits, unpackContainer(fmt.Sprint(i), r.ToolImage, bundle, arch, artifact.Spec.Image.PullInsecureRegistry))
@@ -310,6 +310,11 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		}
 	}
 
+	if artifacts != nil && artifacts.RootfsVolume != "" {
+		replaceRootfsVolumeMounts(inits, artifacts.RootfsVolume)
+		replaceRootfsVolumeMounts(mains, artifacts.RootfsVolume)
+	}
+
 	if len(inits) == 0 {
 		return &corev1.Pod{}
 	}
@@ -340,6 +345,16 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 			Annotations:  artifact.Spec.PodAnnotations,
 		},
 		Spec: podSpec,
+	}
+}
+
+func replaceRootfsVolumeMounts(containers []corev1.Container, volumeName string) {
+	for i := range containers {
+		for j := range containers[i].VolumeMounts {
+			if containers[i].VolumeMounts[j].Name == rootfsVolumeName {
+				containers[i].VolumeMounts[j].Name = volumeName
+			}
+		}
 	}
 }
 
@@ -684,8 +699,9 @@ func makeGCECloudImageContainer(toolImage string, artifact *buildv1alpha2.OSArti
 	}
 }
 
-// builderPodBaseVolumes returns the base volumes for the builder pod (artifacts, rootfs, config).
+// builderPodBaseVolumes returns the operator-managed volumes for the builder pod.
 // If spec.artifacts.volume is set, the artifacts volume is taken from spec.volumes; otherwise it is backed by the operator-created pvc.
+// If spec.artifacts.rootfsVolume is set, the declared volume is used directly and no rootfs emptyDir is added.
 func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.PersistentVolumeClaim) []corev1.Volume {
 	var artifactsVol corev1.Volume
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.Volume != "" {
@@ -711,12 +727,14 @@ func builderPodBaseVolumes(artifact *buildv1alpha2.OSArtifact, pvc *corev1.Persi
 		}
 	}
 
-	return append(
-		[]corev1.Volume{artifactsVol},
-		corev1.Volume{
+	volumes := []corev1.Volume{artifactsVol}
+	if artifact.Spec.Artifacts == nil || artifact.Spec.Artifacts.RootfsVolume == "" {
+		volumes = append(volumes, corev1.Volume{
 			Name:         rootfsVolumeName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		},
+		})
+	}
+	return append(volumes,
 		corev1.Volume{
 			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
@@ -823,6 +841,11 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 			Name: buildContextVolume, MountPath: "/workspace", ReadOnly: true,
 		})
 	}
+	if artifact.Spec.Image.StorageVolume != "" {
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name: artifact.Spec.Image.StorageVolume, MountPath: buildahStorageMountPath,
+		})
+	}
 
 	var certDir string
 	if artifact.Spec.Image.CACertificatesVolume != "" {
@@ -916,6 +939,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		Args:            []string{script},
 		Env:             env,
 		VolumeMounts:    volMounts,
+		Resources:       artifact.ResourcesFor(buildv1alpha2.OSArtifactKindBuildah),
 		SecurityContext: &corev1.SecurityContext{
 			Capabilities: &corev1.Capabilities{
 				Add: []corev1.Capability{"SETUID", "SETGID"},
@@ -989,11 +1013,12 @@ func appendCloudConfigVolume(volumes []corev1.Volume, artifacts *buildv1alpha2.A
 }
 
 // imageExtractorContainer unpacks the OCI tarball from /artifacts/<name>.tar (written by Buildah) to /rootfs using AuroraBoot.
-func imageExtractorContainer(toolImage, arch string, artifactName string) corev1.Container {
+func imageExtractorContainer(toolImage, arch string, artifact *buildv1alpha2.OSArtifact) corev1.Container {
 	cmd := aurorabootUnpackCmd
 	if arch != "" {
 		cmd = fmt.Sprintf("%s --arch %s", cmd, arch)
 	}
+	artifactName := artifact.ArtifactNameFor("base")
 	cmd = fmt.Sprintf("%s ocifile:%s/%s.tar %s", cmd, artifactsMountPath, artifactName, rootfsMountPath)
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
@@ -1005,5 +1030,6 @@ func imageExtractorContainer(toolImage, arch string, artifactName string) corev1
 			{Name: rootfsVolumeName, MountPath: rootfsMountPath},
 			{Name: artifactsVolumeName, MountPath: artifactsMountPath, ReadOnly: true},
 		},
+		Resources: artifact.ResourcesFor(buildv1alpha2.OSArtifactKindImageExtractor),
 	}
 }
