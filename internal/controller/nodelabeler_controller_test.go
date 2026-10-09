@@ -118,15 +118,27 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(*container.SecurityContext.RunAsUser).To(Equal(int64(1000)))
 
 			// Verify volume mounts
-			Expect(container.VolumeMounts).To(HaveLen(1))
+			Expect(container.VolumeMounts).To(HaveLen(2))
 			Expect(container.VolumeMounts[0].Name).To(Equal("host-etc"))
 			Expect(container.VolumeMounts[0].MountPath).To(Equal("/host/etc"))
 			Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
+			Expect(container.VolumeMounts[1].Name).To(Equal("host-firmware"))
+			Expect(container.VolumeMounts[1].MountPath).To(Equal("/host/sys/firmware"))
+			Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
 
 			// Verify volumes
-			Expect(foundJob.Spec.Template.Spec.Volumes).To(HaveLen(1))
+			Expect(foundJob.Spec.Template.Spec.Volumes).To(HaveLen(2))
 			Expect(foundJob.Spec.Template.Spec.Volumes[0].Name).To(Equal("host-etc"))
 			Expect(foundJob.Spec.Template.Spec.Volumes[0].HostPath.Path).To(Equal("/etc"))
+			Expect(foundJob.Spec.Template.Spec.Volumes[1].Name).To(Equal("host-firmware"))
+			Expect(foundJob.Spec.Template.Spec.Volumes[1].HostPath.Path).To(Equal("/sys/firmware"))
+
+			// The labeler needs to be told where the firmware mount landed, so a
+			// UKI node can be told apart from a node whose EFI variables are absent
+			Expect(container.Env).To(ContainElement(corev1.EnvVar{
+				Name:  "HOST_FIRMWARE_PATH",
+				Value: "/host/sys/firmware",
+			}))
 		})
 
 		It("should not create a new job if one already exists", func() {
