@@ -1,6 +1,6 @@
 module github.com/kairos-io/kairos-operator
 
-go 1.26.4
+go 1.27.2
 
 godebug default=go1.23
 
