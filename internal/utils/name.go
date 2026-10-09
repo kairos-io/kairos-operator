@@ -44,3 +44,31 @@ func TruncateNameWithHash(name string, maxLength int) string {
 
 	return fmt.Sprintf("%s-%s", prefix, hash)
 }
+
+// KubernetesLabelValueLengthLimit is the maximum length allowed for a
+// Kubernetes label value. It happens to match KubernetesNameLengthLimit, but
+// the two are validated by different rules, so they are kept apart.
+const KubernetesLabelValueLengthLimit = 63
+
+// TruncateLabelValue takes an object name and returns a value that is always
+// accepted as a Kubernetes label value.
+//
+// Object names are DNS subdomains, so they may be up to 253 characters, while a
+// label value may be at most 63. Copying a name straight into a label therefore
+// makes the whole object invalid and every Create fails. The charset of a label
+// value is a superset of the charset of a name, so the only thing that has to
+// be handled is the length, and TruncateNameWithHash already keeps the result
+// collision-free and free of a trailing separator.
+//
+// A value that already fits is returned untouched, so the labels the operator
+// writes and the selectors it matches on do not change for any object that was
+// valid before. TruncateNameWithHash alone would not do: it starts hashing as
+// soon as the value is longer than maxLength less the 13-character suffix, and
+// that would move every label value between 51 and 63 characters.
+func TruncateLabelValue(value string) string {
+	if len(value) <= KubernetesLabelValueLengthLimit {
+		return value
+	}
+
+	return TruncateNameWithHash(value, KubernetesLabelValueLengthLimit)
+}
