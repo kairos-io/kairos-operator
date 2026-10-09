@@ -15,7 +15,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -5211,3 +5214,33 @@ func markRebootPodRunning(ctx context.Context, pod *corev1.Pod) {
 	}}
 	Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 }
+
+var _ = Describe("NodeOp status update conflict", func() {
+	It("returns the conflict so the request is retried with backoff", func() {
+		nodeOp := &kairosiov1alpha1.NodeOp{
+			ObjectMeta: metav1.ObjectMeta{Name: "conflicting", Namespace: "default"},
+		}
+		c := fake.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithObjects(nodeOp).
+			WithStatusSubresource(nodeOp).
+			WithInterceptorFuncs(interceptor.Funcs{
+				SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string,
+					obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					return apierrors.NewConflict(
+						kairosiov1alpha1.GroupVersion.WithResource("nodeops").GroupResource(),
+						obj.GetName(), fmt.Errorf("the object has been modified"))
+				},
+			}).Build()
+
+		r := &NodeOpReconciler{Client: c, Scheme: scheme.Scheme}
+		// The conflict can come from a Node write the controller does not
+		// watch, so no watch event is guaranteed to trigger another reconcile.
+		// Returning the error makes the workqueue retry it with backoff.
+		_, err := r.Reconcile(context.Background(), reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "conflicting", Namespace: "default"},
+		})
+
+		Expect(apierrors.IsConflict(err)).To(BeTrue(), "expected a conflict error, got %v", err)
+	})
+})

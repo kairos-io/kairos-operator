@@ -163,11 +163,12 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Update status based on existing jobs
 	if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
-		if apierrors.IsConflict(err) {
-			log.Info("NodeOp was modified, requeuing reconciliation")
-			return ctrl.Result{Requeue: true}, nil
+		// A conflict is routine, so it is not logged here. It is still
+		// returned: it can come from a Node write, and Nodes are not watched,
+		// so only the workqueue's retry with backoff brings the NodeOp back.
+		if !apierrors.IsConflict(err) {
+			log.Error(err, "Failed to update NodeOp status")
 		}
-		log.Error(err, "Failed to update NodeOp status")
 		return ctrl.Result{}, err
 	}
 
