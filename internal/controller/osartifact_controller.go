@@ -76,7 +76,7 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	if artifact.DeletionTimestamp != nil {
@@ -93,7 +93,7 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 	if ns.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
@@ -102,7 +102,7 @@ func (r *OSArtifactReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !controllerutil.ContainsFinalizer(&artifact, FinalizerName) {
 		controllerutil.AddFinalizer(&artifact, FinalizerName)
 		if err := r.Update(ctx, &artifact); err != nil {
-			return ctrl.Result{Requeue: true}, err
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -296,12 +296,12 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 
 	// Resolve final OCI build definition (single path: assemble sections when buildOptions set, else user content only).
 	if err := r.resolveFinalOCISpec(ctx, artifact); err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	err := r.CreateConfigMap(ctx, artifact)
 	if err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	var pvc *corev1.PersistentVolumeClaim
@@ -309,22 +309,22 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 		var createErr error
 		pvc, createErr = r.createPVC(ctx, artifact)
 		if createErr != nil {
-			return ctrl.Result{Requeue: true}, createErr
+			return ctrl.Result{}, createErr
 		}
 	}
 
 	_, err = r.createBuilderPod(ctx, artifact, pvc)
 	if err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	// Refetch so we have the latest resourceVersion before status update (avoids 409 if the object was updated elsewhere).
 	if err := r.Get(ctx, client.ObjectKeyFromObject(artifact), artifact); err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 	artifact.Status.Phase = buildv1alpha2.Building
 	if err := r.Status().Update(ctx, artifact); err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -338,17 +338,17 @@ func (r *OSArtifactReconciler) checkBuild(ctx context.Context,
 			artifactLabel: artifact.Name,
 		}),
 	}); err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	for _, pod := range pods.Items {
 		switch pod.Status.Phase {
 		case corev1.PodSucceeded:
 			artifact.Status.Phase = buildv1alpha2.Exporting
-			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, artifact)
+			return ctrl.Result{}, r.Status().Update(ctx, artifact)
 		case corev1.PodFailed:
 			artifact.Status.Phase = buildv1alpha2.Error
-			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, artifact)
+			return ctrl.Result{}, r.Status().Update(ctx, artifact)
 		case corev1.PodPending, corev1.PodRunning:
 			return ctrl.Result{}, nil
 		}
@@ -365,7 +365,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 			artifactLabel: artifact.Name,
 		}),
 	}); err != nil {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	indexedJobs := make(map[string]*batchv1.Job, len(artifact.Spec.Exporters))
@@ -416,11 +416,11 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 			job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, exportVol)
 
 			if err := controllerutil.SetOwnerReference(artifact, job, r.Scheme); err != nil {
-				return ctrl.Result{Requeue: true}, err
+				return ctrl.Result{}, err
 			}
 
 			if err := r.Create(ctx, job); err != nil {
-				return ctrl.Result{Requeue: true}, err
+				return ctrl.Result{}, err
 			}
 
 		} else if job.Spec.Completions == nil || *job.Spec.Completions == 1 {
@@ -430,7 +430,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 				artifact.Status.Phase = buildv1alpha2.Error
 				artifact.Status.Message = exportJobFailureMessage(job)
 				if err := r.Status().Update(ctx, artifact); err != nil {
-					return ctrl.Result{Requeue: true}, err
+					return ctrl.Result{}, err
 				}
 				return ctrl.Result{}, nil
 			}
@@ -438,7 +438,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 			artifact.Status.Phase = buildv1alpha2.Error
 			artifact.Status.Message = exportJobFailureMessage(job)
 			if err := r.Status().Update(ctx, artifact); err != nil {
-				return ctrl.Result{Requeue: true}, err
+				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
 		}
@@ -447,7 +447,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	if succeeded == len(artifact.Spec.Exporters) {
 		artifact.Status.Phase = buildv1alpha2.Ready
 		if err := r.Status().Update(ctx, artifact); err != nil {
-			return ctrl.Result{Requeue: true}, err
+			return ctrl.Result{}, err
 		}
 	}
 
