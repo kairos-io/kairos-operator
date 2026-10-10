@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -67,6 +68,29 @@ var _ = Describe("buildahBuildContainer", func() {
 		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
 		mountNames := volumeMountNames(c)
 		Expect(mountNames).To(ContainElements("ocispec", "artifacts"))
+	})
+
+	It("mounts image.storageVolume for Buildah storage and passes its resources exactly", func() {
+		resources := &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("250m"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("4Gi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory:           resource.MustParse("1Gi"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("8Gi"),
+			},
+		}
+		artifact.Spec.Image.StorageVolume = "scratch"
+		artifact.Spec.Resources.Buildah = resources
+
+		c := buildahBuildContainer(artifact, "", "", testBuildahImage)
+
+		Expect(c.Resources).To(Equal(*resources))
+		Expect(c.VolumeMounts).To(ContainElement(corev1.VolumeMount{
+			Name:      "scratch",
+			MountPath: "/var/lib/containers",
+		}))
 	})
 
 	It("shell script runs buildah bud then buildah push to docker-archive", func() {
@@ -346,6 +370,20 @@ func volumeMountNames(c corev1.Container) []string {
 		names = append(names, vm.Name)
 	}
 	return names
+}
+
+func podContainerByName(pod *corev1.Pod, name string) *corev1.Container {
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == name {
+			return &pod.Spec.InitContainers[i]
+		}
+	}
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == name {
+			return &pod.Spec.Containers[i]
+		}
+	}
+	return nil
 }
 
 var _ = Describe("buildISOCommand", func() {
@@ -879,6 +917,99 @@ var _ = Describe("newBuilderPod scheduling", func() {
 			pod := r.newBuilderPod(context.Background(), artifact, pvc)
 			Expect(pod.Annotations).To(HaveKeyWithValue("prometheus.io/scrape", "false"))
 		})
+	})
+})
+
+var _ = Describe("newBuilderPod scratch storage", func() {
+	It("uses the declared volume for Buildah storage and rootfs without duplicating it", func() {
+		buildahResources := &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceEphemeralStorage: resource.MustParse("6Gi"),
+			},
+		}
+		extractorResources := &corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
+			},
+		}
+		artifact := &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: "ocispec"},
+					},
+					StorageVolume: "scratch",
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					ISO:          true,
+					RootfsVolume: "scratch",
+				},
+				Resources: buildv1alpha2.ResourcesSpec{
+					Buildah:        buildahResources,
+					ImageExtractor: extractorResources,
+				},
+				Volumes: []corev1.Volume{{
+					Name: "scratch",
+					VolumeSource: corev1.VolumeSource{
+						Ephemeral: &corev1.EphemeralVolumeSource{},
+					},
+				}},
+				Importers: []corev1.Container{{
+					Name: "importer",
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      rootfsVolumeName,
+						MountPath: rootfsMountPath,
+					}},
+				}},
+			},
+		}
+		r := &OSArtifactReconciler{
+			ToolImage:    "tool-image",
+			BuildahImage: testBuildahImage,
+		}
+
+		pod := r.newBuilderPod(context.Background(), artifact, &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pvc"},
+		})
+
+		var scratchVolumes int
+		for _, volume := range pod.Spec.Volumes {
+			if volume.Name == "scratch" {
+				scratchVolumes++
+			}
+			Expect(volume.Name).ToNot(Equal(rootfsVolumeName))
+		}
+		Expect(scratchVolumes).To(Equal(1))
+
+		buildah := podContainerByName(pod, "buildah-build")
+		Expect(buildah).ToNot(BeNil())
+		Expect(buildah.Resources).To(Equal(*buildahResources))
+		Expect(buildah.VolumeMounts).To(ContainElement(corev1.VolumeMount{
+			Name:      "scratch",
+			MountPath: "/var/lib/containers",
+			SubPath:   "containers",
+		}))
+
+		extractor := podContainerByName(pod, "image-extractor")
+		Expect(extractor).ToNot(BeNil())
+		Expect(extractor.Resources).To(Equal(*extractorResources))
+
+		rootfsMounts := 0
+		for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+			for _, mount := range container.VolumeMounts {
+				if mount.MountPath == rootfsMountPath {
+					rootfsMounts++
+					Expect(mount.Name).To(Equal("scratch"), "container %s should use artifacts.rootfsVolume", container.Name)
+					Expect(mount.SubPath).To(Equal("rootfs"), "container %s should isolate the rootfs subdirectory", container.Name)
+				}
+			}
+		}
+		Expect(rootfsMounts).To(BeNumerically(">", 0))
+		Expect(artifact.Spec.Importers[0].VolumeMounts[0]).To(Equal(corev1.VolumeMount{
+			Name:      rootfsVolumeName,
+			MountPath: rootfsMountPath,
+		}))
 	})
 })
 

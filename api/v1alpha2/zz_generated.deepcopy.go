@@ -353,6 +353,16 @@ func (in *ResourcesSpec) DeepCopyInto(out *ResourcesSpec) {
 		*out = new(v1.ResourceRequirements)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Buildah != nil {
+		in, out := &in.Buildah, &out.Buildah
+		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.ImageExtractor != nil {
+		in, out := &in.ImageExtractor, &out.ImageExtractor
+		*out = new(v1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Pod != nil {
 		in, out := &in.Pod, &out.Pod
 		*out = new(v1.ResourceRequirements)

@@ -260,6 +260,35 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
+		It("returns error when image.storageVolume references missing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					OCISpec: &v1alpha2.OCISpec{
+						Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
+					},
+					StorageVolume: "missing-storage",
+				},
+				Volumes: []corev1.Volume{{Name: "other"}},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("image.storageVolume"))
+			Expect(err.Error()).To(ContainSubstring("missing-storage"))
+		})
+
+		It("returns nil when image.storageVolume references existing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					OCISpec: &v1alpha2.OCISpec{
+						Ref: &v1alpha2.SecretKeySelector{Name: "df", Key: "ociSpec"},
+					},
+					StorageVolume: "buildah-storage",
+				},
+				Volumes: []corev1.Volume{{Name: "buildah-storage"}},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
 		It("returns nil when buildImage set and building (ref empty)", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
@@ -381,9 +410,58 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 				Expect(spec.Validate()).ToNot(HaveOccurred())
 			})
 
+			It("returns error when artifacts.volume also backs the rootfs", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.Volume = "scratch"
+				spec.Artifacts.RootfsVolume = "scratch"
+				spec.Volumes = []corev1.Volume{{Name: "scratch"}}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("must differ from spec.artifacts.rootfsVolume"))
+			})
+
+			It("returns error when artifacts.volume also backs Buildah storage", func() {
+				spec := v1alpha2.OSArtifactSpec{
+					Image: v1alpha2.ImageSpec{
+						OCISpec:       &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df"}},
+						StorageVolume: "scratch",
+					},
+					Artifacts: &v1alpha2.ArtifactSpec{
+						ISO:    true,
+						Volume: "scratch",
+					},
+					Volumes: []corev1.Volume{{Name: "scratch"}},
+				}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("must differ from spec.image.storageVolume"))
+			})
+
 			It("returns nil when artifacts.volume is empty (default behavior)", func() {
 				spec := validImageRef("img")
 				Expect(spec.Artifacts.Volume).To(BeEmpty())
+				Expect(spec.Validate()).ToNot(HaveOccurred())
+			})
+		})
+
+		Describe("artifacts.rootfsVolume", func() {
+			It("returns error when artifacts.rootfsVolume references missing volume", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.RootfsVolume = "missing-rootfs"
+				spec.Volumes = []corev1.Volume{{Name: "other"}}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("artifacts.rootfsVolume"))
+				Expect(err.Error()).To(ContainSubstring("missing-rootfs"))
+			})
+
+			It("returns nil when artifacts.rootfsVolume references existing volume", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.RootfsVolume = "scratch"
+				spec.Volumes = []corev1.Volume{{
+					Name:         "scratch",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}}
 				Expect(spec.Validate()).ToNot(HaveOccurred())
 			})
 		})
@@ -663,9 +741,11 @@ var _ = Describe("OSArtifactSpec.Resources", func() {
 
 	It("should accept ResourcesSpec with multiple artifact kinds set", func() {
 		resources := &v1alpha2.ResourcesSpec{
-			ISO:        &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
-			CloudImage: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}},
-			Pod:        &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")}},
+			ISO:            &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+			CloudImage:     &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}},
+			Buildah:        &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("4Gi")}},
+			ImageExtractor: &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceEphemeralStorage: resource.MustParse("8Gi")}},
+			Pod:            &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")}},
 		}
 		spec := v1alpha2.OSArtifactSpec{
 			Image:     v1alpha2.ImageSpec{Ref: "img"},
@@ -674,6 +754,8 @@ var _ = Describe("OSArtifactSpec.Resources", func() {
 		}
 		Expect(spec.Resources.ISO).ToNot(BeNil())
 		Expect(spec.Resources.CloudImage).ToNot(BeNil())
+		Expect(spec.Resources.Buildah).ToNot(BeNil())
+		Expect(spec.Resources.ImageExtractor).ToNot(BeNil())
 		Expect(spec.Resources.Pod).ToNot(BeNil())
 		Expect(spec.Resources.Netboot).To(BeNil())
 		Expect(spec.Resources.UKI).To(BeNil())
