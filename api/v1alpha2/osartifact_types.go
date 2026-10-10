@@ -110,7 +110,7 @@ type ImageSpec struct {
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 
-	// StorageVolume names a volume (from spec.volumes) to mount at /var/lib/containers for Buildah's image storage. Only used when building (Ref empty). When empty, Buildah uses the container's writable layer.
+	// StorageVolume names a volume (from spec.volumes) to mount at /var/lib/containers for Buildah's image storage. Only used when building (Ref empty). When empty, Buildah uses the container's writable layer. When it also backs artifacts.rootfsVolume, the operator isolates Buildah storage in the "containers" subdirectory.
 	// +optional
 	StorageVolume string `json:"storageVolume,omitempty"`
 
@@ -213,7 +213,7 @@ type ArtifactSpec struct {
 	// +optional
 	Volume string `json:"volume,omitempty"`
 
-	// RootfsVolume names a volume (from spec.volumes) to use for the unpacked root filesystem. When empty, the builder Pod uses an emptyDir volume.
+	// RootfsVolume names a volume (from spec.volumes) to use for the unpacked root filesystem. When empty, the builder Pod uses an emptyDir volume. When it also backs image.storageVolume, the operator isolates the root filesystem in the "rootfs" subdirectory.
 	// +optional
 	RootfsVolume string `json:"rootfsVolume,omitempty"`
 }

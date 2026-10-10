@@ -955,6 +955,13 @@ var _ = Describe("newBuilderPod scratch storage", func() {
 						Ephemeral: &corev1.EphemeralVolumeSource{},
 					},
 				}},
+				Importers: []corev1.Container{{
+					Name: "importer",
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      rootfsVolumeName,
+						MountPath: rootfsMountPath,
+					}},
+				}},
 			},
 		}
 		r := &OSArtifactReconciler{
@@ -981,6 +988,7 @@ var _ = Describe("newBuilderPod scratch storage", func() {
 		Expect(buildah.VolumeMounts).To(ContainElement(corev1.VolumeMount{
 			Name:      "scratch",
 			MountPath: "/var/lib/containers",
+			SubPath:   "containers",
 		}))
 
 		extractor := podContainerByName(pod, "image-extractor")
@@ -993,10 +1001,15 @@ var _ = Describe("newBuilderPod scratch storage", func() {
 				if mount.MountPath == rootfsMountPath {
 					rootfsMounts++
 					Expect(mount.Name).To(Equal("scratch"), "container %s should use artifacts.rootfsVolume", container.Name)
+					Expect(mount.SubPath).To(Equal("rootfs"), "container %s should isolate the rootfs subdirectory", container.Name)
 				}
 			}
 		}
 		Expect(rootfsMounts).To(BeNumerically(">", 0))
+		Expect(artifact.Spec.Importers[0].VolumeMounts[0]).To(Equal(corev1.VolumeMount{
+			Name:      rootfsVolumeName,
+			MountPath: rootfsMountPath,
+		}))
 	})
 })
 

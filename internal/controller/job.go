@@ -44,6 +44,8 @@ const (
 	ocispecVolumeName       = "ocispec"
 	cloudConfigMountPath    = "/cloud-config.yaml"
 	buildahStorageMountPath = "/var/lib/containers"
+	buildahStorageSubPath   = "containers"
+	rootfsStorageSubPath    = "rootfs"
 	// ukiCloudConfigDir is a scratch directory the build-uki container fills
 	// with a single config.yaml and hands to --overlay-iso. It is not a volume
 	// mount: a Secret volume mounted as a directory is a symlink farm, which
@@ -247,7 +249,10 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 
 	// Two slices: sequential (inits) and parallel (mains). If no mains, promote last init to main so the pod has a main container.
 	// Importers are part of inits (they run first).
-	inits := append([]corev1.Container{}, artifact.Spec.Importers...)
+	inits := make([]corev1.Container, len(artifact.Spec.Importers))
+	for i := range artifact.Spec.Importers {
+		inits[i] = *artifact.Spec.Importers[i].DeepCopy()
+	}
 	var mains []corev1.Container
 
 	buildCtxVol := ""
@@ -311,8 +316,12 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 	}
 
 	if artifacts != nil && artifacts.RootfsVolume != "" {
-		replaceRootfsVolumeMounts(inits, artifacts.RootfsVolume)
-		replaceRootfsVolumeMounts(mains, artifacts.RootfsVolume)
+		subPath := ""
+		if usesSharedScratchVolume(artifact) {
+			subPath = rootfsStorageSubPath
+		}
+		replaceRootfsVolumeMounts(inits, artifacts.RootfsVolume, subPath)
+		replaceRootfsVolumeMounts(mains, artifacts.RootfsVolume, subPath)
 	}
 
 	if len(inits) == 0 {
@@ -348,11 +357,19 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 	}
 }
 
-func replaceRootfsVolumeMounts(containers []corev1.Container, volumeName string) {
+func usesSharedScratchVolume(artifact *buildv1alpha2.OSArtifact) bool {
+	return artifact.Spec.Image.Ref == "" &&
+		artifact.Spec.Image.StorageVolume != "" &&
+		artifact.Spec.Artifacts != nil &&
+		artifact.Spec.Artifacts.RootfsVolume == artifact.Spec.Image.StorageVolume
+}
+
+func replaceRootfsVolumeMounts(containers []corev1.Container, volumeName, subPath string) {
 	for i := range containers {
 		for j := range containers[i].VolumeMounts {
 			if containers[i].VolumeMounts[j].Name == rootfsVolumeName {
 				containers[i].VolumeMounts[j].Name = volumeName
+				containers[i].VolumeMounts[j].SubPath = subPath
 			}
 		}
 	}
@@ -842,9 +859,13 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 		})
 	}
 	if artifact.Spec.Image.StorageVolume != "" {
-		volMounts = append(volMounts, corev1.VolumeMount{
+		storageMount := corev1.VolumeMount{
 			Name: artifact.Spec.Image.StorageVolume, MountPath: buildahStorageMountPath,
-		})
+		}
+		if usesSharedScratchVolume(artifact) {
+			storageMount.SubPath = buildahStorageSubPath
+		}
+		volMounts = append(volMounts, storageMount)
 	}
 
 	var certDir string
