@@ -209,7 +209,7 @@ type ArtifactSpec struct {
 	// +optional
 	UKI *UKISpec `json:"uki,omitempty"`
 
-	// Volume names a volume (from spec.volumes) to use for build outputs (ISO, cloud images, etc.) instead of the operator-created PVC. When set, the operator does not create a PVC; the builder pod and exporter jobs use this volume (mounted at /artifacts). When empty, the operator creates a PVC. Useful for mounting a host directory (e.g. hostPath) so artifacts land directly on the node. Only relevant when at least one artifact type is enabled.
+	// Volume names a volume (from spec.volumes) to use for build outputs (ISO, cloud images, etc.) instead of the operator-created PVC. When set, the operator does not create a PVC; the builder pod and exporter jobs use this volume (mounted at /artifacts). It must differ from RootfsVolume and, when building, image.storageVolume. When empty, the operator creates a PVC. Useful for mounting a host directory (e.g. hostPath) so artifacts land directly on the node. Only relevant when at least one artifact type is enabled.
 	// +optional
 	Volume string `json:"volume,omitempty"`
 
@@ -540,6 +540,12 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 	}
 	if a.RootfsVolume != "" && !volumeNames[a.RootfsVolume] {
 		return fmt.Errorf("spec.artifacts.rootfsVolume references volume %q which is not defined in spec.volumes", a.RootfsVolume)
+	}
+	if a.Volume != "" && a.Volume == a.RootfsVolume {
+		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.artifacts.rootfsVolume", a.Volume)
+	}
+	if s.Image.Ref == "" && a.Volume != "" && a.Volume == s.Image.StorageVolume {
+		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.image.storageVolume", a.Volume)
 	}
 	if hasUKI {
 		if a.UKI.KeysVolume == "" {

@@ -410,6 +410,33 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 				Expect(spec.Validate()).ToNot(HaveOccurred())
 			})
 
+			It("returns error when artifacts.volume also backs the rootfs", func() {
+				spec := validImageRef("img")
+				spec.Artifacts.Volume = "scratch"
+				spec.Artifacts.RootfsVolume = "scratch"
+				spec.Volumes = []corev1.Volume{{Name: "scratch"}}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("must differ from spec.artifacts.rootfsVolume"))
+			})
+
+			It("returns error when artifacts.volume also backs Buildah storage", func() {
+				spec := v1alpha2.OSArtifactSpec{
+					Image: v1alpha2.ImageSpec{
+						OCISpec:       &v1alpha2.OCISpec{Ref: &v1alpha2.SecretKeySelector{Name: "df"}},
+						StorageVolume: "scratch",
+					},
+					Artifacts: &v1alpha2.ArtifactSpec{
+						ISO:    true,
+						Volume: "scratch",
+					},
+					Volumes: []corev1.Volume{{Name: "scratch"}},
+				}
+				err := spec.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("must differ from spec.image.storageVolume"))
+			})
+
 			It("returns nil when artifacts.volume is empty (default behavior)", func() {
 				spec := validImageRef("img")
 				Expect(spec.Artifacts.Volume).To(BeEmpty())
