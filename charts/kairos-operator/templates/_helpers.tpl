@@ -41,3 +41,16 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: kairos-operator
 app.kubernetes.io/component: operator
 {{- end }}
+
+{{/*
+Names of the imagePullSecrets, comma separated, for the operator to put on the
+node-labeler Job and DaemonSet Pods it creates. Those Pods run the node-labeler
+image, which the chart cannot template because the operator builds them.
+*/}}
+{{- define "kairos-operator.imagePullSecretNames" -}}
+{{- $names := list }}
+{{- range .Values.imagePullSecrets }}
+{{- $names = append $names .name }}
+{{- end }}
+{{- join "," $names }}
+{{- end }}
