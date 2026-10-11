@@ -10,6 +10,10 @@ image:
     tag: ""  # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
 
+# Secrets used to pull every image this chart and the operator start:
+# the operator Deployment, and the node-labeler Job and DaemonSet the
+# operator creates. NodeOp and NodeOpUpgrade carry their own
+# imagePullSecrets field for the upgrade image.
 imagePullSecrets: []
 
 nameOverride: ""

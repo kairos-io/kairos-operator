@@ -64,6 +64,10 @@ spec:
           value: {{ include "kairos-operator.operatorImage" . }}
         - name: NODE_LABELER_IMAGE
           value: {{ include "kairos-operator.nodeLabellerImage" . }}
+        - name: NODE_LABELER_PULL_POLICY
+          value: {{ .Values.image.nodeLabeler.pullPolicy | quote }}
+        - name: NODE_LABELER_PULL_SECRETS
+          value: {{ include "kairos-operator.imagePullSecretNames" . | quote }}
         - name: SENTINEL_IMAGE
           value: {{ .Values.sentinelImage | quote }}
         - name: NODEOP_DEFAULT_IMAGE
