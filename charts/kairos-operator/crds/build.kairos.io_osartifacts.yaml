@@ -517,6 +517,8 @@ spec:
                     type: string
                   overlayRootfsVolume:
                     type: string
+                  rootfsVolume:
+                    type: string
                   uki:
                     properties:
                       container:
@@ -4782,6 +4784,8 @@ spec:
                     type: boolean
                   ref:
                     type: string
+                  storageVolume:
+                    type: string
                 type: object
               imagePullSecrets:
                 items:
@@ -5615,6 +5619,39 @@ spec:
                           x-kubernetes-int-or-string: true
                         type: object
                     type: object
+                  buildah:
+                    properties:
+                      claims:
+                        items:
+                          properties:
+                            name:
+                              type: string
+                            request:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                    type: object
                   cloudImage:
                     properties:
                       claims:
@@ -5649,6 +5686,39 @@ spec:
                         type: object
                     type: object
                   gceImage:
+                    properties:
+                      claims:
+                        items:
+                          properties:
+                            name:
+                              type: string
+                            request:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                    type: object
+                  imageExtractor:
                     properties:
                       claims:
                         items:
