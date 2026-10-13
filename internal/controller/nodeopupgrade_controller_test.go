@@ -11,6 +11,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1421,3 +1422,64 @@ func contains(slice []string, s string) bool {
 	}
 	return false
 }
+
+var _ = Describe("NodeOpUpgrade with neither partition requested", func() {
+	var (
+		ctx  context.Context
+		name string
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		name = fmt.Sprintf("test-nothing-to-upgrade-%d", time.Now().UnixNano())
+	})
+
+	// upgradeRecovery defaults to false, so `upgradeActive: false` on its own
+	// lands here. The branch chain in generateUpgradeCommand used to read that
+	// as "neither specified" and upgrade the active partition anyway, with
+	// RebootOnSuccess false because it comes from the same flag.
+	It("creates no NodeOp and says why", func() {
+		nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+				Image:         "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+				UpgradeActive: asBool(false),
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, nodeOpUpgrade))).To(Succeed())
+		})
+
+		_, err := reconcileNodeOpUpgrade(ctx, k8sClient, name)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no NodeOp must be created")
+
+		updated := &kairosiov1alpha1.NodeOpUpgrade{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(phaseFailed))
+		Expect(updated.Status.Message).To(Equal(nothingToUpgradeMessage))
+		Expect(updated.Status.NodeOpName).To(BeEmpty())
+	})
+
+	It("starts the upgrade once the recovery partition is asked for", func() {
+		nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+				Image:           "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+				UpgradeActive:   asBool(false),
+				UpgradeRecovery: asBool(true),
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, nodeOpUpgrade))).To(Succeed())
+		})
+
+		nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, name)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, nodeOp))).To(Succeed())
+		})
+		Expect(nodeOp.Spec.Command[2]).To(ContainSubstring("upgrade --recovery --source dir:/"))
+	})
+})
