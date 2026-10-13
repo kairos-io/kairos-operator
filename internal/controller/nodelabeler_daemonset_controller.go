@@ -123,6 +123,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: nodeLabelerServiceAccount,
+					ImagePullSecrets:   nodeLabelerPullSecrets(),
 					NodeSelector: map[string]string{
 						labelKeyKairosManaged: "true", //nolint:goconst // common label value; not worth a constant
 					},
@@ -133,7 +134,7 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 						{
 							Name:            "node-labeler",
 							Image:           nodeLabelerImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							ImagePullPolicy: nodeLabelerPullPolicy(),
 							Args:            []string{"--every", strconv.Itoa(defaultSyncIntervalSeconds)},
 							SecurityContext: &corev1.SecurityContext{
 								RunAsNonRoot: asBool(true),
