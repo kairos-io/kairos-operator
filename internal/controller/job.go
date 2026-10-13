@@ -316,12 +316,8 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 	}
 
 	if artifacts != nil && artifacts.RootfsVolume != "" {
-		subPath := ""
-		if usesSharedScratchVolume(artifact) {
-			subPath = rootfsStorageSubPath
-		}
-		replaceRootfsVolumeMounts(inits, artifacts.RootfsVolume, subPath)
-		replaceRootfsVolumeMounts(mains, artifacts.RootfsVolume, subPath)
+		replaceRootfsVolumeMounts(inits, artifacts.RootfsVolume, rootfsStorageSubPath)
+		replaceRootfsVolumeMounts(mains, artifacts.RootfsVolume, rootfsStorageSubPath)
 	}
 
 	if len(inits) == 0 {
@@ -355,13 +351,6 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		},
 		Spec: podSpec,
 	}
-}
-
-func usesSharedScratchVolume(artifact *buildv1alpha2.OSArtifact) bool {
-	return artifact.Spec.Image.Ref == "" &&
-		artifact.Spec.Image.StorageVolume != "" &&
-		artifact.Spec.Artifacts != nil &&
-		artifact.Spec.Artifacts.RootfsVolume == artifact.Spec.Image.StorageVolume
 }
 
 func replaceRootfsVolumeMounts(containers []corev1.Container, volumeName, subPath string) {
@@ -861,9 +850,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 	if artifact.Spec.Image.StorageVolume != "" {
 		storageMount := corev1.VolumeMount{
 			Name: artifact.Spec.Image.StorageVolume, MountPath: buildahStorageMountPath,
-		}
-		if usesSharedScratchVolume(artifact) {
-			storageMount.SubPath = buildahStorageSubPath
+			SubPath: buildahStorageSubPath,
 		}
 		volMounts = append(volMounts, storageMount)
 	}

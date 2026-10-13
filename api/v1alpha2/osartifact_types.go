@@ -110,7 +110,7 @@ type ImageSpec struct {
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 
-	// StorageVolume names a volume (from spec.volumes) to mount at /var/lib/containers for Buildah's image storage. Only used when building (Ref empty). When empty, Buildah uses the container's writable layer. When it also backs artifacts.rootfsVolume, the operator isolates Buildah storage in the "containers" subdirectory.
+	// StorageVolume names a volume (from spec.volumes) to mount at /var/lib/containers for Buildah's image storage. Only used when building (Ref empty). When empty, Buildah uses the container's writable layer. The volume is always mounted with subPath "containers".
 	// +optional
 	StorageVolume string `json:"storageVolume,omitempty"`
 
@@ -213,7 +213,7 @@ type ArtifactSpec struct {
 	// +optional
 	Volume string `json:"volume,omitempty"`
 
-	// RootfsVolume names a volume (from spec.volumes) to use for the unpacked root filesystem. When empty, the builder Pod uses an emptyDir volume. When it also backs image.storageVolume, the operator isolates the root filesystem in the "rootfs" subdirectory.
+	// RootfsVolume names a volume (from spec.volumes) to use for the unpacked root filesystem. When empty, the builder Pod uses an emptyDir volume. The volume is always mounted with subPath "rootfs".
 	// +optional
 	RootfsVolume string `json:"rootfsVolume,omitempty"`
 }
@@ -529,24 +529,15 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 	if !hasStandard && !hasUKI {
 		return fmt.Errorf("spec.artifacts: at least one artifact type must be enabled (iso, cloudImage, azureImage, gceImage, netboot, or uki.iso/uki.container/uki.efi)")
 	}
-	if a.OverlayISOVolume != "" && !volumeNames[a.OverlayISOVolume] {
-		return fmt.Errorf("spec.artifacts.overlayISOVolume references volume %q which is not defined in spec.volumes", a.OverlayISOVolume)
+
+	if err := validateArtifactVolumeRefs(a, volumeNames); err != nil {
+		return err
 	}
-	if a.OverlayRootfsVolume != "" && !volumeNames[a.OverlayRootfsVolume] {
-		return fmt.Errorf("spec.artifacts.overlayRootfsVolume references volume %q which is not defined in spec.volumes", a.OverlayRootfsVolume)
+
+	if err := validateArtifactAliasing(s, a); err != nil {
+		return err
 	}
-	if a.Volume != "" && !volumeNames[a.Volume] {
-		return fmt.Errorf("spec.artifacts.volume references volume %q which is not defined in spec.volumes", a.Volume)
-	}
-	if a.RootfsVolume != "" && !volumeNames[a.RootfsVolume] {
-		return fmt.Errorf("spec.artifacts.rootfsVolume references volume %q which is not defined in spec.volumes", a.RootfsVolume)
-	}
-	if a.Volume != "" && a.Volume == a.RootfsVolume {
-		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.artifacts.rootfsVolume", a.Volume)
-	}
-	if s.Image.Ref == "" && a.Volume != "" && a.Volume == s.Image.StorageVolume {
-		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.image.storageVolume", a.Volume)
-	}
+
 	if hasUKI {
 		if a.UKI.KeysVolume == "" {
 			return fmt.Errorf("spec.artifacts.uki.keysVolume is required when any of uki.iso, uki.container, or uki.efi is true")
@@ -558,6 +549,30 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 	if a.UKI != nil && a.UKI.ISO && (a.ISO || a.Netboot) &&
 		s.NameOverride.UKI != "" && s.NameOverride.UKI == s.NameOverride.ISO {
 		return fmt.Errorf("spec.nameOverride.uki %q must differ from spec.nameOverride.iso when both uki.iso and iso/netboot are enabled: both artifacts would be written to /artifacts/%s.iso", s.NameOverride.UKI, s.NameOverride.UKI)
+	}
+	return nil
+}
+
+func validateArtifactVolumeRefs(a *ArtifactSpec, volumeNames map[string]bool) error {
+	for _, ref := range []struct{ name, field string }{
+		{a.OverlayISOVolume, "spec.artifacts.overlayISOVolume"},
+		{a.OverlayRootfsVolume, "spec.artifacts.overlayRootfsVolume"},
+		{a.Volume, "spec.artifacts.volume"},
+		{a.RootfsVolume, "spec.artifacts.rootfsVolume"},
+	} {
+		if ref.name != "" && !volumeNames[ref.name] {
+			return fmt.Errorf("%s references volume %q which is not defined in spec.volumes", ref.field, ref.name)
+		}
+	}
+	return nil
+}
+
+func validateArtifactAliasing(s *OSArtifactSpec, a *ArtifactSpec) error {
+	if a.Volume != "" && a.Volume == a.RootfsVolume {
+		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.artifacts.rootfsVolume", a.Volume)
+	}
+	if s.Image.Ref == "" && a.Volume != "" && a.Volume == s.Image.StorageVolume {
+		return fmt.Errorf("spec.artifacts.volume %q must differ from spec.image.storageVolume", a.Volume)
 	}
 	return nil
 }

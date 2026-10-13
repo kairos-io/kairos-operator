@@ -90,6 +90,7 @@ var _ = Describe("buildahBuildContainer", func() {
 		Expect(c.VolumeMounts).To(ContainElement(corev1.VolumeMount{
 			Name:      "scratch",
 			MountPath: "/var/lib/containers",
+			SubPath:   "containers",
 		}))
 	})
 
@@ -1010,6 +1011,57 @@ var _ = Describe("newBuilderPod scratch storage", func() {
 			Name:      rootfsVolumeName,
 			MountPath: rootfsMountPath,
 		}))
+	})
+
+	It("uses subPath rootfs for rootfsVolume on its own (not shared with storageVolume)", func() {
+		artifact := &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "rootfs-only", Namespace: "default"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image: buildv1alpha2.ImageSpec{
+					OCISpec: &buildv1alpha2.OCISpec{
+						Ref: &buildv1alpha2.SecretKeySelector{Name: "ocispec"},
+					},
+				},
+				Artifacts: &buildv1alpha2.ArtifactSpec{
+					ISO:          true,
+					RootfsVolume: "builder-rootfs",
+				},
+				Volumes: []corev1.Volume{{
+					Name: "builder-rootfs",
+					VolumeSource: corev1.VolumeSource{
+						Ephemeral: &corev1.EphemeralVolumeSource{},
+					},
+				}},
+				Importers: []corev1.Container{{
+					Name:  "importer",
+					Image: "busybox",
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      rootfsVolumeName,
+						MountPath: rootfsMountPath,
+					}},
+				}},
+			},
+		}
+		r := &OSArtifactReconciler{
+			ToolImage:    "tool-image",
+			BuildahImage: testBuildahImage,
+		}
+		pod := r.newBuilderPod(context.Background(), artifact, &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pvc"},
+		})
+
+		var rootfsVolMounts []corev1.VolumeMount
+		for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+			for _, mount := range c.VolumeMounts {
+				if mount.Name == "builder-rootfs" && mount.MountPath == rootfsMountPath {
+					rootfsVolMounts = append(rootfsVolMounts, mount)
+				}
+			}
+		}
+		Expect(rootfsVolMounts).ToNot(BeEmpty())
+		for _, mount := range rootfsVolMounts {
+			Expect(mount.SubPath).To(Equal("rootfs"))
+		}
 	})
 })
 
