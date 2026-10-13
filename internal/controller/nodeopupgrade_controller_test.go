@@ -1421,3 +1421,48 @@ func contains(slice []string, s string) bool {
 	}
 	return false
 }
+
+var _ = Describe("NodeOpUpgrade status.nodeOpName", func() {
+	var (
+		ctx  context.Context
+		name string
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		name = fmt.Sprintf("test-nodeopname-%d", time.Now().UnixNano())
+	})
+
+	// Reconcile writes status.nodeOpName only on the branch that creates the
+	// NodeOp. If that reconcile dies between Create and Status().Update, or the
+	// status update conflicts, the next pass finds the NodeOp and takes the
+	// mirroring branch instead, which never wrote the field.
+	It("is reported when the NodeOp already exists", func() {
+		nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{
+				Image: "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1",
+			},
+		}
+		Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, nodeOpUpgrade))).To(Succeed())
+		})
+
+		// The state the crash window leaves behind: the NodeOp is there, the
+		// NodeOpUpgrade status is still empty.
+		reconciler := &NodeOpUpgradeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(reconciler.createNodeOp(ctx, nodeOpUpgrade)).To(Succeed())
+
+		fetched := &kairosiov1alpha1.NodeOpUpgrade{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, fetched)).To(Succeed())
+		Expect(fetched.Status.NodeOpName).To(BeEmpty(), "precondition: the create-branch status update never landed")
+
+		_, err := reconcileNodeOpUpgrade(ctx, k8sClient, name)
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &kairosiov1alpha1.NodeOpUpgrade{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, updated)).To(Succeed())
+		Expect(updated.Status.NodeOpName).To(Equal(name))
+	})
+})
