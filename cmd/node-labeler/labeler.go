@@ -190,12 +190,21 @@ type nodePatchMetadata struct {
 	Annotations map[string]*string `json:"annotations,omitempty"`
 }
 
+// labelKairosSystemUUID carries the node's DMI system UUID, the one value in the
+// label set that differs per node. It is node.status.nodeInfo.systemUUID, which the
+// kubelet already reports, and not the Kairos agent UUID (<machine-id>-<hostname>),
+// which changes on a reinstall and overflows the 63 character label limit as soon as
+// the host name is longer than 30 characters.
+const labelKairosSystemUUID = "kairos.io/system-uuid"
+
 func patchNode(ctx context.Context, clientset kubernetes.Interface, nodeName string,
 	labels, annotations map[string]string) error {
 	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("getting node %s: %w", nodeName, err)
 	}
+
+	labels = withSystemUUID(labels, node.Status.NodeInfo.SystemUUID)
 
 	patchLabels := toNullablePatch(labels, node.Labels)
 	patchAnnotations := toNullablePatch(annotations, node.Annotations)
@@ -228,6 +237,24 @@ func patchNode(ctx context.Context, clientset kubernetes.Interface, nodeName str
 	}
 
 	return nil
+}
+
+// withSystemUUID returns labels plus the system UUID label. It returns labels
+// unchanged when the UUID is empty or sanitizes to nothing, which lets
+// toNullablePatch clear a stale label the same way it clears any other.
+func withSystemUUID(labels map[string]string, systemUUID string) map[string]string {
+	uuid := sanitizeLabelValue(systemUUID)
+	if uuid == "" {
+		return labels
+	}
+
+	result := make(map[string]string, len(labels)+1)
+	for k, v := range labels {
+		result[k] = v
+	}
+	result[labelKairosSystemUUID] = uuid
+
+	return result
 }
 
 // toNullablePatch builds a map[string]*string that sets all values from newValues
