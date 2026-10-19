@@ -161,8 +161,16 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
+	// The target nodes are the denominator for the overall phase and the
+	// input to job creation, so resolve them once per reconcile.
+	targetNodes, err := r.getTargetNodes(ctx, nodeOp)
+	if err != nil {
+		log.Error(err, "Failed to determine target nodes")
+		return ctrl.Result{}, err
+	}
+
 	// Update status based on existing jobs
-	if err := r.updateNodeOpStatus(ctx, nodeOp); err != nil {
+	if err := r.updateNodeOpStatus(ctx, nodeOp, targetNodes); err != nil {
 		// A conflict is routine, so it is not logged here. It is still
 		// returned: it can come from a Node write, and Nodes are not watched,
 		// so only the workqueue's retry with backoff brings the NodeOp back.
@@ -173,7 +181,7 @@ func (r *NodeOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Check if we should create more jobs
-	if err := r.manageJobCreation(ctx, nodeOp); err != nil {
+	if err := r.manageJobCreation(ctx, nodeOp, targetNodes); err != nil {
 		log.Error(err, "Failed to manage job creation")
 		return ctrl.Result{}, err
 	}
@@ -753,8 +761,11 @@ func (r *NodeOpReconciler) adoptExistingJob(ctx context.Context, nodeOp *kairosi
 	return true, nil
 }
 
-// updateNodeOpStatus updates the status of the NodeOp based on Job statuses
-func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+// updateNodeOpStatus updates the status of the NodeOp based on Job statuses.
+// targetNodes is the set of nodes the operation has to cover; the overall
+// phase is Completed only when every one of them has finished.
+func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp,
+	targetNodes []corev1.Node) error {
 	log := logf.FromContext(ctx)
 
 	// Initialize status if needed
@@ -764,7 +775,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 
 	// Check all node statuses to determine overall phase
 	anyFailed := false
-	completedNodes := 0
+	completedNodes := make(map[string]bool)
 	var err error
 	for nodeName, status := range nodeOp.Status.NodeStatuses {
 		// Nodes still in the Preflight phase have no Job yet; their state is
@@ -780,7 +791,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		// Skipped-by-preflight nodes are terminal: Phase=Completed, no Job,
 		// no reboot. Don't run them through the Job/reboot processors.
 		if status.Phase == phaseCompleted && status.JobName == "" {
-			completedNodes++
+			completedNodes[nodeName] = true
 			continue
 		}
 		// Failed-by-preflight nodes are terminal as well, and they have no Job
@@ -833,20 +844,31 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		if getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault) {
 			// The node is completed only when its upgrade Job completed and the node rebooted
 			if status.Phase == phaseCompleted && status.RebootStatus == rebootStatusCompleted {
-				completedNodes++
+				completedNodes[nodeName] = true
 			}
 		} else {
 			// If RebootOnSuccess is false, we only check job status
 			if status.Phase == phaseCompleted {
-				completedNodes++
+				completedNodes[nodeName] = true
 			}
 		}
 	}
 
-	// Update overall phase
+	// Update overall phase. The denominator is the target nodes, not the
+	// status entries: with a Concurrency limit the status map only holds the
+	// nodes started so far, so counting entries reports Completed as soon as
+	// the first batch finishes.
+	allTargetsCompleted := len(targetNodes) > 0
+	for _, node := range targetNodes {
+		if !completedNodes[node.Name] {
+			allTargetsCompleted = false
+			break
+		}
+	}
+
 	if anyFailed {
 		nodeOp.Status.Phase = phaseFailed
-	} else if len(nodeOp.Status.NodeStatuses) > 0 && completedNodes == len(nodeOp.Status.NodeStatuses) {
+	} else if allTargetsCompleted {
 		nodeOp.Status.Phase = phaseCompleted
 	} else {
 		nodeOp.Status.Phase = phaseRunning
@@ -1582,14 +1604,11 @@ func (r *NodeOpReconciler) getTargetNodes(ctx context.Context, nodeOp *kairosiov
 // preflight Pods that already exist, creates the upgrade Job for nodes whose
 // reboot Pod is ready, starts the preflight Pod or the upgrade for nodes that
 // have no state yet (respecting Concurrency and StopOnFailure), and starts the
-// upgrade when a preflight Pod has reported "proceed".
-func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp) error {
+// upgrade when a preflight Pod has reported "proceed". targetNodes is the set
+// of nodes the operation has to cover.
+func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp,
+	targetNodes []corev1.Node) error {
 	log := logf.FromContext(ctx)
-
-	targetNodes, err := r.getTargetNodes(ctx, nodeOp)
-	if err != nil {
-		return err
-	}
 
 	if nodeOp.Status.NodeStatuses == nil {
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
