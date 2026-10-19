@@ -24,6 +24,10 @@ const (
 	kindNodeOpUpgrade     = "NodeOpUpgrade"
 	phaseInitializing     = "Initializing"
 	labelKeyNodeOpUpgrade = "nodeopupgrade.kairos.io/name"
+
+	// nothingToUpgradeMessage is reported when the spec disables the active
+	// partition upgrade without asking for the recovery one.
+	nothingToUpgradeMessage = "neither upgradeActive nor upgradeRecovery is enabled, nothing to upgrade"
 )
 
 // NodeOpUpgradeReconciler reconciles a NodeOpUpgrade object
@@ -69,6 +73,19 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// Neither partition was asked for. getBool has already applied the
+			// defaults here, so this is not the "unspecified" case: it can only
+			// be an explicit upgradeActive: false with no recovery upgrade
+			// requested. Creating the NodeOp would cordon and drain the node to
+			// run the very upgrade the spec forbids, and RebootOnSuccess is
+			// derived from the same flag, so the result would never be
+			// activated either.
+			if !getBool(nodeOpUpgrade.Spec.UpgradeActive, UpgradeActiveDefault) &&
+				!getBool(nodeOpUpgrade.Spec.UpgradeRecovery, UpgradeRecoveryDefault) {
+				log.Info("Nothing to upgrade, refusing to create a NodeOp", "nodeOpUpgrade", nodeOpUpgrade.Name)
+				return ctrl.Result{}, r.markNothingToUpgrade(ctx, nodeOpUpgrade)
+			}
+
 			// NodeOp doesn't exist, create it
 			log.Info("Creating NodeOp for NodeOpUpgrade", "nodeOp", nodeOpUpgrade.Name)
 			if err := r.createNodeOp(ctx, nodeOpUpgrade); err != nil {
@@ -322,15 +339,12 @@ exit 0
 ` + agent + ` upgrade --recovery --source dir:/` + excludes + `
 exit 0
 `
-	} else if upgradeActive {
-		// Active only (default behavior)
-		script += `# Upgrade active partition
-` + agent + ` upgrade --source dir:/` + excludes + `
-exit 0
-`
 	} else {
-		// Neither specified - default to active
-		script += `# Upgrade active partition (default)
+		// Active only. Reconcile refuses to create a NodeOp when neither
+		// partition is requested, so upgradeActive is true here: the
+		// defaults are already applied, and an explicit false with no
+		// recovery upgrade never reaches this function.
+		script += `# Upgrade active partition
 ` + agent + ` upgrade --source dir:/` + excludes + `
 exit 0
 `
@@ -424,4 +438,22 @@ func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
 	}
 
 	return []reconcile.Request{}
+}
+
+// markNothingToUpgrade records on the NodeOpUpgrade that its spec asks for no
+// partition at all, so no NodeOp was created. Writing only on a change keeps a
+// resource the user leaves in that state from generating a status update on
+// every resync.
+func (r *NodeOpUpgradeReconciler) markNothingToUpgrade(ctx context.Context,
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) error {
+	if nodeOpUpgrade.Status.Phase == phaseFailed &&
+		nodeOpUpgrade.Status.Message == nothingToUpgradeMessage {
+		return nil
+	}
+
+	nodeOpUpgrade.Status.Phase = phaseFailed
+	nodeOpUpgrade.Status.Message = nothingToUpgradeMessage
+	nodeOpUpgrade.Status.LastUpdated = metav1.Now()
+
+	return r.Status().Update(ctx, nodeOpUpgrade)
 }
