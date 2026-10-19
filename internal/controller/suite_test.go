@@ -253,7 +253,7 @@ func markJobAsFailed(ctx context.Context, k8sClient client.Client, job *batchv1.
 			Status:             corev1.ConditionTrue,
 			LastTransitionTime: now,
 			Reason:             "JobFailed",
-			Message:            "Job failed",
+			Message:            msgJobFailed,
 		},
 	}
 
