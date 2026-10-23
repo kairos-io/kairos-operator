@@ -30,15 +30,12 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+# The reboot Pod enters the host's namespaces from Go and runs the host's own
+# reboot, so the image needs no shell and no nsenter. distroless/static ships
+# the CA certificates the manager needs for https apiservers and OCI registries.
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 WORKDIR /
-# Create a non-root user with numeric UID
-RUN adduser -D -u 65532 -s /bin/sh manager
-# ca-certificates lets the manager talk to https apiservers and OCI
-# registries. nsenter, which the reboot Pod uses for the host reboot, ships with
-# alpine's busybox and does not need to be installed separately.
-RUN apk add --no-cache ca-certificates
 COPY --from=builder /workspace/manager .
-
 USER 65532:65532
+
 ENTRYPOINT ["/manager"]

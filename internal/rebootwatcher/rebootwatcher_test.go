@@ -152,7 +152,7 @@ var _ = Describe("Reboot Pod program", func() {
 	})
 
 	It("wraps the reboot error", func() {
-		bootErr := errors.New("nsenter reboot failed")
+		bootErr := errors.New("host reboot failed")
 		reboot := &rebootRecorder{err: bootErr}
 		kube := newKube(job(true), jobPod(corev1.PodSucceeded, bootA))
 
