@@ -53,10 +53,16 @@ const (
 
 // artifactLabelValue returns the value artifactLabel carries on every child object.
 // An OSArtifact name is a DNS subdomain and may be up to 253 characters, while a label
-// value stops at 63, so the name goes through the same truncation the child object names
-// use. Children are mapped back to their OSArtifact through the owner reference, never by
-// reading this value back as a name.
+// value stops at 63, so a longer name goes through the same truncation the child object
+// names use. A name that already fits is returned untouched: TruncateNameWithHash starts
+// hashing above 50 characters, and children an older operator labelled with a 51 to 63
+// character name would no longer match the selectors. Children are mapped back to their
+// OSArtifact through the owner reference, never by reading this value back as a name.
 func artifactLabelValue(artifact *buildv1alpha2.OSArtifact) string {
+	if len(artifact.Name) <= utils.KubernetesNameLengthLimit {
+		return artifact.Name
+	}
+
 	return utils.TruncateNameWithHash(artifact.Name, utils.KubernetesNameLengthLimit)
 }
 
