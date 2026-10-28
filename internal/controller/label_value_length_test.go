@@ -175,4 +175,42 @@ var _ = Describe("Names longer than a label value", func() {
 			Expect(jobList.Items).To(HaveLen(1))
 		})
 	})
+	Context("When a NodeOpUpgrade name does not fit in a label value", func() {
+		var (
+			ctx               context.Context
+			nodeOpUpgradeName string
+			nodeOpUpgrade     *kairosiov1alpha1.NodeOpUpgrade
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			nodeOpUpgradeName = longName("upgrade-to-hadron")
+
+			nodeOpUpgrade = &kairosiov1alpha1.NodeOpUpgrade{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeOpUpgradeName, Namespace: namespace},
+				Spec:       kairosiov1alpha1.NodeOpUpgradeSpec{Image: "quay.io/kairos/hadron:latest"},
+			}
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed(),
+				"the API server accepts a name this long, so the operator has to as well")
+		})
+
+		AfterEach(func() {
+			_ = k8sClient.Delete(ctx, &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeOpUpgradeName, Namespace: namespace},
+			})
+			_ = k8sClient.Delete(ctx, nodeOpUpgrade)
+		})
+
+		It("creates the NodeOp and maps it back to the untruncated name", func() {
+			nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nodeOp.Labels).To(HaveKeyWithValue(labelKeyNodeOpUpgrade,
+				utils.TruncateLabelValue(nodeOpUpgradeName)))
+
+			r := &NodeOpUpgradeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reqs := r.findNodeOpUpgradesForNodeOp(ctx, nodeOp)
+			Expect(reqs).To(HaveLen(1))
+			Expect(reqs[0].NamespacedName.Name).To(Equal(nodeOpUpgradeName))
+		})
+	})
 })
