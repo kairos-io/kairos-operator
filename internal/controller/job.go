@@ -58,6 +58,14 @@ const (
 	// DOCKER_CONFIG env var directs OCI tooling at the auth file.
 	dockerConfigEnv      = "DOCKER_CONFIG"
 	dockerCredsMountPath = "/root/.docker"
+	// caCertsMountPath is where image.caCertificatesVolume is mounted on the
+	// containers that pull images.
+	caCertsMountPath = "/etc/ssl/buildah/certs"
+	// sslCertDirEnv lists the directories Go's crypto/x509 reads trusted CAs
+	// from. Setting it replaces the default list, so the system directory is
+	// kept in front of caCertsMountPath.
+	sslCertDirEnv   = "SSL_CERT_DIR"
+	systemCertsPath = "/etc/ssl/certs"
 	// buildahCmd is the buildah executable name (used as the first argv element).
 	buildahCmd = "buildah"
 )
@@ -99,6 +107,8 @@ func unpackContainer(id, containerImage, pullImage, arch string, insecure bool) 
 // Stage 1 for ref: one container puts the image tarball in the artifacts volume.
 // AuroraBoot uses go-containerregistry's DefaultKeychain, which reads from DOCKER_CONFIG (not Kubernetes ImagePullSecrets).
 // When ImageCredentialsSecretRef is set, we mount the credentials and set DOCKER_CONFIG so private image.ref can be pulled.
+// BuildEnv is passed through (e.g. proxy settings). When CACertificatesVolume is set, it is mounted and SSL_CERT_DIR
+// is pointed at it as well as the system CA directory, unless BuildEnv already sets SSL_CERT_DIR.
 func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolImage string) corev1.Container {
 	arch, _ := artifact.Spec.ArchSanitized()
 	unpackCmd := aurorabootUnpackCmd
@@ -135,6 +145,17 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 		})
 		env = append(env, corev1.EnvVar{Name: dockerConfigEnv, Value: dockerCredsMountPath})
 	}
+	if artifact.Spec.Image.CACertificatesVolume != "" {
+		volMounts = append(volMounts, corev1.VolumeMount{
+			Name:      artifact.Spec.Image.CACertificatesVolume,
+			MountPath: caCertsMountPath,
+			ReadOnly:  true,
+		})
+		if !hasEnvVar(artifact.Spec.Image.BuildEnv, sslCertDirEnv) {
+			env = append(env, corev1.EnvVar{Name: sslCertDirEnv, Value: systemCertsPath + ":" + caCertsMountPath})
+		}
+	}
+	env = append(env, artifact.Spec.Image.BuildEnv...)
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
 		Name:            "pull-image-baseimage",
@@ -144,6 +165,15 @@ func unpackAndPackToArtifactsContainer(artifact *buildv1alpha2.OSArtifact, toolI
 		Env:             env,
 		VolumeMounts:    volMounts,
 	}
+}
+
+func hasEnvVar(env []corev1.EnvVar, name string) bool {
+	for _, e := range env {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // builtImageName returns the name of the built image (for the packed tarball). Only used when building; defaults to the OSArtifact name.
@@ -857,7 +887,7 @@ func buildahBuildContainer(artifact *buildv1alpha2.OSArtifact, buildContextVolum
 
 	var certDir string
 	if artifact.Spec.Image.CACertificatesVolume != "" {
-		certDir = "/etc/ssl/buildah/certs"
+		certDir = caCertsMountPath
 		volMounts = append(volMounts, corev1.VolumeMount{
 			Name:      artifact.Spec.Image.CACertificatesVolume,
 			MountPath: certDir,

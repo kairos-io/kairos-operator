@@ -1089,6 +1089,72 @@ var _ = Describe("unpackAndPackToArtifactsContainer", func() {
 			Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack --allow-insecure-registries localhost:5000/my/image:latest /rootfs"))
 		})
 	})
+
+	It("sets no env and mounts no CA volume by default", func() {
+		c := unpackAndPackToArtifactsContainer(newRefArtifact(), "auroraboot:test")
+		Expect(c.Env).To(BeEmpty())
+		for _, m := range c.VolumeMounts {
+			Expect(m.MountPath).ToNot(Equal("/etc/ssl/buildah/certs"))
+		}
+	})
+
+	When("buildEnv is set", func() {
+		It("passes buildEnv to the container", func() {
+			a := newRefArtifact()
+			a.Spec.Image.BuildEnv = []corev1.EnvVar{
+				{Name: "HTTPS_PROXY", Value: "http://proxy:3128"},
+				{Name: "NO_PROXY", Value: ".svc,.cluster.local"},
+			}
+			c := unpackAndPackToArtifactsContainer(a, "auroraboot:test")
+			Expect(c.Env).To(ContainElements(
+				corev1.EnvVar{Name: "HTTPS_PROXY", Value: "http://proxy:3128"},
+				corev1.EnvVar{Name: "NO_PROXY", Value: ".svc,.cluster.local"},
+			))
+		})
+
+		It("keeps DOCKER_CONFIG when imageCredentialsSecretRef is also set", func() {
+			a := newRefArtifact()
+			a.Spec.Image.ImageCredentialsSecretRef = &buildv1alpha2.SecretKeySelector{Name: "creds"}
+			a.Spec.Image.BuildEnv = []corev1.EnvVar{{Name: "HTTP_PROXY", Value: "http://proxy:3128"}}
+			c := unpackAndPackToArtifactsContainer(a, "auroraboot:test")
+			Expect(c.Env).To(ContainElements(
+				corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/root/.docker"},
+				corev1.EnvVar{Name: "HTTP_PROXY", Value: "http://proxy:3128"},
+			))
+		})
+	})
+
+	When("caCertificatesVolume is set", func() {
+		It("mounts the volume read-only and adds it to SSL_CERT_DIR next to the system certs", func() {
+			a := newRefArtifact()
+			a.Spec.Image.CACertificatesVolume = "my-ca-certs"
+			c := unpackAndPackToArtifactsContainer(a, "auroraboot:test")
+			Expect(c.VolumeMounts).To(ContainElement(corev1.VolumeMount{
+				Name:      "my-ca-certs",
+				MountPath: "/etc/ssl/buildah/certs",
+				ReadOnly:  true,
+			}))
+			Expect(c.Env).To(ContainElement(corev1.EnvVar{
+				Name:  "SSL_CERT_DIR",
+				Value: "/etc/ssl/certs:/etc/ssl/buildah/certs",
+			}))
+		})
+
+		It("leaves an SSL_CERT_DIR from buildEnv alone", func() {
+			a := newRefArtifact()
+			a.Spec.Image.CACertificatesVolume = "my-ca-certs"
+			a.Spec.Image.BuildEnv = []corev1.EnvVar{{Name: "SSL_CERT_DIR", Value: "/custom/certs"}}
+			c := unpackAndPackToArtifactsContainer(a, "auroraboot:test")
+			var sslCertDirs []string
+			for _, e := range c.Env {
+				if e.Name == "SSL_CERT_DIR" {
+					sslCertDirs = append(sslCertDirs, e.Value)
+				}
+			}
+			Expect(sslCertDirs).To(Equal([]string{"/custom/certs"}))
+			Expect(c.VolumeMounts).To(ContainElement(HaveField("Name", "my-ca-certs")))
+		})
+	})
 })
 
 var _ = Describe("volumeForExportArtifacts", func() {
