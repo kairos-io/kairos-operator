@@ -157,3 +157,46 @@ var _ = Describe("OSArtifact export Job, name too long for the Job label", func(
 		Expect(jobs.Items).To(HaveLen(1))
 	})
 })
+
+var _ = Describe("OSArtifact child objects, name that already fits a label", func() {
+	var r *OSArtifactReconciler
+	var artifact *buildv1alpha2.OSArtifact
+	var namespace *corev1.Namespace
+	// 60 characters: fits a label value, but is longer than the 50 characters
+	// TruncateNameWithHash keeps before it starts hashing.
+	fitsName := "kairos-opensuse-leap-15-6-standard-amd64-generic-v3-6-0-abcd"
+
+	BeforeEach(func() {
+		Expect(fitsName).To(HaveLen(60))
+
+		namespace = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("osa-fits-%s", randStringRunes(8))},
+		}
+		Expect(k8sClient.Create(ctx, namespace)).To(Succeed())
+
+		artifact = &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: fitsName, Namespace: namespace.Name},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image:     buildv1alpha2.ImageSpec{Ref: testImageName},
+				Artifacts: &buildv1alpha2.ArtifactSpec{},
+			},
+		}
+		Expect(k8sClient.Create(ctx, artifact)).To(Succeed())
+
+		r = &OSArtifactReconciler{Client: k8sClient, Scheme: scheme.Scheme, ToolImage: "tool-image"}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, namespace)).To(Succeed())
+	})
+
+	It("keeps the artifact name as the label value", func() {
+		// Children an older operator created carry the plain name, and checkBuild,
+		// checkExport and lookupArtifactsPVC select on it. Hashing it would orphan them.
+		Expect(r.CreateConfigMap(ctx, artifact)).To(Succeed())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: artifact.Name, Namespace: namespace.Name}, cm)).To(Succeed())
+		Expect(cm.Labels).To(HaveKeyWithValue(artifactLabel, fitsName))
+	})
+})
