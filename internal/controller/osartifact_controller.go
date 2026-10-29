@@ -40,7 +40,7 @@ import (
 
 const (
 	FinalizerName                   = "build.kairos.io/osbuilder-finalizer"
-	CompatibleAurorabootVersion     = "v0.24.0"
+	CompatibleAurorabootVersion     = "v0.29.0"
 	CompatibleBuildahVersion        = "v1.43.1"
 	artifactLabel                   = "build.kairos.io/artifact"
 	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
