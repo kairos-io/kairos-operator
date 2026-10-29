@@ -101,12 +101,11 @@ type ImageSpec struct {
 	// +optional
 	ImageCredentialsSecretRef *SecretKeySelector `json:"imageCredentialsSecretRef,omitempty"`
 
-	// BuildEnv are environment variables for the OCI build container. Use for proxy settings (e.g. HTTP_PROXY, HTTPS_PROXY, NO_PROXY) or any other build-time env.
-	// Only used when building (Ref empty); ignored when using a pre-built image.
+	// BuildEnv are environment variables for the container that fetches the image: the OCI build container when building (Ref empty), or the container that pulls image.ref. Use for proxy settings (e.g. HTTP_PROXY, HTTPS_PROXY, NO_PROXY) or any other build-time env.
 	// +optional
 	BuildEnv []corev1.EnvVar `json:"buildEnv,omitempty"`
 
-	// CACertificatesVolume names a volume (from spec.volumes) to mount at /etc/ssl/buildah/certs on the OCI build container. Use for custom CA certificates when pulling or pushing images (e.g. private registries). Only used when building (Ref empty).
+	// CACertificatesVolume names a volume (from spec.volumes) to mount at /etc/ssl/buildah/certs. Use for custom CA certificates when pulling or pushing images (e.g. private registries). When building (Ref empty) it is passed to buildah as --cert-dir. When pulling image.ref it is added to SSL_CERT_DIR next to /etc/ssl/certs, so the certificates are trusted on top of the system ones; an SSL_CERT_DIR set in BuildEnv takes precedence.
 	// +optional
 	CACertificatesVolume string `json:"caCertificatesVolume,omitempty"`
 
@@ -480,6 +479,12 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 		}
 	}
 
+	if img.CACertificatesVolume != "" {
+		if !volumeNames[img.CACertificatesVolume] {
+			return fmt.Errorf("spec.image.caCertificatesVolume references volume %q which is not defined in spec.volumes", img.CACertificatesVolume)
+		}
+	}
+
 	if hasRef {
 		// Pre-built image; no build. BuildOptions and OCISpec are ignored.
 		return nil
@@ -508,11 +513,6 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 	if hasOCISpec && img.OCISpec.BuildContextVolume != "" {
 		if !volumeNames[img.OCISpec.BuildContextVolume] {
 			return fmt.Errorf("spec.image.ociSpec.buildContextVolume references volume %q which is not defined in spec.volumes", img.OCISpec.BuildContextVolume)
-		}
-	}
-	if img.CACertificatesVolume != "" {
-		if !volumeNames[img.CACertificatesVolume] {
-			return fmt.Errorf("spec.image.caCertificatesVolume references volume %q which is not defined in spec.volumes", img.CACertificatesVolume)
 		}
 	}
 	if img.StorageVolume != "" && !volumeNames[img.StorageVolume] {

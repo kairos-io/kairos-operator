@@ -260,6 +260,33 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(spec.Validate()).ToNot(HaveOccurred())
 		})
 
+		It("returns error when image.caCertificatesVolume references missing volume with image.ref", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Ref:                  "img",
+					CACertificatesVolume: "missing-ca-vol",
+				},
+				Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+				Volumes:   []corev1.Volume{{Name: "other"}},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("caCertificatesVolume"))
+		})
+
+		It("accepts image.caCertificatesVolume and image.buildEnv with image.ref", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					Ref:                  "img",
+					CACertificatesVolume: "my-ca-certs",
+					BuildEnv:             []corev1.EnvVar{{Name: "HTTPS_PROXY", Value: "http://proxy:3128"}},
+				},
+				Artifacts: &v1alpha2.ArtifactSpec{ISO: true},
+				Volumes:   []corev1.Volume{{Name: "my-ca-certs"}},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
 		It("returns error when image.storageVolume references missing volume", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
