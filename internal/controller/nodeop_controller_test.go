@@ -3457,6 +3457,176 @@ var _ = Describe("NodeOp Controller - Concurrency and StopOnFailure", func() {
 		})
 	})
 
+	Context("When an attempt created the upgrade Job but never recorded it", func() {
+		var nodeOp *kairosiov1alpha1.NodeOp
+
+		reconcileNodeOp := func() {
+			GinkgoHelper()
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: resourceName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		listJobs := func() []batchv1.Job {
+			GinkgoHelper()
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels{labelKeyNodeOp: resourceName},
+			)).To(Succeed())
+			return jobList.Items
+		}
+
+		listRebootPods := func() []corev1.Pod {
+			GinkgoHelper()
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList,
+				client.InNamespace("default"),
+				client.MatchingLabels{labelKeyNodeOp: resourceName, labelKeyReboot: "true"},
+			)).To(Succeed())
+			return podList.Items
+		}
+
+		// forgetNodeStatuses drops every NodeStatus entry, which is what the
+		// node looks like after createNodeJob created the Job and then
+		// returned early: the Status().Update that records the Job conflicted,
+		// so nothing was written and the next reconcile routes the node back
+		// through startMainJob.
+		forgetNodeStatuses := func() {
+			GinkgoHelper()
+			current := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeOp), current)).To(Succeed())
+			current.Status.NodeStatuses = nil
+			Expect(k8sClient.Status().Update(ctx, current)).To(Succeed())
+		}
+
+		createNodeOp := func(rebootOnSuccess bool) {
+			GinkgoHelper()
+			nodeOp = &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					Concurrency:     1,
+					RebootOnSuccess: asBool(rebootOnSuccess),
+				},
+			}
+			Expect(k8sClient.Create(ctx, nodeOp)).To(Succeed())
+		}
+
+		It("adopts that Job instead of running the command a second time", func() {
+			createNodeOp(false)
+			reconcileNodeOp()
+
+			jobs := listJobs()
+			Expect(jobs).To(HaveLen(1))
+			orphaned := jobs[0].Name
+			nodeName := jobs[0].Labels[labelKeyNode]
+			Expect(nodeName).NotTo(BeEmpty())
+
+			forgetNodeStatuses()
+			reconcileNodeOp()
+
+			Expect(listJobs()).To(HaveLen(1),
+				"a retry must not run the same command twice on one node")
+
+			current := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(nodeOp), current)).To(Succeed())
+			Expect(current.Status.NodeStatuses).To(HaveKey(nodeName))
+			Expect(current.Status.NodeStatuses[nodeName].JobName).To(Equal(orphaned),
+				"the node must be recorded against the Job that already runs on it")
+		})
+
+		It("points a replacement reboot Pod at that Job", func() {
+			createNodeOp(true)
+			reconcileNodeOp()
+			markRebootPodsRunning(ctx, nodeOp)
+			reconcileNodeOp()
+
+			jobs := listJobs()
+			Expect(jobs).To(HaveLen(1))
+			orphaned := jobs[0].Name
+			pods := listRebootPods()
+			Expect(pods).To(HaveLen(1))
+			failed := &pods[0]
+
+			By("Failing the reboot Pod that holds the Job's name, as an eviction would")
+			failed.Status.Phase = corev1.PodFailed
+			failed.Status.Reason = "Evicted"
+			Expect(k8sClient.Status().Update(ctx, failed)).To(Succeed())
+
+			forgetNodeStatuses()
+			reconcileNodeOp()
+
+			Expect(listJobs()).To(HaveLen(1),
+				"the node already has an upgrade Job, so no second one may be created")
+
+			var replacements []corev1.Pod
+			for _, pod := range listRebootPods() {
+				if pod.Name != failed.Name {
+					replacements = append(replacements, pod)
+				}
+			}
+			Expect(replacements).To(HaveLen(1), "a fresh reboot Pod must replace the Failed one")
+			Expect(rebootPodJobName(&replacements[0])).To(Equal(orphaned),
+				"a reboot Pod naming a Job the node does not have can never reboot it")
+		})
+
+		It("replaces a reboot Pod that names a different Job", func() {
+			createNodeOp(true)
+			reconcileNodeOp()
+			markRebootPodsRunning(ctx, nodeOp)
+			reconcileNodeOp()
+
+			jobs := listJobs()
+			Expect(jobs).To(HaveLen(1))
+			orphaned := jobs[0].Name
+			pods := listRebootPods()
+			Expect(pods).To(HaveLen(1))
+			original := pods[0]
+
+			By("Leaving the node a running reboot Pod that watches for another Job")
+			Expect(k8sClient.Delete(ctx, &original, client.GracePeriodSeconds(0))).To(Succeed())
+			stale := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            original.GenerateName + "stale",
+					Namespace:       original.Namespace,
+					Labels:          original.Labels,
+					OwnerReferences: original.OwnerReferences,
+				},
+				Spec: *original.Spec.DeepCopy(),
+			}
+			stale.Spec.Containers[0].Env[0].Value = orphaned + "-other"
+			Expect(k8sClient.Create(ctx, stale)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, stale, client.GracePeriodSeconds(0)))).To(Succeed())
+			})
+			markRebootPodRunning(ctx, stale)
+
+			forgetNodeStatuses()
+			reconcileNodeOp()
+
+			Expect(listJobs()).To(HaveLen(1))
+			current := &corev1.Pod{}
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(stale), current)
+			if err == nil {
+				Expect(current.DeletionTimestamp.IsZero()).To(BeFalse(),
+					"a reboot Pod watching for a Job that will never exist must be replaced")
+			} else {
+				Expect(apierrors.IsNotFound(err)).To(BeTrue(), "unexpected error: %v", err)
+			}
+
+			var replacements []corev1.Pod
+			for _, pod := range listRebootPods() {
+				if pod.Name != stale.Name && pod.Name != original.Name {
+					replacements = append(replacements, pod)
+				}
+			}
+			Expect(replacements).To(HaveLen(1))
+			Expect(rebootPodJobName(&replacements[0])).To(Equal(orphaned))
+		})
+	})
+
 	Context("When testing concurrency with reboot pending", func() {
 		It("should consider jobs with pending reboot as running and not start new jobs", func() {
 			By("Creating a NodeOp with concurrency=1 and RebootOnSuccess=true")
