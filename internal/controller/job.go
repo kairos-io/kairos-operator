@@ -573,6 +573,9 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 	if artifacts != nil && artifacts.DiskSize != "" {
 		fmt.Fprintf(&c, " --set 'disk.size=%s'", artifacts.DiskSize)
 	}
+	if artifacts != nil && artifacts.BootActive {
+		c.WriteString(" --set 'disk.boot_active=true'")
+	}
 	if artifacts != nil && artifacts.CloudConfigRef != nil {
 		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}

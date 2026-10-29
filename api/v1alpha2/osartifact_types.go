@@ -175,6 +175,8 @@ type OCISpec struct {
 }
 
 // ArtifactSpec describes which artifacts to produce from the Stage 1 image (Stage 2) and related options.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.bootActive) || !self.bootActive || (has(self.cloudImage) && self.cloudImage)",message="bootActive requires cloudImage"
 type ArtifactSpec struct {
 	// +kubebuilder:validation:Enum=amd64;arm64
 	Arch string `json:"arch,omitempty"`
@@ -184,6 +186,10 @@ type ArtifactSpec struct {
 	CloudImage bool   `json:"cloudImage,omitempty"`
 	AzureImage bool   `json:"azureImage,omitempty"`
 	GCEImage   bool   `json:"gceImage,omitempty"`
+
+	// BootActive builds the cloudImage raw disk with COS_STATE and active.img (auroraboot disk.boot_active), so the first boot goes straight to active without the recovery reset.
+	// +optional
+	BootActive bool `json:"bootActive,omitempty"`
 
 	Netboot    bool   `json:"netboot,omitempty"`
 	NetbootURL string `json:"netbootURL,omitempty"`

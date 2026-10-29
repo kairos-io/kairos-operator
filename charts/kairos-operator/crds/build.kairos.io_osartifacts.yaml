@@ -482,6 +482,8 @@ spec:
                     type: string
                   azureImage:
                     type: boolean
+                  bootActive:
+                    type: boolean
                   bundles:
                     items:
                       type: string
@@ -540,6 +542,10 @@ spec:
                   volume:
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: bootActive requires cloudImage
+                  rule: '!has(self.bootActive) || !self.bootActive || (has(self.cloudImage)
+                    && self.cloudImage)'
               exporters:
                 items:
                   properties:

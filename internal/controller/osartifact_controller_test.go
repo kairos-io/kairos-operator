@@ -1507,6 +1507,40 @@ var _ = Describe("OSArtifactReconciler", func() {
 				})
 			})
 
+			When("BootActive is set", func() {
+				BeforeEach(func() {
+					artifact.Spec.Artifacts.BootActive = true
+				})
+
+				It("passes disk.boot_active to auroraboot", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					container := findContainerByName(pod, "build-cloud-image")
+					Expect(container).ToNot(BeNil())
+					Expect(container.Args).To(HaveLen(1))
+					Expect(container.Args[0]).To(ContainSubstring("--set 'disk.boot_active=true'"))
+				})
+			})
+
+			When("BootActive is not set", func() {
+				It("does not include disk.boot_active in auroraboot command", func() {
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					container := findContainerByName(pod, "build-cloud-image")
+					Expect(container).ToNot(BeNil())
+					Expect(container.Args).To(HaveLen(1))
+					Expect(container.Args[0]).ToNot(ContainSubstring("disk.boot_active"))
+				})
+			})
+
 			When("CloudConfigRef is set", func() {
 				It("includes cloud-config flag in auroraboot command", func() {
 					testCloudConfigInclusion("build-cloud-image")
