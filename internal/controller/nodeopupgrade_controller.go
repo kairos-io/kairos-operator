@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
+	"github.com/kairos-io/kairos-operator/internal/utils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -117,7 +118,7 @@ func (r *NodeOpUpgradeReconciler) createNodeOp(ctx context.Context,
 			Namespace: nodeOpUpgrade.Namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "nodeopupgrade-controller",
-				labelKeyNodeOpUpgrade:          nodeOpUpgrade.Name,
+				labelKeyNodeOpUpgrade:          utils.TruncateLabelValue(nodeOpUpgrade.Name),
 			},
 		},
 		Spec: kairosiov1alpha1.NodeOpSpec{
@@ -411,8 +412,9 @@ func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
 	obj client.Object) []reconcile.Request {
 	nodeOp := obj.(*kairosiov1alpha1.NodeOp)
 
-	// Look for the owning NodeOpUpgrade using labels
-	if nodeOpUpgradeName, exists := nodeOp.Labels[labelKeyNodeOpUpgrade]; exists {
+	// The owner reference carries the full name. The label is only a fallback:
+	// it holds a truncated value for a NodeOpUpgrade name longer than 63 characters.
+	if nodeOpUpgradeName := nodeOpUpgradeNameFor(nodeOp); nodeOpUpgradeName != "" {
 		return []reconcile.Request{
 			{
 				NamespacedName: types.NamespacedName{
@@ -424,4 +426,15 @@ func (r *NodeOpUpgradeReconciler) findNodeOpUpgradesForNodeOp(_ context.Context,
 	}
 
 	return []reconcile.Request{}
+}
+
+// nodeOpUpgradeNameFor returns the name of the NodeOpUpgrade that owns a NodeOp.
+func nodeOpUpgradeNameFor(nodeOp *kairosiov1alpha1.NodeOp) string {
+	for _, ownerRef := range nodeOp.GetOwnerReferences() {
+		if ownerRef.Kind == kindNodeOpUpgrade {
+			return ownerRef.Name
+		}
+	}
+
+	return nodeOp.GetLabels()[labelKeyNodeOpUpgrade]
 }
