@@ -9,6 +9,7 @@ import (
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +24,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -1885,6 +1887,114 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(pod.Spec.Resources).ToNot(BeNil())
 				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("1"))
 			})
+		})
+	})
+})
+
+var _ = Describe("checkExport", func() {
+	const exportNamespace = "export-ns"
+
+	var artifact *buildv1alpha2.OSArtifact
+
+	// newExportingArtifact returns an artifact already in the Exporting phase,
+	// with a single exporter that carries the given JobSpec.
+	newExportingArtifact := func(exporter batchv1.JobSpec) *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-artifact", Namespace: exportNamespace},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Volumes: []corev1.Volume{{
+					Name:         "artifacts",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}},
+				Artifacts: &buildv1alpha2.ArtifactSpec{Volume: "artifacts"},
+				Exporters: []batchv1.JobSpec{exporter},
+			},
+			Status: buildv1alpha2.OSArtifactStatus{Phase: buildv1alpha2.Exporting},
+		}
+	}
+
+	// newExportJob returns the Job the reconciler would find for exporter 0.
+	newExportJob := func(spec batchv1.JobSpec, status batchv1.JobStatus) *batchv1.Job {
+		return &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "my-artifact-export-0",
+				Namespace:   exportNamespace,
+				Labels:      map[string]string{artifactLabel: "my-artifact"},
+				Annotations: map[string]string{artifactExporterIndexAnnotation: "0"},
+			},
+			Spec:   spec,
+			Status: status,
+		}
+	}
+
+	// phaseAfterCheckExport runs checkExport against a fake client holding the
+	// artifact and the job, and reports the phase it left behind.
+	phaseAfterCheckExport := func(job *batchv1.Job) string {
+		cl := fake.NewClientBuilder().
+			WithScheme(clientgoscheme.Scheme).
+			WithObjects(artifact, job).
+			WithStatusSubresource(artifact).
+			Build()
+		r := &OSArtifactReconciler{Client: cl, Scheme: clientgoscheme.Scheme}
+
+		_, err := r.checkExport(context.TODO(), artifact)
+		Expect(err).ToNot(HaveOccurred())
+
+		var updated buildv1alpha2.OSArtifact
+		Expect(cl.Get(context.TODO(), client.ObjectKeyFromObject(artifact), &updated)).To(Succeed())
+		return string(updated.Status.Phase)
+	}
+
+	Context("when the exporter asks for a single completion", func() {
+		BeforeEach(func() {
+			artifact = newExportingArtifact(batchv1.JobSpec{})
+		})
+
+		It("becomes Ready once the job has succeeded", func() {
+			job := newExportJob(batchv1.JobSpec{}, batchv1.JobStatus{Succeeded: 1})
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Ready))
+		})
+
+		It("stays Exporting while the job is still running", func() {
+			job := newExportJob(batchv1.JobSpec{}, batchv1.JobStatus{Active: 1})
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Exporting))
+		})
+	})
+
+	Context("when the exporter asks for more than one completion", func() {
+		// The reconciler defaults BackoffLimit to 0 on the Jobs it creates.
+		exporter := batchv1.JobSpec{Completions: ptr(int32(2)), Parallelism: ptr(int32(2)), BackoffLimit: ptr(int32(0))}
+
+		BeforeEach(func() {
+			artifact = newExportingArtifact(exporter)
+		})
+
+		It("becomes Ready once every completion has succeeded", func() {
+			job := newExportJob(exporter, batchv1.JobStatus{Succeeded: 2})
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Ready))
+		})
+
+		It("stays Exporting while only some completions have succeeded", func() {
+			job := newExportJob(exporter, batchv1.JobStatus{Succeeded: 1, Active: 1})
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Exporting))
+		})
+
+		It("becomes Error when the job has failed", func() {
+			job := newExportJob(exporter, batchv1.JobStatus{
+				Failed: 2,
+				Conditions: []batchv1.JobCondition{{
+					Type:   batchv1.JobFailed,
+					Status: corev1.ConditionTrue,
+					Reason: "BackoffLimitExceeded",
+				}},
+			})
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Error))
+		})
+
+		It("does not panic when the job carries no backoff limit", func() {
+			job := newExportJob(exporter, batchv1.JobStatus{Succeeded: 2})
+			job.Spec.BackoffLimit = nil
+			Expect(phaseAfterCheckExport(job)).To(Equal(buildv1alpha2.Ready))
 		})
 	})
 })
