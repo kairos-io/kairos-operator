@@ -20,6 +20,7 @@ import (
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const (
@@ -848,6 +849,128 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nodeOpList.Items).To(HaveLen(1))
+		})
+
+		It("does not adopt a NodeOp it does not control", func() {
+			By("Creating a NodeOp of the same name that nothing owns")
+			foreignNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Image:   "busybox",
+					Command: []string{"/bin/sh", "-c", "echo not-an-upgrade"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, foreignNodeOp)).To(Succeed())
+
+			foreignNodeOp.Status.Phase = "Completed"
+			foreignNodeOp.Status.NodeStatuses = map[string]kairosiov1alpha1.NodeStatus{
+				"some-node": {Phase: "Completed", JobName: "some-job"},
+			}
+			Expect(k8sClient.Status().Update(ctx, foreignNodeOp)).To(Succeed())
+
+			By("Creating the NodeOpUpgrade resource")
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			By("Reconciling the NodeOpUpgrade")
+			controllerReconciler := &NodeOpUpgradeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the foreign NodeOp was left alone")
+			unchanged := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, unchanged)).To(Succeed())
+			Expect(unchanged.Spec.Image).To(Equal("busybox"))
+			Expect(unchanged.OwnerReferences).To(BeEmpty())
+			Expect(unchanged.Labels).NotTo(HaveKey("nodeopupgrade.kairos.io/name"))
+
+			By("Verifying the upgrade reports the conflict instead of the foreign NodeOp's progress")
+			updated := &kairosiov1alpha1.NodeOpUpgrade{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Failed"))
+			Expect(updated.Status.Message).To(ContainSubstring("is not managed by this NodeOpUpgrade"))
+			Expect(updated.Status.NodeStatuses).To(BeEmpty())
+			Expect(updated.Status.NodeOpName).To(BeEmpty())
+		})
+
+		It("starts the upgrade once the NodeOp it does not control is gone", func() {
+			By("Creating a NodeOp of the same name that nothing owns")
+			foreignNodeOp := &kairosiov1alpha1.NodeOp{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Image:   "busybox",
+					Command: []string{"/bin/sh", "-c", "echo not-an-upgrade"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, foreignNodeOp)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			controllerReconciler := &NodeOpUpgradeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Deleting the foreign NodeOp")
+			Expect(k8sClient.Delete(ctx, foreignNodeOp)).To(Succeed())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				}, &kairosiov1alpha1.NodeOp{}))
+			}, timeout, interval).Should(BeTrue())
+
+			By("Reconciling again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the upgrade's own NodeOp was created")
+			created := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, created)).To(Succeed())
+			Expect(created.Spec.Image).To(Equal(nodeOpUpgrade.Spec.Image))
+			Expect(created.OwnerReferences).To(HaveLen(1))
+			Expect(created.OwnerReferences[0].Kind).To(Equal("NodeOpUpgrade"))
+
+			updated := &kairosiov1alpha1.NodeOpUpgrade{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nodeOpUpgradeName,
+				Namespace: "default",
+			}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("Initializing"))
 		})
 
 		It("should set RebootOnSuccess correctly based on UpgradeActive", func() {
