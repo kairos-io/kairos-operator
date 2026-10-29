@@ -73,19 +73,19 @@ func (b *BuildImage) ImageRef() string {
 // When Ref is empty, we build the image. At least one of BuildOptions or OCISpec must be set; both may be set.
 // The final build definition is constructed as follows:
 //   - OCISpec only: the user's OCI spec (from Ref) is the full definition and must include the base image (FROM) and any kairos-init logic ("advanced" mode).
-//   - BuildOptions only: the operator constructs the definition from BuildOptions (injects FROM baseImage when set, then default kairos-init flow).
-//   - OCISpec + BuildOptions: the operator injects "FROM buildOptions.baseImage" at the top when baseImage is set, then the user's spec (dashboard + user parts), then the kairos-init block at the bottom. BuildOptions fields populate args passed to kairos-init. The user/dashboard parts must not add their own FROM when both are set.
+//   - BuildOptions only: the operator constructs the definition from BuildOptions (injects FROM baseImage, then default kairos-init flow).
+//   - OCISpec + BuildOptions: the operator injects "FROM buildOptions.baseImage" at the top, then the user's spec (dashboard + user parts), then the kairos-init block at the bottom. BuildOptions fields populate args passed to kairos-init. The user/dashboard parts must not add their own FROM when both are set.
 type ImageSpec struct {
 	// Ref is a pre-built Kairos image reference (no build). When set, BuildOptions and OCISpec are ignored.
 	Ref string `json:"ref,omitempty"`
 
-	// BuildOptions: when used alone, the operator builds from its default OCI build definition (version required); baseImage, when set, is used as the injected FROM.
-	// When used with OCISpec, the operator injects FROM baseImage at the top (when set), then the user's spec, then the kairos-init block at the bottom; BuildOptions supply args for kairos-init.
+	// BuildOptions: when used alone, the operator builds from its default OCI build definition (version and baseImage required); baseImage is used as the injected FROM.
+	// When used with OCISpec, the operator injects FROM baseImage at the top, then the user's spec, then the kairos-init block at the bottom; BuildOptions supply args for kairos-init.
 	// +optional
 	BuildOptions *BuildOptions `json:"buildOptions,omitempty"`
 
 	// OCISpec is a user-supplied OCI build definition (with optional templating). When used alone, it must be the full definition.
-	// When used with BuildOptions, the operator injects FROM baseImage at the top (when set), then the user's spec, then kairos-init at the bottom. Ref is required when OCISpec is used to build.
+	// When used with BuildOptions, the operator injects FROM baseImage at the top, then the user's spec, then kairos-init at the bottom. Ref is required when OCISpec is used to build.
 	// +optional
 	OCISpec *OCISpec `json:"ociSpec,omitempty"`
 
@@ -128,8 +128,10 @@ type BuildOptions struct {
 	// Version is the Kairos version (e.g. v3.6.0). Required when using buildOptions.
 	Version string `json:"version"`
 
-	// BaseImage is the base image for the OCI build (e.g. ubuntu:24.04). When BuildOptions is set, the operator injects "FROM BaseImage" at the top of the final Dockerfile (BuildOptions-only or OCISpec+BuildOptions). Optional.
-	BaseImage string `json:"baseImage,omitempty"`
+	// BaseImage is the base image for the OCI build (e.g. ubuntu:24.04). When BuildOptions is set, the operator injects "FROM BaseImage" at the top of the final Dockerfile (BuildOptions-only or OCISpec+BuildOptions). Required when using buildOptions.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	BaseImage string `json:"baseImage"`
 
 	// Model is the Kairos model (e.g. generic).
 	Model string `json:"model,omitempty"`
