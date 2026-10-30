@@ -11,10 +11,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kairosiov1alpha1 "github.com/kairos-io/kairos-operator/api/v1alpha1"
@@ -1409,6 +1412,65 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				))
 			})
 		})
+	})
+})
+
+var _ = Describe("NodeOpUpgrade with an empty image", func() {
+	It("is rejected by the API server", func() {
+		nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("empty-image-%d", time.Now().UnixNano()),
+				Namespace: "default",
+			},
+			Spec: kairosiov1alpha1.NodeOpUpgradeSpec{Image: ""},
+		}
+
+		err := k8sClient.Create(context.Background(), nodeOpUpgrade)
+		if err == nil {
+			_ = k8sClient.Delete(context.Background(), nodeOpUpgrade)
+		}
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected an Invalid error, got %v", err)
+		Expect(err.Error()).To(ContainSubstring("spec.image"))
+	})
+
+	It("does not create a NodeOp for an object stored before the image was validated", func() {
+		ctx := context.Background()
+		key := types.NamespacedName{Name: "stored-empty-image", Namespace: "default"}
+		nodeOpUpgrade := &kairosiov1alpha1.NodeOpUpgrade{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Spec:       kairosiov1alpha1.NodeOpUpgradeSpec{Image: ""},
+		}
+		c := fake.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithObjects(nodeOpUpgrade).
+			WithStatusSubresource(nodeOpUpgrade).
+			Build()
+		r := &NodeOpUpgradeReconciler{Client: c, Scheme: scheme.Scheme}
+
+		for range 2 {
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}), "an empty image must not be requeued")
+		}
+
+		nodeOps := &kairosiov1alpha1.NodeOpList{}
+		Expect(c.List(ctx, nodeOps, client.InNamespace("default"))).To(Succeed())
+		Expect(nodeOps.Items).To(BeEmpty())
+
+		updated := &kairosiov1alpha1.NodeOpUpgrade{}
+		Expect(c.Get(ctx, key, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(phaseFailed))
+		Expect(updated.Status.Message).To(ContainSubstring("spec.image"))
+		Expect(updated.Status.NodeOpName).To(BeEmpty())
+
+		By("creating the NodeOp once the image is set")
+		updated.Spec.Image = "quay.io/kairos/opensuse:leap-15.6-standard-amd64-generic-v3.4.2-k3sv1.30.11-k3s1"
+		Expect(c.Update(ctx, updated)).To(Succeed())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		nodeOp := &kairosiov1alpha1.NodeOp{}
+		Expect(c.Get(ctx, key, nodeOp)).To(Succeed())
+		Expect(nodeOp.Spec.Image).To(Equal(updated.Spec.Image))
 	})
 })
 
