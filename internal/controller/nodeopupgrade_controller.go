@@ -24,6 +24,7 @@ const (
 	kindNodeOpUpgrade     = "NodeOpUpgrade"
 	phaseInitializing     = "Initializing"
 	labelKeyNodeOpUpgrade = "nodeopupgrade.kairos.io/name"
+	emptyImageMessage     = "spec.image is empty, set it to the image to upgrade to; no node was touched"
 )
 
 // NodeOpUpgradeReconciler reconciles a NodeOpUpgrade object
@@ -69,6 +70,13 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// Without an image the NodeOp would fall back to the default
+			// NodeOp image, cordon and drain every target node, and then fail.
+			if nodeOpUpgrade.Spec.Image == "" {
+				log.Info("NodeOpUpgrade has no image, not creating a NodeOp")
+				return ctrl.Result{}, r.markEmptyImage(ctx, nodeOpUpgrade)
+			}
+
 			// NodeOp doesn't exist, create it
 			log.Info("Creating NodeOp for NodeOpUpgrade", "nodeOp", nodeOpUpgrade.Name)
 			if err := r.createNodeOp(ctx, nodeOpUpgrade); err != nil {
@@ -100,6 +108,20 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+// markEmptyImage records on the NodeOpUpgrade status that it cannot run
+// because spec.image is empty. The status is written only when it changes, so
+// the resulting watch event does not loop.
+func (r *NodeOpUpgradeReconciler) markEmptyImage(ctx context.Context,
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) error {
+	if nodeOpUpgrade.Status.Phase == phaseFailed && nodeOpUpgrade.Status.Message == emptyImageMessage {
+		return nil
+	}
+	nodeOpUpgrade.Status.Phase = phaseFailed
+	nodeOpUpgrade.Status.Message = emptyImageMessage
+	nodeOpUpgrade.Status.LastUpdated = metav1.Now()
+	return r.Status().Update(ctx, nodeOpUpgrade)
 }
 
 // createNodeOp creates a NodeOp resource based on the NodeOpUpgrade spec

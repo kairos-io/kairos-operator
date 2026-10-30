@@ -40,6 +40,7 @@ spec:
               force:
                 type: boolean
               image:
+                minLength: 1
                 type: string
               imagePullSecrets:
                 items:

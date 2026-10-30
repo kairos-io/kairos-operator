@@ -23,6 +23,7 @@ type NodeOpUpgradeSpec struct {
 	// Image is the container image to use for running the upgrade command.
 	// This should contain the Kairos version and dependencies needed for upgrade.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
 	// ImagePullSecrets is an optional list of references to secrets in the same namespace
