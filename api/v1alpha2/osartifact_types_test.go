@@ -219,6 +219,29 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("buildContextVolume"))
 		})
 
+		It("returns error when buildOptions and ociSpec.buildContextVolume (no ref) reference a missing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					BuildOptions: &v1alpha2.BuildOptions{Version: "v1", BaseImage: "ubuntu:24.04"},
+					OCISpec:      &v1alpha2.OCISpec{BuildContextVolume: "missing-ctx"},
+				},
+			}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("buildContextVolume"))
+		})
+
+		It("returns nil when buildOptions and ociSpec.buildContextVolume (no ref) reference an existing volume", func() {
+			spec := v1alpha2.OSArtifactSpec{
+				Image: v1alpha2.ImageSpec{
+					BuildOptions: &v1alpha2.BuildOptions{Version: "v1", BaseImage: "ubuntu:24.04"},
+					OCISpec:      &v1alpha2.OCISpec{BuildContextVolume: "ctx"},
+				},
+				Volumes: []corev1.Volume{{Name: "ctx"}},
+			}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+
 		It("returns nil when ociSpec.buildContextVolume references existing volume", func() {
 			spec := v1alpha2.OSArtifactSpec{
 				Image: v1alpha2.ImageSpec{
