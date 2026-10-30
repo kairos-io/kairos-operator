@@ -407,7 +407,7 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	kubeconfig, clusterName = createCluster()
+	createCluster()
 	makeNodeBeKairos()
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	Expect(err).NotTo(HaveOccurred())
@@ -438,11 +438,23 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	By("deleting the kind cluster")
-	cmd := exec.Command("kind", "delete", "cluster", "--name", clusterName)
-	Expect(cmd.Run()).To(Succeed())
+	Expect(deleteKindCluster(clusterName)).To(Succeed())
 })
 
-func createCluster() (string, string) {
+// deleteKindCluster deletes the named kind cluster. An empty name means the
+// suite never got to create one, and `kind delete cluster --name ""` would
+// delete the default cluster named "kind", so nothing is run in that case.
+func deleteKindCluster(name string) error {
+	if name == "" {
+		return nil
+	}
+	return exec.Command("kind", "delete", "cluster", "--name", name).Run()
+}
+
+// createCluster creates the kind cluster for the suite. It sets clusterName
+// and kubeconfig as soon as they are known, so AfterSuite deletes the cluster
+// even when a later step fails, and never deletes one the suite did not name.
+func createCluster() {
 	// Create a temporary directory for the kubeconfig
 	tmpDir, err := os.MkdirTemp("", "kairos-operator-e2e-*")
 	Expect(err).NotTo(HaveOccurred())
@@ -450,11 +462,12 @@ func createCluster() (string, string) {
 	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
 
 	// Generate a unique cluster name using timestamp
-	clusterName := fmt.Sprintf("kairos-operator-e2e-%d", time.Now().UnixNano())
+	name := fmt.Sprintf("kairos-operator-e2e-%d", time.Now().UnixNano())
+	kubeconfig, clusterName = kubeconfigPath, name
 
 	// Create the kind cluster with the custom kubeconfig path
 	cmd := exec.Command("kind", "create", "cluster",
-		"--name", clusterName,
+		"--name", name,
 		"--config", "kind-2node.yaml",
 		"--kubeconfig", kubeconfigPath)
 	_, err = cmd.CombinedOutput()
@@ -466,8 +479,6 @@ func createCluster() (string, string) {
 		"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m")
 	_, err = cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred())
-
-	return kubeconfigPath, clusterName
 }
 
 // verifyPodCanDownload runs a one-off pod in default namespace that downloads a file from the internet
