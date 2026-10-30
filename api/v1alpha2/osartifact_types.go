@@ -510,7 +510,8 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 			return fmt.Errorf("spec.image.buildOptions.baseImage is required when using buildOptions")
 		}
 	}
-	if hasOCISpec && img.OCISpec.BuildContextVolume != "" {
+	// Checked whenever ociSpec is set: with buildOptions the controller fills in ref itself, but still mounts this volume.
+	if img.OCISpec != nil && img.OCISpec.BuildContextVolume != "" {
 		if !volumeNames[img.OCISpec.BuildContextVolume] {
 			return fmt.Errorf("spec.image.ociSpec.buildContextVolume references volume %q which is not defined in spec.volumes", img.OCISpec.BuildContextVolume)
 		}
