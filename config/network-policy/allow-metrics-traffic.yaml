@@ -12,8 +12,8 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      control-plane: controller-manager
-      app.kubernetes.io/name: operator
+      app.kubernetes.io/name: kairos-operator
+      app.kubernetes.io/component: operator
   policyTypes:
     - Ingress
   ingress:
