@@ -850,6 +850,65 @@ var _ = Describe("NodeOp Controller", func() {
 				"Node should remain cordoned because the operator did not cordon it itself")
 		})
 
+		It("should cordon, then uncordon, a node when drain is enabled without cordon", func() {
+			By("Creating a NodeOp with DrainOptions enabled and Cordon left unset")
+			drainOnlyNodeOp := &kairosiov1alpha1.NodeOp{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "kairos.io/v1alpha1",
+					Kind:       "NodeOp",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-drain-only", resourceName),
+					Namespace: "default",
+				},
+				Spec: kairosiov1alpha1.NodeOpSpec{
+					Command:         []string{"echo", "test"},
+					RebootOnSuccess: asBool(false),
+					DrainOptions:    &kairosiov1alpha1.DrainOptions{Enabled: asBool(true)},
+				},
+			}
+			Expect(k8sClient.Create(ctx, drainOnlyNodeOp)).To(Succeed())
+			DeferCleanup(func() {
+				Eventually(func() error {
+					return k8sClient.Delete(ctx, drainOnlyNodeOp)
+				}, timeout, interval).Should(Succeed())
+			})
+
+			controllerReconciler := &NodeOpReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			request := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: drainOnlyNodeOp.Name, Namespace: "default"},
+			}
+
+			By("Reconciling to create the Job")
+			_, err := controllerReconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeTrue(),
+				"An enabled drain must cordon the node, or the drain is skipped and workloads stay on it")
+
+			By("Completing the Job")
+			jobList := &batchv1.JobList{}
+			Expect(k8sClient.List(
+				ctx, jobList,
+				client.InNamespace("default"),
+				client.MatchingLabels(map[string]string{"kairos.io/nodeop": drainOnlyNodeOp.Name}),
+			)).To(Succeed())
+			Expect(jobList.Items).To(HaveLen(1))
+			Expect(markJobAsCompleted(ctx, k8sClient, &jobList.Items[0])).To(Succeed())
+
+			By("Reconciling to let the operator uncordon the node")
+			_, err = controllerReconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)).To(Succeed())
+			Expect(node.Spec.Unschedulable).To(BeFalse(), "Node should be uncordoned after the job completes")
+		})
+
 		It("should not re-uncordon a node that was manually cordoned after the NodeOp completed", func() {
 			By("Creating a NodeOp with Cordon enabled and RebootOnSuccess disabled")
 			repeatedUncordonNodeOp := &kairosiov1alpha1.NodeOp{
