@@ -634,7 +634,7 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 	}
 
 	// If cordoning is requested, cordon the node first
-	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
+	if shouldCordon(nodeOp) {
 		if err := r.cordonNode(ctx, nodeOp, &node); err != nil {
 			return err
 		}
@@ -809,7 +809,7 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 		nodeOp.Status.NodeStatuses[nodeName] = status
 
 		// Handle uncordoning for completed nodes
-		if status.Phase == phaseCompleted && getBool(nodeOp.Spec.Cordon, CordonDefault) {
+		if status.Phase == phaseCompleted && shouldCordon(nodeOp) {
 			rebootOnSuccess := getBool(nodeOp.Spec.RebootOnSuccess, RebootOnSuccessDefault)
 
 			if (rebootOnSuccess && status.RebootStatus == rebootStatusCompleted) || !rebootOnSuccess {
@@ -862,12 +862,22 @@ func (r *NodeOpReconciler) updateNodeOpStatus(ctx context.Context, nodeOp *kairo
 	return nil
 }
 
+// shouldCordon reports whether the NodeOp cordons its nodes. An enabled drain
+// implies cordon: draining a node that stays schedulable cannot keep its
+// workloads off it, so the drain would otherwise be skipped silently.
+func shouldCordon(nodeOp *kairosiov1alpha1.NodeOp) bool {
+	if getBool(nodeOp.Spec.Cordon, CordonDefault) {
+		return true
+	}
+	return nodeOp.Spec.DrainOptions != nil && getBool(nodeOp.Spec.DrainOptions.Enabled, DrainEnabledDefault)
+}
+
 // uncordonAfterFailure uncordons a node whose operation failed, when the
 // NodeOp opted into it. The uncordonNode helper only acts on nodes this NodeOp
 // cordoned, so out-of-band cordons are left alone. A failed node does not
 // reboot, so it is safe to uncordon now.
 func (r *NodeOpReconciler) uncordonAfterFailure(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName string) error {
-	if !getBool(nodeOp.Spec.Cordon, CordonDefault) ||
+	if !shouldCordon(nodeOp) ||
 		!getBool(nodeOp.Spec.UncordonOnFailure, UncordonOnFailureDefault) {
 		return nil
 	}
