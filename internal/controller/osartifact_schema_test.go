@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"encoding/json"
+
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,5 +30,16 @@ var _ = Describe("OSArtifact schema", func() {
 		artifact := newArtifact("with-base-image", &buildv1alpha2.BuildOptions{Version: "v3.6.0", BaseImage: "ubuntu:24.04"})
 		Expect(k8sClient.Create(ctx, artifact)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, artifact)).To(Succeed())
+	})
+})
+
+var _ = Describe("BuildOptions JSON", func() {
+	// Objects admitted before baseImage became required have no baseImage.
+	// Updates such as finalizer removal must not add `baseImage: ""`, or
+	// minLength rejects them and the object is stuck in Terminating.
+	It("omits an empty baseImage when serialized", func() {
+		data, err := json.Marshal(buildv1alpha2.BuildOptions{Version: "v3.6.0"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).NotTo(ContainSubstring("baseImage"))
 	})
 })

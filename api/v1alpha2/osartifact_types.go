@@ -131,7 +131,7 @@ type BuildOptions struct {
 	// BaseImage is the base image for the OCI build (e.g. ubuntu:24.04). When BuildOptions is set, the operator injects "FROM BaseImage" at the top of the final Dockerfile (BuildOptions-only or OCISpec+BuildOptions). Required when using buildOptions.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	BaseImage string `json:"baseImage"`
+	BaseImage string `json:"baseImage,omitempty"`
 
 	// Model is the Kairos model (e.g. generic).
 	Model string `json:"model,omitempty"`
