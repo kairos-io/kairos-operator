@@ -21,7 +21,7 @@ resources:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 #- ../webhook
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
+# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
@@ -96,8 +96,6 @@ patches:
 #  target:
 #    kind: Deployment
 
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
-# Uncomment the following replacements to add the cert-manager CA injection annotations
 replacements:
 # Copy the operator image to OPERATOR_IMAGE environment variable
 - source:
@@ -113,4 +111,64 @@ replacements:
     options:
       create: true
 
-#replacements:
+# [CERTMANAGER] To enable metrics protected with cert-manager, uncomment the two
+# replacements below. They write the metrics Service name and namespace into the
+# Certificate dnsNames and, with [PROMETHEUS-WITH-CERTS], the ServiceMonitor serverName.
+#- source:
+#    kind: Service
+#    version: v1
+#    name: kairos-operator-metrics-service
+#    fieldPath: metadata.name
+#  targets:
+#  - select:
+#      kind: Certificate
+#      group: cert-manager.io
+#      version: v1
+#      name: metrics-certs
+#    fieldPaths:
+#    - spec.dnsNames.0
+#    - spec.dnsNames.1
+#    options:
+#      delimiter: '.'
+#      index: 0
+#      create: true
+#  - select: # Needs [PROMETHEUS] and [PROMETHEUS-WITH-CERTS]
+#      kind: ServiceMonitor
+#      group: monitoring.coreos.com
+#      version: v1
+#      name: controller-manager-metrics-monitor
+#    fieldPaths:
+#    - spec.endpoints.0.tlsConfig.serverName
+#    options:
+#      delimiter: '.'
+#      index: 0
+#      create: true
+#- source:
+#    kind: Service
+#    version: v1
+#    name: kairos-operator-metrics-service
+#    fieldPath: metadata.namespace
+#  targets:
+#  - select:
+#      kind: Certificate
+#      group: cert-manager.io
+#      version: v1
+#      name: metrics-certs
+#    fieldPaths:
+#    - spec.dnsNames.0
+#    - spec.dnsNames.1
+#    options:
+#      delimiter: '.'
+#      index: 1
+#      create: true
+#  - select: # Needs [PROMETHEUS] and [PROMETHEUS-WITH-CERTS]
+#      kind: ServiceMonitor
+#      group: monitoring.coreos.com
+#      version: v1
+#      name: controller-manager-metrics-monitor
+#    fieldPaths:
+#    - spec.endpoints.0.tlsConfig.serverName
+#    options:
+#      delimiter: '.'
+#      index: 1
+#      create: true
