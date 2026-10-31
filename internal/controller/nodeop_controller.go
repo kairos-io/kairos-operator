@@ -1595,6 +1595,10 @@ func (r *NodeOpReconciler) manageJobCreation(ctx context.Context, nodeOp *kairos
 		nodeOp.Status.NodeStatuses = make(map[string]kairosiov1alpha1.NodeStatus)
 	}
 
+	if err := r.releaseUntargetedNodes(ctx, nodeOp, targetNodes); err != nil {
+		return err
+	}
+
 	if getBool(nodeOp.Spec.StopOnFailure, StopOnFailureDefault) && r.hasFailedJobs(nodeOp) {
 		log.Info("Stopping job creation due to failure and StopOnFailure=true")
 		return r.releaseWaitingNodes(ctx, nodeOp)
@@ -1862,6 +1866,71 @@ func (r *NodeOpReconciler) releaseWaitingNodes(ctx context.Context, nodeOp *kair
 		return err
 	}
 	logf.FromContext(ctx).Info("Released nodes waiting for their reboot Pod (StopOnFailure=true)", "nodes", released)
+	return nil
+}
+
+// releaseUntargetedNodes handles the nodes that are in Preflight, or waiting
+// for their reboot Pod, but are no longer target nodes: the Node was deleted,
+// or it no longer matches Spec.NodeSelector. manageJobCreation only advances
+// target nodes and updateNodeOpStatus skips both states, so nothing else would
+// ever move such a node on, and it would hold its concurrency slot forever.
+//
+// Neither state has started the upgrade: no upgrade Job exists and the node
+// is not cordoned. So, as releaseWaitingNodes does, the node's preflight and
+// reboot Pods are deleted and the node is removed from the NodeOp status, as
+// if it had never been picked. A node that matches again later starts afresh.
+// An upgrade Job that exists but is missing from the NodeOp status is
+// recorded instead, so that Job decides the node's outcome.
+func (r *NodeOpReconciler) releaseUntargetedNodes(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, targetNodes []corev1.Node) error {
+	log := logf.FromContext(ctx)
+	targeted := make(map[string]bool, len(targetNodes))
+	for _, node := range targetNodes {
+		targeted[node.Name] = true
+	}
+	var released []string
+	for nodeName, status := range nodeOp.Status.NodeStatuses {
+		if targeted[nodeName] {
+			continue
+		}
+		switch {
+		case status.Phase == phasePreflight:
+			pod, err := r.findPreflightPod(ctx, nodeOp, nodeName)
+			if err != nil {
+				return err
+			}
+			if pod != nil {
+				r.deletePreflightPod(ctx, pod)
+			}
+		case awaitingRebootPod(status):
+			jobName, err := r.unrecordedNodeJob(ctx, nodeOp, nodeName)
+			if err != nil {
+				return err
+			}
+			if jobName != "" {
+				log.Info("Job already exists; recording it", "node", nodeName, "job", jobName)
+				if err := r.recordNodeJob(ctx, nodeOp, nodeName, jobName); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := r.cleanupRebootPodForNode(ctx, nodeOp, nodeName); err != nil {
+				return err
+			}
+		default:
+			continue
+		}
+		released = append(released, nodeName)
+	}
+	if len(released) == 0 {
+		return nil
+	}
+	for _, nodeName := range released {
+		delete(nodeOp.Status.NodeStatuses, nodeName)
+	}
+	if err := r.Status().Update(ctx, nodeOp); err != nil {
+		return err
+	}
+	log.Info("Released nodes that are no longer targeted before their upgrade started", "nodes", released)
 	return nil
 }
 
