@@ -63,7 +63,8 @@ type NodeOpSpec struct {
 
 	// DrainOptions specifies the options for draining the node before running the operation.
 	// When enabled, pods will be evicted from the node before the operation starts.
-	// This requires the Cordon field to be true.
+	// An enabled drain also cordons the node, whatever the Cordon field says,
+	// and uncordons it afterwards the same way Cordon does.
 	// +optional
 	DrainOptions *DrainOptions `json:"drainOptions,omitempty"`
 
