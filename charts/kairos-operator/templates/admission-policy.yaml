@@ -1,0 +1,3 @@
+{{- if .Values.admissionPolicy.enabled }}
+{{ .Files.Get "files/osartifact_disk_annotations.yaml" }}
+{{- end }}

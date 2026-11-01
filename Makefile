@@ -59,13 +59,17 @@ diff-crds: ## Diff generated CRDs ($(CRD_SRC_DIR)) against the Helm chart CRDs (
 	diff -r -q $(CRD_SRC_DIR) $(CRD_CHART_DIR) || { echo "Chart CRDs are out of sync. Run 'make update-crds' and commit."; exit 1; }
 	@echo "CRDs are in sync"
 
+ADMISSION_SRC = config/admission/osartifact_disk_annotations.yaml
+ADMISSION_CHART = charts/kairos-operator/files/osartifact_disk_annotations.yaml
+
 .PHONY: sync-crds
-sync-crds: ## Sync generated CRDs into the Helm chart ($(CRD_SRC_DIR) -> $(CRD_CHART_DIR)).
-	mkdir -p $(CRD_CHART_DIR)
+sync-crds: ## Sync generated CRDs ($(CRD_SRC_DIR) -> $(CRD_CHART_DIR)) and the admission policy ($(ADMISSION_SRC) -> $(ADMISSION_CHART)) into the Helm chart.
+	mkdir -p $(CRD_CHART_DIR) $(dir $(ADMISSION_CHART))
 	rsync -a --delete $(CRD_SRC_DIR)/ $(CRD_CHART_DIR)/
+	rsync -a $(ADMISSION_SRC) $(ADMISSION_CHART)
 
 .PHONY: update-crds
-update-crds: ## Run 'make generate' and 'make manifests', then sync the resulting CRDs into the Helm chart.
+update-crds: ## Run 'make generate' and 'make manifests', then sync the resulting CRDs and admission policy into the Helm chart.
 	$(MAKE) generate manifests
 	$(MAKE) sync-crds
 

@@ -512,6 +512,7 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 	var c strings.Builder
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.raw=true'")
+	writeDiskArgs(&c, artifact)
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
 	c.WriteString(" --set 'state_dir=/artifacts'")
@@ -601,6 +602,7 @@ func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *b
 	var c strings.Builder
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.vhd=true'")
+	writeDiskArgs(&c, artifact)
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
 	c.WriteString(" --set 'state_dir=/artifacts'")
@@ -634,6 +636,7 @@ func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *bui
 	var c strings.Builder
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.gce=true'")
+	writeDiskArgs(&c, artifact)
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
 	c.WriteString(" --set 'state_dir=/artifacts'")
