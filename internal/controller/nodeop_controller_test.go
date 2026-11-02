@@ -52,6 +52,23 @@ var _ = Describe("getNodeOpImage", func() {
 	})
 })
 
+var _ = Describe("rebootPodImage", func() {
+	AfterEach(func() {
+		Expect(os.Setenv("OPERATOR_IMAGE", testOperatorImage)).To(Succeed())
+	})
+
+	It("should return the value of OPERATOR_IMAGE", func() {
+		Expect(os.Setenv("OPERATOR_IMAGE", "operator-env-image")).To(Succeed())
+		Expect(rebootPodImage()).To(Equal("operator-env-image"))
+	})
+
+	It("should fail rather than guess an image when OPERATOR_IMAGE is unset", func() {
+		Expect(os.Unsetenv("OPERATOR_IMAGE")).To(Succeed())
+		_, err := rebootPodImage()
+		Expect(err).To(MatchError(ContainSubstring("OPERATOR_IMAGE is not set")))
+	})
+})
+
 var _ = Describe("bootIDReporterImage", func() {
 	var nodeOp *kairosiov1alpha1.NodeOp
 
@@ -1302,7 +1319,7 @@ var _ = Describe("NodeOp Controller", func() {
 			rebootPod := podList.Items[0]
 			Expect(rebootPod.Spec.NodeName).To(Equal(nodeName))
 			Expect(rebootPod.Spec.Containers).To(HaveLen(1))
-			Expect(rebootPod.Spec.Containers[0].Image).To(Equal("quay.io/kairos/kairos-operator:latest"))
+			Expect(rebootPod.Spec.Containers[0].Image).To(Equal(testOperatorImage))
 			Expect(rebootPod.Spec.Containers[0].Command).To(Equal(rebootwatcher.Command()))
 			Expect(rebootPod.Spec.Containers[0].Env).To(HaveLen(2),
 				"the reboot watcher needs the Job name and namespace to find its Job")
