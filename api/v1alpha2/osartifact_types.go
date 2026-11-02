@@ -44,6 +44,8 @@ var reservedVolumeNames = map[string]bool{
 	"config":      true,
 	"ocispec":     true,
 	"cloudconfig": true,
+	// Added to the builder Pod when image.imageCredentialsSecretRef is set.
+	"image-credentials": true,
 }
 
 // BuildImage specifies the registry, repository, and tag of the built image. Used when building (Ref empty); makes it easy for tools like updatecli or renovate to bump only the tag.
