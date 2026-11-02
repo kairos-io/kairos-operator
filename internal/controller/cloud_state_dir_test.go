@@ -89,7 +89,7 @@ var _ = Describe("disk image containers running in parallel", func() {
 
 		entries, err := os.ReadDir(filepath.Join(root, "artifacts"))
 		Expect(err).ToNot(HaveOccurred())
-		var names []string
+		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
