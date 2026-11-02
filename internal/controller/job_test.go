@@ -418,7 +418,7 @@ var _ = Describe("buildISOCommand", func() {
 			}
 			cmd := buildISOCommand(artifact, "amd64", "", "")
 			Expect(cmd).ToNot(ContainSubstring("--cloud-config"))
-			Expect(cmd).To(HavePrefix("auroraboot "))
+			Expect(cmd).To(ContainSubstring("auroraboot --debug build-iso"))
 		})
 	})
 
