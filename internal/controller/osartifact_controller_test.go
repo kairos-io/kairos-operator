@@ -1462,9 +1462,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 			It("creates build-cloud-image container with correct auroraboot command", func() {
 				testContainerCommand("build-cloud-image", []string{
 					"auroraboot --debug --set 'disk.raw=true'",
-					"--set 'state_dir=/artifacts'",
+					"--set 'state_dir=/artifacts/.build-cloud'",
 					"dir:/rootfs",
-					fmt.Sprintf("file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+					fmt.Sprintf("file=$(ls /artifacts/.build-cloud/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
 						artifact.Name),
 				})
 			})
@@ -1553,9 +1553,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 			It("creates build-azure-cloud-image container with correct auroraboot command", func() {
 				testContainerCommand("build-azure-cloud-image", []string{
 					"auroraboot --debug --set 'disk.vhd=true'",
-					"--set 'state_dir=/artifacts'",
+					"--set 'state_dir=/artifacts/.build-azure'",
 					"dir:/rootfs",
-					fmt.Sprintf("file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+					fmt.Sprintf("file=$(ls /artifacts/.build-azure/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
 						artifact.Name),
 				})
 			})
@@ -1575,9 +1575,9 @@ var _ = Describe("OSArtifactReconciler", func() {
 			It("creates build-gce-cloud-image container with correct auroraboot command", func() {
 				testContainerCommand("build-gce-cloud-image", []string{
 					"auroraboot --debug --set 'disk.gce=true'",
-					"--set 'state_dir=/artifacts'",
+					"--set 'state_dir=/artifacts/.build-gce'",
 					"dir:/rootfs",
-					fmt.Sprintf("file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+					fmt.Sprintf("file=$(ls /artifacts/.build-gce/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
 						"mv \"$file\" /artifacts/%s.gce.tar.gz",
 						artifact.Name),
 				})
