@@ -97,6 +97,30 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 		})
 	})
 
+	Describe("spec.artifacts.cloudConfigRef", func() {
+		It("returns error when the key is empty", func() {
+			spec := validImageRef("quay.io/kairos/kairos:v1")
+			spec.Artifacts.CloudConfigRef = &v1alpha2.SecretKeySelector{Name: "cc"}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.artifacts.cloudConfigRef.key is required"))
+		})
+
+		It("returns error when the name is empty", func() {
+			spec := validImageRef("quay.io/kairos/kairos:v1")
+			spec.Artifacts.CloudConfigRef = &v1alpha2.SecretKeySelector{Key: "userdata"}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.artifacts.cloudConfigRef.name is required"))
+		})
+
+		It("returns nil when name and key are set", func() {
+			spec := validImageRef("quay.io/kairos/kairos:v1")
+			spec.Artifacts.CloudConfigRef = &v1alpha2.SecretKeySelector{Name: "cc", Key: "userdata"}
+			Expect(spec.Validate()).ToNot(HaveOccurred())
+		})
+	})
+
 	Describe("spec.volumes", func() {
 		It("returns error for reserved volume name", func() {
 			spec := validImageRef("img")
