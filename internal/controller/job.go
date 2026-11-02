@@ -51,6 +51,16 @@ const (
 	// mount: a Secret volume mounted as a directory is a symlink farm, which
 	// older AuroraBoot copies verbatim into the ISO (kairos-io/kairos#4324).
 	ukiCloudConfigDir = "/uki-cloud-config"
+	// grubConfigMountPath is where the artifact's grub.cfg is mounted in the
+	// build containers. AuroraBoot does not read it from there: build-iso
+	// takes extra ISO content only from --overlay-iso, so the build-iso
+	// container copies it into isoOverlayDir first (kairos-io/kairos#5715).
+	grubConfigMountPath = "/grub-config/grub.cfg"
+	// isoOverlayDir is a scratch directory the build-iso container assembles
+	// when GRUBConfig is set: the overlayISOVolume content, if any, plus the
+	// grub.cfg at boot/grub2/grub.cfg. AuroraBoot applies the --overlay-iso
+	// tree before it writes its default grub.cfg and keeps one that exists.
+	isoOverlayDir = "/iso-overlay"
 	// cloudConfigFileName is the name the config must have inside that
 	// directory: Kairos reads *.yaml from /run/initramfs/live, which is where
 	// the ISO root ends up at boot.
@@ -446,7 +456,7 @@ func builderVolumeMounts(artifact *buildv1alpha2.OSArtifact) ([]corev1.VolumeMou
 	if artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.GRUBConfig != "" {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      configVolumeName,
-			MountPath: "/iso/iso-overlay/boot/grub2/grub.cfg",
+			MountPath: grubConfigMountPath,
 			SubPath:   "grub.cfg",
 		})
 	}
@@ -478,7 +488,15 @@ func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overl
 	if arch != "" {
 		fmt.Fprintf(&cmd, " --arch %s", arch)
 	}
-	appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
+	withGRUBConfig := artifact.Spec.Artifacts != nil && artifact.Spec.Artifacts.GRUBConfig != ""
+	if withGRUBConfig {
+		// build-iso accepts a single --overlay-iso, so the grub.cfg and the
+		// overlayISOVolume content go in through one merged directory.
+		fmt.Fprintf(&cmd, " --overlay-iso %s", isoOverlayDir)
+		appendOverlayFlags(&cmd, "", overlayRootfs)
+	} else {
+		appendOverlayFlags(&cmd, overlayISO, overlayRootfs)
+	}
 	// Only CloudConfigRef puts a file at cloudConfigMountPath (see
 	// builderVolumeMounts), and auroraboot build-iso aborts with
 	// "file '/cloud-config.yaml' not found" when the flag names a path that
@@ -488,7 +506,18 @@ func buildISOCommand(artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overl
 		cmd.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	cmd.WriteString(" dir:/rootfs")
-	return cmd.String()
+	if !withGRUBConfig {
+		return cmd.String()
+	}
+	var prep strings.Builder
+	fmt.Fprintf(&prep, "mkdir -p %s/boot/grub2 && ", isoOverlayDir)
+	if overlayISO != "" {
+		fmt.Fprintf(&prep, "cp -a %s/. %s/ && ", overlayISOMountPath, isoOverlayDir)
+	}
+	// Copied last, so an explicit grubConfig wins over a grub.cfg in the
+	// overlay volume.
+	fmt.Fprintf(&prep, "cp %s %s/boot/grub2/grub.cfg && ", grubConfigMountPath, isoOverlayDir)
+	return prep.String() + cmd.String()
 }
 
 func makeBuildISOContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, arch, overlayISO, overlayRootfs string, mounts []corev1.VolumeMount) corev1.Container {
