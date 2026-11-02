@@ -210,17 +210,17 @@ func osReleaseContainer(containerImage string) corev1.Container {
 func kairosReleaseContainer(containerImage string) corev1.Container {
 	return corev1.Container{
 		ImagePullPolicy: corev1.PullAlways,
-		Name:            "kairos-release",
+		Name:            configMapKeyKairosRelease,
 		Image:           containerImage,
 		Command:         bashCxeCommand(),
 		Args: []string{
-			"cp -rfv /etc/kairos-release " + rootfsMountPath + "/etc/kairos-release",
+			fmt.Sprintf("cp -rfv /etc/%s %s/etc/%s", configMapKeyKairosRelease, rootfsMountPath, configMapKeyKairosRelease),
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      configVolumeName,
-				MountPath: "/etc/kairos-release",
-				SubPath:   "kairos-release",
+				MountPath: "/etc/" + configMapKeyKairosRelease,
+				SubPath:   configMapKeyKairosRelease,
 			},
 			{
 				Name:      rootfsVolumeName,
