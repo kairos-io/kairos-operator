@@ -32,6 +32,9 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
+// testOperatorImage is the OPERATOR_IMAGE the suite runs with.
+const testOperatorImage = "quay.io/kairos/operator:test"
+
 var (
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -50,6 +53,10 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
+
+	// The kustomize and Helm deployments always set OPERATOR_IMAGE, which the
+	// reboot Pod runs; without it a rebootOnSuccess NodeOp cannot start.
+	Expect(os.Setenv("OPERATOR_IMAGE", testOperatorImage)).To(Succeed())
 
 	var err error
 	err = kairosiov1alpha1.AddToScheme(scheme.Scheme)

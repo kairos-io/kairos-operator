@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -1210,6 +1211,20 @@ func (r *NodeOpReconciler) ensureRebootRole(ctx context.Context, nodeOp *kairosi
 	return nil
 }
 
+// rebootPodImage returns the image the reboot Pod runs, which is the operator's
+// own image, read from OPERATOR_IMAGE. There is no fallback: no published tag
+// is guaranteed to match this build, so an unset OPERATOR_IMAGE is an error
+// rather than a Pod stuck pulling an image that does not exist. The kustomize
+// and Helm deployments always set it; a controller run from the host (make
+// run) must export it.
+func rebootPodImage() (string, error) {
+	image := os.Getenv("OPERATOR_IMAGE")
+	if image == "" {
+		return "", errors.New("OPERATOR_IMAGE is not set: it must name the operator image the reboot Pod runs (rebootOnSuccess: true)")
+	}
+	return image, nil
+}
+
 // createRebootPod creates the reboot Pod on nodeName for the upgrade Job named
 // jobName. The reboot Pod is created before its upgrade Job, so it is given
 // the upgrade Job's name up front (see startMainJob). It waits for the upgrade
@@ -1218,15 +1233,14 @@ func (r *NodeOpReconciler) ensureRebootRole(ctx context.Context, nodeOp *kairosi
 func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosiov1alpha1.NodeOp, nodeName, jobName string) (*corev1.Pod, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureRebootRBAC(ctx, nodeOp); err != nil {
-		log.Error(err, "Failed to ensure reboot RBAC", "node", nodeName)
+	operatorImage, err := rebootPodImage()
+	if err != nil {
 		return nil, err
 	}
 
-	// Get the operator image from environment variable
-	operatorImage := os.Getenv("OPERATOR_IMAGE")
-	if operatorImage == "" {
-		operatorImage = "quay.io/kairos/kairos-operator:latest"
+	if err := r.ensureRebootRBAC(ctx, nodeOp); err != nil {
+		log.Error(err, "Failed to ensure reboot RBAC", "node", nodeName)
+		return nil, err
 	}
 
 	// Truncate so that GenerateName + the 5-char suffix Kubernetes appends fits
