@@ -370,6 +370,7 @@ func (r *OSArtifactReconciler) newBuilderPod(ctx context.Context, artifact *buil
 		Tolerations:                  artifact.Spec.Tolerations,
 		Affinity:                     artifact.Spec.Affinity,
 		Resources:                    builderPodLevelResources(artifact),
+		ActiveDeadlineSeconds:        artifact.Spec.ActiveDeadlineSeconds,
 	}
 
 	return &corev1.Pod{

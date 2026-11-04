@@ -276,6 +276,13 @@ type OSArtifactSpec struct {
 	// +optional
 	Resources ResourcesSpec `json:"resources,omitempty"`
 
+	// ActiveDeadlineSeconds limits how long the builder Pod may run, counted from when the
+	// kubelet starts it. When it runs out, the Pod is stopped and the OSArtifact moves to
+	// the Error phase. Exporters are not covered: set activeDeadlineSeconds on their JobSpec.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
+
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
 	// +optional

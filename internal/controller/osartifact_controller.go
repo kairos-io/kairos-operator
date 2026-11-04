@@ -348,6 +348,7 @@ func (r *OSArtifactReconciler) checkBuild(ctx context.Context,
 			return ctrl.Result{}, r.Status().Update(ctx, artifact)
 		case corev1.PodFailed:
 			artifact.Status.Phase = buildv1alpha2.Error
+			artifact.Status.Message = builderPodFailureMessage(&pod)
 			return ctrl.Result{}, r.Status().Update(ctx, artifact)
 		case corev1.PodPending, corev1.PodRunning:
 			return ctrl.Result{}, nil
@@ -452,6 +453,20 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// builderPodFailureMessage returns a short message for a failed builder Pod, e.g. reason DeadlineExceeded.
+func builderPodFailureMessage(pod *corev1.Pod) string {
+	switch {
+	case pod.Status.Reason != "" && pod.Status.Message != "":
+		return fmt.Sprintf("builder pod %s failed: %s: %s", pod.Name, pod.Status.Reason, pod.Status.Message)
+	case pod.Status.Reason != "":
+		return fmt.Sprintf("builder pod %s failed: %s", pod.Name, pod.Status.Reason)
+	case pod.Status.Message != "":
+		return fmt.Sprintf("builder pod %s failed: %s", pod.Name, pod.Status.Message)
+	default:
+		return fmt.Sprintf("builder pod %s failed", pod.Name)
+	}
 }
 
 // exportJobFailed returns true when the Job has permanently failed (e.g. backoffLimit exceeded).

@@ -894,6 +894,21 @@ var _ = Describe("newBuilderPod scheduling", func() {
 		})
 	})
 
+	When("activeDeadlineSeconds is set", func() {
+		It("propagates it to the pod spec", func() {
+			artifact.Spec.ActiveDeadlineSeconds = ptr(int64(3600))
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.ActiveDeadlineSeconds).To(HaveValue(Equal(int64(3600))))
+		})
+	})
+
+	When("activeDeadlineSeconds is not set", func() {
+		It("leaves the pod without a deadline", func() {
+			pod := r.newBuilderPod(context.Background(), artifact, pvc)
+			Expect(pod.Spec.ActiveDeadlineSeconds).To(BeNil())
+		})
+	})
+
 	When("no scheduling fields are set", func() {
 		It("leaves nodeSelector, tolerations, and affinity unset", func() {
 			pod := r.newBuilderPod(context.Background(), artifact, pvc)
@@ -1240,5 +1255,33 @@ var _ = Describe("unpackContainer", func() {
 	It("adds --allow-insecure-registries when insecure is true", func() {
 		c := unpackContainer("0", "auroraboot:test", "localhost:5000/bundle:latest", "amd64", true)
 		Expect(c.Args[0]).To(ContainSubstring("auroraboot unpack --arch amd64 --allow-insecure-registries localhost:5000/bundle:latest /rootfs"))
+	})
+})
+
+var _ = Describe("builderPodFailureMessage", func() {
+	It("reports the deadline when activeDeadlineSeconds ran out", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "build-abc"},
+			Status: corev1.PodStatus{
+				Phase:   corev1.PodFailed,
+				Reason:  "DeadlineExceeded",
+				Message: "Pod was active on the node longer than the specified deadline",
+			},
+		}
+		Expect(builderPodFailureMessage(pod)).To(Equal(
+			"builder pod build-abc failed: DeadlineExceeded: Pod was active on the node longer than the specified deadline"))
+	})
+
+	It("reports only the reason when there is no message", func() {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "build-abc"},
+			Status:     corev1.PodStatus{Reason: "Evicted"},
+		}
+		Expect(builderPodFailureMessage(pod)).To(Equal("builder pod build-abc failed: Evicted"))
+	})
+
+	It("names the pod when the status has no details", func() {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "build-abc"}}
+		Expect(builderPodFailureMessage(pod)).To(Equal("builder pod build-abc failed"))
 	})
 })
