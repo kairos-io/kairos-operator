@@ -280,6 +280,7 @@ type OSArtifactSpec struct {
 	// kubelet starts it. When it runs out, the Pod is stopped and the OSArtifact moves to
 	// the Error phase. Exporters are not covered: set activeDeadlineSeconds on their JobSpec.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +optional
 	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
 

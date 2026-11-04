@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -1886,5 +1887,41 @@ var _ = Describe("OSArtifactReconciler", func() {
 				Expect(pod.Spec.Resources.Requests.Cpu().String()).To(Equal("1"))
 			})
 		})
+	})
+})
+
+var _ = Describe("OSArtifact spec.activeDeadlineSeconds", func() {
+	newArtifact := func(deadline int64) *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("deadline-%d", time.Now().UnixNano()),
+				Namespace: "default",
+			},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Image:                 buildv1alpha2.ImageSpec{Ref: testImageName},
+				Artifacts:             &buildv1alpha2.ArtifactSpec{},
+				ActiveDeadlineSeconds: ptr(deadline),
+			},
+		}
+	}
+
+	DescribeTable("is accepted by the API server",
+		func(deadline int64) {
+			artifact := newArtifact(deadline)
+			Expect(k8sClient.Create(context.Background(), artifact)).To(Succeed())
+			Expect(k8sClient.Delete(context.Background(), artifact)).To(Succeed())
+		},
+		Entry("1", int64(1)),
+		Entry("the largest value a Pod accepts", int64(2147483647)),
+	)
+
+	It("is rejected by the API server above what a Pod accepts", func() {
+		artifact := newArtifact(2147483648)
+		err := k8sClient.Create(context.Background(), artifact)
+		if err == nil {
+			_ = k8sClient.Delete(context.Background(), artifact)
+		}
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected an Invalid error, got %v", err)
+		Expect(err.Error()).To(ContainSubstring("spec.activeDeadlineSeconds"))
 	})
 })
