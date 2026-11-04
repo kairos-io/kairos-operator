@@ -60,7 +60,9 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Kind:       kindNodeOpUpgrade,
 	}
 
-	// Check if a NodeOp already exists for this NodeOpUpgrade
+	// Check if a NodeOp already exists for this NodeOpUpgrade. The NodeOp is
+	// named after the NodeOpUpgrade, and NodeOp is a user-facing API of its
+	// own, so this key can also hold a NodeOp nobody here created.
 	nodeOp := &kairosiov1alpha1.NodeOp{}
 	err = r.Get(ctx, types.NamespacedName{
 		Name:      nodeOpUpgrade.Name,
@@ -93,10 +95,45 @@ func (r *NodeOpUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// A NodeOp is ours only when we control it. Adopting a NodeOp that belongs
+	// to someone else would report its progress as this upgrade's own and, worse,
+	// leave the upgrade itself unscheduled for good, because the key we would
+	// create it under is taken.
+	if !metav1.IsControlledBy(nodeOp, nodeOpUpgrade) {
+		return r.reportNodeOpConflict(ctx, nodeOpUpgrade)
+	}
+
 	// NodeOp exists, update NodeOpUpgrade status from NodeOp status
 	if err := r.updateStatusFromNodeOp(ctx, nodeOpUpgrade, nodeOp); err != nil {
 		log.Error(err, "Failed to update NodeOpUpgrade status from NodeOp")
 		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+}
+
+// reportNodeOpConflict records that the NodeOp name this upgrade needs is
+// already taken by a NodeOp it does not own, and keeps polling so the upgrade
+// starts on its own once that NodeOp is gone.
+func (r *NodeOpUpgradeReconciler) reportNodeOpConflict(ctx context.Context,
+	nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	message := fmt.Sprintf(
+		"NodeOp %s/%s already exists and is not managed by this NodeOpUpgrade; "+
+			"delete or rename it for the upgrade to start",
+		nodeOpUpgrade.Namespace, nodeOpUpgrade.Name)
+
+	log.Info("Refusing to adopt a NodeOp this NodeOpUpgrade does not own", "nodeOp", nodeOpUpgrade.Name)
+
+	if nodeOpUpgrade.Status.Phase != phaseFailed || nodeOpUpgrade.Status.Message != message {
+		nodeOpUpgrade.Status.Phase = phaseFailed
+		nodeOpUpgrade.Status.Message = message
+		nodeOpUpgrade.Status.LastUpdated = metav1.Now()
+		if err := r.Status().Update(ctx, nodeOpUpgrade); err != nil {
+			log.Error(err, "Failed to update NodeOpUpgrade status")
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
