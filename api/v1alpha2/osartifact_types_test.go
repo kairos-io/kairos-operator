@@ -106,6 +106,14 @@ var _ = Describe("OSArtifactSpec.Validate", func() {
 			Expect(err.Error()).To(ContainSubstring("reserved"))
 		})
 
+		It("returns error for the image-credentials volume name", func() {
+			spec := validImageRef("img")
+			spec.Volumes = []corev1.Volume{{Name: "image-credentials"}}
+			err := spec.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`volume name "image-credentials" is reserved`))
+		})
+
 		It("returns error for duplicate volume name", func() {
 			spec := validImageRef("img")
 			spec.Volumes = []corev1.Volume{{Name: "v1"}, {Name: "v1"}}
