@@ -41,6 +41,17 @@ const (
 type NodeLabelerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads the operator Pod and ReplicaSet without starting an
+	// informer for them (see operatorOwnerReference). It falls back to Client
+	// when nil.
+	APIReader client.Reader
+}
+
+func (r *NodeLabelerReconciler) ownerReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
@@ -156,16 +167,35 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 }
 
 func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namespace string) error {
-	// Create ServiceAccount
+	owner, err := operatorOwnerReference(ctx, r.ownerReader())
+	if err != nil {
+		return err
+	}
+
+	// Create ServiceAccount, owned by the operator Deployment so that
+	// uninstalling the operator removes it.
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      nodeLabelerServiceAccount,
 			Namespace: namespace,
 		},
 	}
+	addOwnerReference(sa, owner)
 	if err := r.Create(ctx, sa); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create service account: %w", err)
+		}
+		// Adopt a ServiceAccount left by an operator version that did not set
+		// the owner reference.
+		existing := &corev1.ServiceAccount{}
+		if err := r.ownerReader().Get(ctx, client.ObjectKeyFromObject(sa), existing); err != nil {
+			return fmt.Errorf("failed to get service account: %w", err)
+		}
+		patch := client.MergeFrom(existing.DeepCopy())
+		if addOwnerReference(existing, owner) {
+			if err := r.Patch(ctx, existing, patch); err != nil {
+				return fmt.Errorf("failed to set owner on service account: %w", err)
+			}
 		}
 	}
 
@@ -241,6 +271,12 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Create the node-labeler job
 	job := r.createNodeLabelerJob(node, namespace)
+	owner, err := operatorOwnerReference(ctx, r.ownerReader())
+	if err != nil {
+		log.Error(err, "Failed to resolve the operator Deployment")
+		return ctrl.Result{}, err
+	}
+	addOwnerReference(job, owner)
 
 	if err := r.Create(ctx, job); err != nil {
 		log.Error(err, "Failed to create node-labeler job")
@@ -255,6 +291,9 @@ func (r *NodeLabelerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	setupLog := logf.Log.WithName("setup")
 
 	namespace := getOperatorNamespace()
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if err := addStartupTask(mgr, "node-labeler ServiceAccount and RBAC", func(ctx context.Context) error {
 		return r.ensureServiceAccount(ctx, namespace)
 	}); err != nil {
