@@ -1241,6 +1241,9 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			},
 			RestartPolicy:      corev1.RestartPolicyOnFailure,
 			ServiceAccountName: rebootRBACName(nodeOp),
+			// The reboot Pod runs the operator image, which may sit in the
+			// same private registry as the NodeOp's own images.
+			ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
 			// The reboot pod must survive the NotReady/Unreachable window caused
 			// by the very reboot it triggers. Without infinite NoExecute
 			// tolerations, the taint-eviction controller deletes the pod after
