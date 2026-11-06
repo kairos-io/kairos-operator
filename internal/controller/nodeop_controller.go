@@ -671,8 +671,8 @@ func (r *NodeOpReconciler) createNodeJob(ctx context.Context, nodeOp *kairosiov1
 			Name:      jobName,
 			Namespace: nodeOp.Namespace,
 			Labels: map[string]string{
-				labelKeyNodeOp: nodeOp.Name,
-				labelKeyNode:   node.Name,
+				labelKeyNodeOp: utils.TruncateLabelValue(nodeOp.Name),
+				labelKeyNode:   utils.TruncateLabelValue(node.Name),
 			},
 		},
 		Spec: jobSpec,
@@ -1009,6 +1009,23 @@ func (r *NodeOpReconciler) findNodeOpsForJob(ctx context.Context, obj client.Obj
 	return nil
 }
 
+// nodeOpNameFor returns the name of the NodeOp that owns obj.
+//
+// The owner reference is authoritative: labelKeyNodeOp carries the same name,
+// but a label value is capped at 63 characters while an object name may be up
+// to 253, so the label is a truncated copy for any longer NodeOp. The label is
+// still read as a fallback, so Pods created by an earlier operator version are
+// picked up after an upgrade.
+func nodeOpNameFor(obj client.Object) string {
+	for _, ownerRef := range obj.GetOwnerReferences() {
+		if ownerRef.Kind == kindNodeOp {
+			return ownerRef.Name
+		}
+	}
+
+	return obj.GetLabels()[labelKeyNodeOp]
+}
+
 // findNodeOpsForPreflightPod enqueues the owning NodeOp when a preflight Pod's
 // status changes. Without this, the NodeOp would only re-reconcile on its
 // 5-minute fallback requeue, leaving a node stuck in Phase=Preflight long
@@ -1017,8 +1034,8 @@ func (r *NodeOpReconciler) findNodeOpsForPreflightPod(ctx context.Context, obj c
 	pod := obj.(*corev1.Pod)
 	log := logf.FromContext(ctx)
 
-	nodeOpName, ok := pod.Labels[labelKeyNodeOp]
-	if !ok {
+	nodeOpName := nodeOpNameFor(pod)
+	if nodeOpName == "" {
 		return nil
 	}
 	log.Info("Preflight pod status changed, triggering NodeOp reconciliation",
@@ -1041,7 +1058,7 @@ func (r *NodeOpReconciler) findNodeOpsForRebootPod(ctx context.Context, obj clie
 	log := logf.FromContext(ctx)
 
 	// Check if this is a reboot pod
-	if nodeOpName, ok := pod.Labels[labelKeyNodeOp]; ok {
+	if nodeOpName := nodeOpNameFor(pod); nodeOpName != "" {
 		log.Info("Reboot pod status changed, triggering NodeOp reconciliation",
 			"pod", pod.Name,
 			"nodeOp", nodeOpName,
@@ -1202,9 +1219,9 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			GenerateName: rebootPrefix,
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
-				labelKeyNodeOp: nodeOp.Name,
+				labelKeyNodeOp: utils.TruncateLabelValue(nodeOp.Name),
 				labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
-				labelKeyNode:   nodeName,
+				labelKeyNode:   utils.TruncateLabelValue(nodeName),
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -1340,9 +1357,9 @@ func (r *NodeOpReconciler) listRebootPods(ctx context.Context, reader client.Rea
 		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels{
-			labelKeyNodeOp: nodeOp.Name,
+			labelKeyNodeOp: utils.TruncateLabelValue(nodeOp.Name),
 			labelKeyReboot: "true", //nolint:goconst // common label value; not worth a constant
-			labelKeyNode:   nodeName,
+			labelKeyNode:   utils.TruncateLabelValue(nodeName),
 		},
 	); err != nil {
 		return nil, err
@@ -2093,8 +2110,8 @@ func (r *NodeOpReconciler) findPreflightPod(ctx context.Context, nodeOp *kairosi
 		ctx, podList,
 		client.InNamespace(nodeOp.Namespace),
 		client.MatchingLabels{
-			labelKeyNodeOp:    nodeOp.Name,
-			labelKeyNode:      nodeName,
+			labelKeyNodeOp:    utils.TruncateLabelValue(nodeOp.Name),
+			labelKeyNode:      utils.TruncateLabelValue(nodeName),
 			labelKeyPreflight: "true", //nolint:goconst // common label value; not worth a constant
 		},
 	); err != nil {
@@ -2135,8 +2152,8 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 			GenerateName: prefix,
 			Namespace:    nodeOp.Namespace,
 			Labels: map[string]string{
-				labelKeyNodeOp:    nodeOp.Name,
-				labelKeyNode:      node.Name,
+				labelKeyNodeOp:    utils.TruncateLabelValue(nodeOp.Name),
+				labelKeyNode:      utils.TruncateLabelValue(node.Name),
 				labelKeyPreflight: "true", //nolint:goconst // common label value; not worth a constant
 			},
 		},
