@@ -209,7 +209,7 @@ jobs:
       - name: Update version in kustomization files
         run: |
           # Update operator image version
-          sed -i "s|value: quay.io/kairos/operator:v[^[:space:]]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
+          sed -i "\|newName: quay.io/kairos/operator$|{n;s|newTag: .*|newTag: ${{ inputs.version }}|}" config/manager/kustomization.yaml
           # Update node-labeler image version
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
 
@@ -224,7 +224,7 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'github-actions@github.com'
-          git add config/default/kustomization.yaml charts/kairos-operator/Chart.yaml
+          git add config/default/kustomization.yaml config/manager/kustomization.yaml charts/kairos-operator/Chart.yaml
           git commit -s -m "chore: bump version to ${{ inputs.version }}"
           git push origin "chore/bump-version-${{ inputs.version }}"
 
