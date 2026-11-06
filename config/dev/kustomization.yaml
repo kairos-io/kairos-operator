@@ -3,15 +3,7 @@ kind: Kustomization
 resources:
 - ../default
 
-# Override the image patch from default to use controller:latest
 patches:
-- patch: |-
-    - op: replace
-      path: /spec/template/spec/containers/0/image
-      value: controller:latest
-  target:
-    kind: Deployment
-    name: kairos-operator
 - patch: |-
     apiVersion: apps/v1
     kind: Deployment
@@ -30,6 +22,6 @@ patches:
     name: kairos-operator
 
 images:
-- name: controller
+- name: quay.io/kairos/operator
   newName: controller
   newTag: latest

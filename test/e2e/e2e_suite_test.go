@@ -44,14 +44,6 @@ const (
 )
 
 var (
-	// Optional Environment Variables:
-	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
-	// These variables are useful if CertManager is already installed, avoiding
-	// re-installation and conflicts.
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
-	isCertManagerAlreadyInstalled = false
-
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	// Using controller:latest to match config/dev/kustomization.yaml
@@ -398,8 +390,7 @@ func (tc *TestClients) Cleanup(artifactName string, artifactLabelSelector labels
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
-// The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
-// CertManager.
+// The default setup requires Kind and builds/loads the Manager Docker image locally.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting operator integration test suite\n")
@@ -407,7 +398,7 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	kubeconfig, clusterName = createCluster()
+	createCluster()
 	makeNodeBeKairos()
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	Expect(err).NotTo(HaveOccurred())
@@ -419,17 +410,6 @@ var _ = BeforeSuite(func() {
 	// Build and load both images
 	Expect(buildAndLoadImages(clusterName)).To(Succeed(), "Failed to build and load images")
 
-	if !skipCertManagerInstall {
-		By("checking if cert manager is installed already")
-		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
-		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
-			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
-		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
-		}
-	}
-
 	installOperator()
 
 	By("verifying pods can download from the internet (e.g. k3s from GitHub)")
@@ -438,11 +418,23 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	By("deleting the kind cluster")
-	cmd := exec.Command("kind", "delete", "cluster", "--name", clusterName)
-	Expect(cmd.Run()).To(Succeed())
+	Expect(deleteKindCluster(clusterName)).To(Succeed())
 })
 
-func createCluster() (string, string) {
+// deleteKindCluster deletes the named kind cluster. An empty name means the
+// suite never got to create one, and `kind delete cluster --name ""` would
+// delete the default cluster named "kind", so nothing is run in that case.
+func deleteKindCluster(name string) error {
+	if name == "" {
+		return nil
+	}
+	return exec.Command("kind", "delete", "cluster", "--name", name).Run()
+}
+
+// createCluster creates the kind cluster for the suite. It sets clusterName
+// and kubeconfig as soon as they are known, so AfterSuite deletes the cluster
+// even when a later step fails, and never deletes one the suite did not name.
+func createCluster() {
 	// Create a temporary directory for the kubeconfig
 	tmpDir, err := os.MkdirTemp("", "kairos-operator-e2e-*")
 	Expect(err).NotTo(HaveOccurred())
@@ -450,11 +442,12 @@ func createCluster() (string, string) {
 	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
 
 	// Generate a unique cluster name using timestamp
-	clusterName := fmt.Sprintf("kairos-operator-e2e-%d", time.Now().UnixNano())
+	name := fmt.Sprintf("kairos-operator-e2e-%d", time.Now().UnixNano())
+	kubeconfig, clusterName = kubeconfigPath, name
 
 	// Create the kind cluster with the custom kubeconfig path
 	cmd := exec.Command("kind", "create", "cluster",
-		"--name", clusterName,
+		"--name", name,
 		"--config", "kind-2node.yaml",
 		"--kubeconfig", kubeconfigPath)
 	_, err = cmd.CombinedOutput()
@@ -466,8 +459,6 @@ func createCluster() (string, string) {
 		"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m")
 	_, err = cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred())
-
-	return kubeconfigPath, clusterName
 }
 
 // verifyPodCanDownload runs a one-off pod in default namespace that downloads a file from the internet

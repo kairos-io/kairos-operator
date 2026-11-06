@@ -276,6 +276,14 @@ type OSArtifactSpec struct {
 	// +optional
 	Resources ResourcesSpec `json:"resources,omitempty"`
 
+	// ActiveDeadlineSeconds limits how long the builder Pod may run, counted from when the
+	// kubelet starts it. When it runs out, the Pod is stopped and the OSArtifact moves to
+	// the Error phase. Exporters are not covered: set activeDeadlineSeconds on their JobSpec.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
+	// +optional
+	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
+
 	// Volumes defines additional volumes available to importers and the build pod.
 	// Volume names must not collide with internal names: "artifacts", "rootfs", "config", "ocispec", "cloudconfig".
 	// +optional
@@ -510,7 +518,8 @@ func validateImageSpec(img *ImageSpec, volumeNames map[string]bool) error {
 			return fmt.Errorf("spec.image.buildOptions.baseImage is required when using buildOptions")
 		}
 	}
-	if hasOCISpec && img.OCISpec.BuildContextVolume != "" {
+	// Checked whenever ociSpec is set: with buildOptions the controller fills in ref itself, but still mounts this volume.
+	if img.OCISpec != nil && img.OCISpec.BuildContextVolume != "" {
 		if !volumeNames[img.OCISpec.BuildContextVolume] {
 			return fmt.Errorf("spec.image.ociSpec.buildContextVolume references volume %q which is not defined in spec.volumes", img.OCISpec.BuildContextVolume)
 		}

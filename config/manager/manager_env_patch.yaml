@@ -21,4 +21,4 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         - name: OPERATOR_IMAGE
-          value: "placeholder"
+          value: controller:latest
