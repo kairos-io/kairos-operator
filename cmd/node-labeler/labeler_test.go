@@ -240,4 +240,89 @@ KAIROS_FIPS="false"
 		Entry("truncation does not leave trailing hyphen", strings.Repeat("a", 62)+"-a", strings.Repeat("a", 62)),
 		Entry("sanitizes all-invalid characters to empty string", strings.Repeat("+", 10), ""),
 	)
+
+	Describe("the system UUID label", func() {
+		const systemUUID = "4c4c4544-0051-4a10-8056-b4c04f4d3332"
+
+		It("labels the node with the system UUID the kubelet reports", func() {
+			node := newNode("test-node", nil, nil)
+			node.Status.NodeInfo.SystemUUID = systemUUID
+			clientset := fake.NewSimpleClientset(node)
+
+			etcDir := writeKairosRelease(sampleKairosRelease)
+			cmdlinePath := writeCmdlineFile("COS_ACTIVE")
+
+			Expect(syncLabels(context.Background(), clientset, "test-node", etcDir, cmdlinePath)).To(Succeed())
+
+			updated, err := clientset.CoreV1().Nodes().Get(context.Background(), "test-node", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.Labels).To(HaveKeyWithValue("kairos.io/system-uuid", systemUUID))
+		})
+
+		It("distinguishes two nodes built from the same kairos-release", func() {
+			first := newNode("node-a", nil, nil)
+			first.Status.NodeInfo.SystemUUID = systemUUID
+			second := newNode("node-b", nil, nil)
+			second.Status.NodeInfo.SystemUUID = "03000200-0400-0500-0006-000700080009"
+			clientset := fake.NewSimpleClientset(first, second)
+
+			etcDir := writeKairosRelease(sampleKairosRelease)
+			cmdlinePath := writeCmdlineFile("COS_ACTIVE")
+
+			Expect(syncLabels(context.Background(), clientset, "node-a", etcDir, cmdlinePath)).To(Succeed())
+			Expect(syncLabels(context.Background(), clientset, "node-b", etcDir, cmdlinePath)).To(Succeed())
+
+			a, err := clientset.CoreV1().Nodes().Get(context.Background(), "node-a", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			b, err := clientset.CoreV1().Nodes().Get(context.Background(), "node-b", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(a.Labels["kairos.io/id"]).To(Equal(b.Labels["kairos.io/id"]))
+			Expect(a.Labels["kairos.io/system-uuid"]).NotTo(Equal(b.Labels["kairos.io/system-uuid"]))
+		})
+
+		It("writes no label when the kubelet reports no system UUID", func() {
+			node := newNode("test-node", nil, nil)
+			clientset := fake.NewSimpleClientset(node)
+
+			etcDir := writeKairosRelease(sampleKairosRelease)
+			cmdlinePath := writeCmdlineFile("COS_ACTIVE")
+
+			Expect(syncLabels(context.Background(), clientset, "test-node", etcDir, cmdlinePath)).To(Succeed())
+
+			updated, err := clientset.CoreV1().Nodes().Get(context.Background(), "test-node", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.Labels).NotTo(HaveKey("kairos.io/system-uuid"))
+			Expect(updated.Labels).To(HaveKeyWithValue("kairos.io/managed", "true"))
+		})
+
+		It("removes a stale system UUID label the node no longer reports", func() {
+			node := newNode("test-node", map[string]string{
+				"kairos.io/system-uuid": "stale-uuid",
+			}, nil)
+			clientset := fake.NewSimpleClientset(node)
+
+			etcDir := writeKairosRelease(sampleKairosRelease)
+			cmdlinePath := writeCmdlineFile("COS_ACTIVE")
+
+			Expect(syncLabels(context.Background(), clientset, "test-node", etcDir, cmdlinePath)).To(Succeed())
+
+			updated, err := clientset.CoreV1().Nodes().Get(context.Background(), "test-node", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.Labels).NotTo(HaveKey("kairos.io/system-uuid"))
+		})
+
+		It("sanitizes a system UUID that is not a valid label value", func() {
+			labels := withSystemUUID(map[string]string{"kairos.io/managed": "true"}, "Not Settable")
+			Expect(labels).To(HaveKeyWithValue("kairos.io/system-uuid", "Not-Settable"))
+		})
+
+		It("leaves the caller's map untouched", func() {
+			original := map[string]string{"kairos.io/managed": "true"}
+			labels := withSystemUUID(original, systemUUID)
+
+			Expect(labels).To(HaveKey("kairos.io/system-uuid"))
+			Expect(original).NotTo(HaveKey("kairos.io/system-uuid"))
+		})
+	})
 })
