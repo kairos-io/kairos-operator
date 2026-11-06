@@ -560,13 +560,32 @@ func makeBuildUKIContainer(toolImage string, artifact *buildv1alpha2.OSArtifact,
 	}
 }
 
+// cloudBuildStateDir returns the AuroraBoot state_dir for one of the disk
+// image containers (cloud, azure, gce). Those run as parallel main containers
+// of the builder Pod, and AuroraBoot recreates <state_dir>/temp-rootfs and
+// globs kairos-*.raw in it, so a shared /artifacts lets the runs delete each
+// other's working copy. Each container gets its own directory on the
+// artifacts volume; the finished image is moved up to /artifacts.
+func cloudBuildStateDir(format string) string {
+	return "/artifacts/.build-" + format
+}
+
+// cloudBuildPreamble creates the per-container state_dir and removes it when
+// the shell exits, so neither a finished nor a failed build leaves its
+// working files on the exported volume.
+func cloudBuildPreamble(stateDir string) string {
+	return fmt.Sprintf("rm -rf %[1]s && mkdir -p %[1]s && trap 'rm -rf %[1]s' EXIT && ", stateDir)
+}
+
 func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
 	var c strings.Builder
+	stateDir := cloudBuildStateDir("cloud")
+	c.WriteString(cloudBuildPreamble(stateDir))
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.raw=true'")
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
-	c.WriteString(" --set 'state_dir=/artifacts'")
+	fmt.Fprintf(&c, " --set 'state_dir=%s'", stateDir)
 	c.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
 		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
@@ -578,8 +597,8 @@ func buildCloudImageCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifac
 		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
-		" && file=$(ls /artifacts/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
-		artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindCloud))
+		" && file=$(ls %s/*.raw 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.raw",
+		stateDir, artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindCloud))
 	return c.String()
 }
 
@@ -671,11 +690,13 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 
 func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
 	var c strings.Builder
+	stateDir := cloudBuildStateDir("azure")
+	c.WriteString(cloudBuildPreamble(stateDir))
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.vhd=true'")
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
-	c.WriteString(" --set 'state_dir=/artifacts'")
+	fmt.Fprintf(&c, " --set 'state_dir=%s'", stateDir)
 	c.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
 		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
@@ -684,8 +705,8 @@ func buildAzureCmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *b
 		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
-		" && file=$(ls /artifacts/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
-		artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindAzure))
+		" && file=$(ls %s/*.vhd 2>/dev/null | head -n1) && [ -n \"$file\" ] && mv \"$file\" /artifacts/%s.vhd",
+		stateDir, artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindAzure))
 	return c.String()
 }
 
@@ -704,11 +725,13 @@ func makeAzureCloudImageContainer(toolImage string, artifact *buildv1alpha2.OSAr
 
 func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *buildv1alpha2.ArtifactSpec) string {
 	var c strings.Builder
+	stateDir := cloudBuildStateDir("gce")
+	c.WriteString(cloudBuildPreamble(stateDir))
 	c.WriteString("auroraboot --debug")
 	c.WriteString(" --set 'disk.gce=true'")
 	c.WriteString(" --set 'disable_netboot=true'")
 	c.WriteString(" --set 'disable_http_server=true'")
-	c.WriteString(" --set 'state_dir=/artifacts'")
+	fmt.Fprintf(&c, " --set 'state_dir=%s'", stateDir)
 	c.WriteString(" --set 'container_image=dir:/rootfs'")
 	if arch != "" {
 		fmt.Fprintf(&c, " --set 'arch=%s'", arch)
@@ -717,9 +740,9 @@ func buildGCECmd(artifact *buildv1alpha2.OSArtifact, arch string, artifacts *bui
 		c.WriteString(" --cloud-config " + cloudConfigMountPath)
 	}
 	fmt.Fprintf(&c,
-		" && file=$(ls /artifacts/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
+		" && file=$(ls %s/*.raw.gce.tar.gz 2>/dev/null | head -n1) && [ -n \"$file\" ] && "+
 			"mv \"$file\" /artifacts/%s.gce.tar.gz",
-		artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindGCE))
+		stateDir, artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindGCE))
 	return c.String()
 }
 
