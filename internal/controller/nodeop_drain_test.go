@@ -73,9 +73,16 @@ var _ = Describe("drainNode grace period", func() {
 
 	// drainedPod runs a drain and returns the Pod the API server kept, which is
 	// terminating and carries the grace period the DELETE asked for.
+	//
+	// The drain waits for the Pods it evicted, and envtest runs no kubelet to
+	// finish the termination, so it waits out its timeout and reports the
+	// failure. These specs are about which grace period the DELETE carried, so
+	// they give the wait one second and read the Pod it left behind.
 	drainedPod := func(opts *kairosiov1alpha1.DrainOptions) *corev1.Pod {
 		GinkgoHelper()
-		Expect(reconciler.drainNode(ctx, node, opts)).To(Succeed())
+		opts.TimeoutSeconds = asInt32(1)
+		Expect(reconciler.drainNode(ctx, node, opts)).To(
+			MatchError(ContainSubstring("still terminating")))
 
 		pod := &corev1.Pod{}
 		Expect(k8sClient.Get(ctx, podKey, pod)).To(Succeed())
@@ -106,9 +113,9 @@ var _ = Describe("drainNode grace period", func() {
 		opts := &kairosiov1alpha1.DrainOptions{GracePeriodSeconds: asInt32(0)}
 		Expect(reconciler.drainNode(ctx, node, opts)).To(Succeed())
 
-		Eventually(func() bool {
-			err := k8sClient.Get(ctx, podKey, &corev1.Pod{})
-			return apierrors.IsNotFound(err)
-		}).Should(BeTrue(), "a zero grace period should remove the Pod at once")
+		// No Eventually: a zero grace period removes the Pod at once, and the
+		// drain only reports the node drained once the Pod is actually gone.
+		err := k8sClient.Get(ctx, podKey, &corev1.Pod{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the drain should have waited for the Pod to go")
 	})
 })
