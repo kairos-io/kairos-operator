@@ -288,10 +288,33 @@ func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact
 	return nil
 }
 
+// checkCloudConfigRef makes sure the Secret named by artifacts.cloudConfigRef
+// exists and holds the key, before the builder Pod starts. The volume is
+// mounted optional, so without this check a missing Secret or key only shows
+// up as an empty cloud config error from AuroraBoot.
+func (r *OSArtifactReconciler) checkCloudConfigRef(ctx context.Context, artifact *buildv1alpha2.OSArtifact) error {
+	if artifact.Spec.Artifacts == nil || artifact.Spec.Artifacts.CloudConfigRef == nil {
+		return nil
+	}
+	ref := artifact.Spec.Artifacts.CloudConfigRef
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: artifact.Namespace}, secret); err != nil {
+		return fmt.Errorf("failed to fetch cloud config secret %q (spec.artifacts.cloudConfigRef): %w", ref.Name, err)
+	}
+	if _, ok := secret.Data[ref.Key]; !ok {
+		return fmt.Errorf("key %q not found in cloud config secret %q (spec.artifacts.cloudConfigRef)", ref.Key, ref.Name)
+	}
+	return nil
+}
+
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	if err := artifact.Spec.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
+	}
+
+	if err := r.checkCloudConfigRef(ctx, artifact); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve final OCI build definition (single path: assemble sections when buildOptions set, else user content only).
