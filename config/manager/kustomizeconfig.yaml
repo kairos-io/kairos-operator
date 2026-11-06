@@ -1,0 +1,5 @@
+# Let images: entries rewrite OPERATOR_IMAGE together with the manager
+# container image, in this kustomization and in every overlay built on it.
+images:
+- kind: Deployment
+  path: spec/template/spec/containers[]/env[]/value
