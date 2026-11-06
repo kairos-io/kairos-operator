@@ -44,7 +44,7 @@ jobs:
 
       - name: Build Kustomize install manifest
         run: |
-          sed -i "s|value: quay.io/kairos/operator:v[^[:space:]]*|value: quay.io/kairos/operator:${{ inputs.version }}|g" config/default/kustomization.yaml
+          sed -i "\|newName: quay.io/kairos/operator$|{n;s|newTag: .*|newTag: ${{ inputs.version }}|}" config/manager/kustomization.yaml
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
           mkdir -p dist
           kustomize build config/default > dist/install.yaml

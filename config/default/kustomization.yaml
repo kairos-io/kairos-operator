@@ -41,15 +41,6 @@ patches:
   target:
     kind: Deployment
 
-# Patch to update the operator image
-- target:
-    kind: Deployment
-    name: kairos-operator
-  patch: |-
-    - op: replace
-      path: /spec/template/spec/containers/0/image
-      value: quay.io/kairos/operator:v0.3.0
-
 # Patch to update the node-labeler image
 - target:
     kind: Deployment
@@ -98,19 +89,4 @@ patches:
 
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
 # Uncomment the following replacements to add the cert-manager CA injection annotations
-replacements:
-# Copy the operator image to OPERATOR_IMAGE environment variable
-- source:
-    kind: Deployment
-    name: kairos-operator
-    fieldPath: spec.template.spec.containers.0.image
-  targets:
-  - select:
-      kind: Deployment
-      name: kairos-operator
-    fieldPaths:
-    - spec.template.spec.containers.0.env.[name=OPERATOR_IMAGE].value
-    options:
-      create: true
-
 #replacements:

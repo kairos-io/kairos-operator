@@ -182,7 +182,7 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 
 .PHONY: deploy-dev
 deploy-dev: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config using dev config.
-	cd config/dev && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/dev && $(KUSTOMIZE) edit set image quay.io/kairos/operator=${IMG}
 	$(KUSTOMIZE) build config/dev | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
