@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +36,11 @@ const (
 	hostEtcMountPath  = "/host/etc"
 	// Common label keys
 	labelKeyKairosManaged = "kairos.io/managed"
+	// Image pull wiring for the node-labeler Job and DaemonSet Pods. The
+	// chart fills these from image.nodeLabeler.pullPolicy and from the
+	// top level imagePullSecrets value.
+	nodeLabelerPullPolicyEnv  = "NODE_LABELER_PULL_POLICY"
+	nodeLabelerPullSecretsEnv = "NODE_LABELER_PULL_SECRETS"
 )
 
 // NodeLabelerReconciler reconciles nodes to ensure they are labeled
@@ -76,6 +82,36 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 	return len(jobList.Items) > 0, nil
 }
 
+// nodeLabelerPullPolicy returns the image pull policy for the node-labeler
+// containers. It comes from the chart's image.nodeLabeler.pullPolicy value.
+// An unset or unrecognised value keeps IfNotPresent, which is what the
+// node-labeler used before the value was wired up.
+func nodeLabelerPullPolicy() corev1.PullPolicy {
+	switch policy := corev1.PullPolicy(os.Getenv(nodeLabelerPullPolicyEnv)); policy {
+	case corev1.PullAlways, corev1.PullNever, corev1.PullIfNotPresent:
+		return policy
+	default:
+		return corev1.PullIfNotPresent
+	}
+}
+
+// nodeLabelerPullSecrets returns the pull secrets for the node-labeler
+// containers, as a comma separated list of secret names in the operator's
+// namespace. The node-labeler image is a different image from the manager,
+// so a cluster that mirrors both into a private registry needs the secrets
+// on these Pods as well as on the operator Deployment.
+func nodeLabelerPullSecrets() []corev1.LocalObjectReference {
+	var refs []corev1.LocalObjectReference
+	for _, name := range strings.Split(os.Getenv(nodeLabelerPullSecretsEnv), ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		refs = append(refs, corev1.LocalObjectReference{Name: name})
+	}
+	return refs
+}
+
 func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespace string) *batchv1.Job {
 	// Get the node labeler image from environment variable
 	nodeLabelerImage := os.Getenv("NODE_LABELER_IMAGE")
@@ -106,11 +142,12 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 				Spec: corev1.PodSpec{
 					NodeName:           node.Name,
 					ServiceAccountName: nodeLabelerServiceAccount,
+					ImagePullSecrets:   nodeLabelerPullSecrets(),
 					Containers: []corev1.Container{
 						{
 							Name:            "node-labeler",
 							Image:           nodeLabelerImage,
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							ImagePullPolicy: nodeLabelerPullPolicy(),
 							SecurityContext: &corev1.SecurityContext{
 								RunAsNonRoot: asBool(true),
 								RunAsUser:    &[]int64{1000}[0],
