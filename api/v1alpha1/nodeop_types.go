@@ -68,7 +68,7 @@ type NodeOpSpec struct {
 	DrainOptions *DrainOptions `json:"drainOptions,omitempty"`
 
 	// RebootOnSuccess specifies whether to reboot the node after the operation completes successfully.
-	// When true, a privileged pod will be created to trigger a reboot using nsenter.
+	// When true, a privileged pod will be created to reboot the node from the host.
 	// +optional
 	// +kubebuilder:default=false
 	RebootOnSuccess *bool `json:"rebootOnSuccess,omitempty"`
