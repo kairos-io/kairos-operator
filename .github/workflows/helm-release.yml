@@ -48,6 +48,7 @@ jobs:
           sed -i "s|value: quay.io/kairos/operator-node-labeler:v[^[:space:]]*|value: quay.io/kairos/operator-node-labeler:${{ inputs.version }}|g" config/default/kustomization.yaml
           mkdir -p dist
           kustomize build config/default > dist/install.yaml
+          kustomize build config/crd > dist/crds.yaml
 
       - name: Login to GHCR (OCI)
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -72,7 +73,7 @@ jobs:
               --title "${{ inputs.version }}" \
               --generate-notes \
               --verify-tag
-          gh release upload "${{ inputs.version }}" dist/install.yaml .chart-output/kairos-operator-*.tgz --clobber
+          gh release upload "${{ inputs.version }}" dist/install.yaml dist/crds.yaml .chart-output/kairos-operator-*.tgz --clobber
 
       - name: Push chart to GHCR (OCI)
         run: |
