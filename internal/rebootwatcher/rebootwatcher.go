@@ -28,8 +28,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -242,15 +240,4 @@ func jobComplete(job *batchv1.Job) bool {
 		}
 	}
 	return false
-}
-
-// NsenterReboot reboots the node by running `nsenter -i -m -t 1 -- reboot`,
-// which runs `reboot` in the namespaces of the node's init process instead of
-// the reboot Pod's own. It is the Reboot function used in production; tests
-// use a stub.
-func NsenterReboot() error {
-	cmd := exec.Command("nsenter", "-i", "-m", "-t", "1", "--", "reboot")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

@@ -317,7 +317,7 @@ func runRebootWatcher() {
 		JobName:       jobName,
 		PollInterval:  10 * time.Second,
 		RebootTimeout: 5 * time.Minute,
-		Reboot:        rebootwatcher.NsenterReboot,
+		Reboot:        rebootwatcher.HostReboot,
 		ReadBootID:    bootid.ReadHost,
 		Logger:        logger,
 	})

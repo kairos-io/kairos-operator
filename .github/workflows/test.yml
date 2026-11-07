@@ -20,6 +20,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor, which
+      # makes the RunInNamespacesOf spec skip itself.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Running Tests
         run: |
           go mod tidy
