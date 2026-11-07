@@ -334,6 +334,7 @@ func (r *OSArtifactReconciler) checkBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, &client.ListOptions{
+		Namespace: artifact.Namespace,
 		LabelSelector: labels.SelectorFromSet(labels.Set{
 			artifactLabel: artifact.Name,
 		}),
@@ -362,6 +363,7 @@ func (r *OSArtifactReconciler) checkExport(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, &client.ListOptions{
+		Namespace: artifact.Namespace,
 		LabelSelector: labels.SelectorFromSet(labels.Set{
 			artifactLabel: artifact.Name,
 		}),
