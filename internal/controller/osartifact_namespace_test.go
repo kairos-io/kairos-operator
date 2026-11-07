@@ -25,6 +25,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	buildv1alpha2 "github.com/kairos-io/kairos-operator/api/v1alpha2"
@@ -60,6 +61,19 @@ var _ = Describe("OSArtifact children are scoped to the artifact namespace", fun
 		return a
 	}
 
+	// setStatus re-reads obj and applies mutate before every status write, so
+	// a resourceVersion bump between Create and the write (409 Conflict) is
+	// retried instead of failing the test.
+	setStatus := func(obj client.Object, mutate func()) {
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+				return err
+			}
+			mutate()
+			return k8sClient.Status().Update(ctx, obj)
+		})).To(Succeed())
+	}
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		r = &OSArtifactReconciler{
@@ -86,13 +100,14 @@ var _ = Describe("OSArtifact children are scoped to the artifact namespace", fun
 			},
 			Spec: otherPodSpec,
 		}
+		// The controller tests run on a real cluster: gate the Pod so the
+		// scheduler never binds it and no kubelet overwrites its phase.
+		podA.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: "kairos.io/test-hold"}}
 		Expect(k8sClient.Create(ctx, podA)).To(Succeed())
-		podA.Status.Phase = corev1.PodSucceeded
-		Expect(k8sClient.Status().Update(ctx, podA)).To(Succeed())
+		setStatus(podA, func() { podA.Status.Phase = corev1.PodSucceeded })
 
 		artifactB := newArtifact(nsB, nil)
-		artifactB.Status.Phase = buildv1alpha2.Building
-		Expect(k8sClient.Status().Update(ctx, artifactB)).To(Succeed())
+		setStatus(artifactB, func() { artifactB.Status.Phase = buildv1alpha2.Building })
 
 		_, err := r.checkBuild(ctx, artifactB)
 		Expect(err).ToNot(HaveOccurred())
@@ -127,8 +142,7 @@ var _ = Describe("OSArtifact children are scoped to the artifact namespace", fun
 		artifactB := newArtifact(nsB, []batchv1.JobSpec{exporter})
 		_, err := r.createPVC(ctx, artifactB)
 		Expect(err).ToNot(HaveOccurred())
-		artifactB.Status.Phase = buildv1alpha2.Exporting
-		Expect(k8sClient.Status().Update(ctx, artifactB)).To(Succeed())
+		setStatus(artifactB, func() { artifactB.Status.Phase = buildv1alpha2.Exporting })
 
 		_, err = r.checkExport(ctx, artifactB)
 		Expect(err).ToNot(HaveOccurred())
