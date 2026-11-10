@@ -26,11 +26,17 @@ import (
 // holding /etc/os-release contents. Also used as the SubPath when mounting.
 const configMapKeyOSRelease = "os-release"
 
+// configMapKeyKairosRelease is the data key in the OSArtifact-generated
+// ConfigMap holding /etc/kairos-release contents. Also used as the SubPath
+// when mounting.
+const configMapKeyKairosRelease = "kairos-release"
+
 func (r *OSArtifactReconciler) genConfigMap(artifact *buildv1alpha2.OSArtifact) *corev1.ConfigMap {
-	grubCfg, osRelease := "", ""
+	grubCfg, osRelease, kairosRelease := "", "", ""
 	if artifact.Spec.Artifacts != nil {
 		grubCfg = artifact.Spec.Artifacts.GRUBConfig
 		osRelease = artifact.Spec.Artifacts.OSRelease
+		kairosRelease = artifact.Spec.Artifacts.KairosRelease
 	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -38,7 +44,8 @@ func (r *OSArtifactReconciler) genConfigMap(artifact *buildv1alpha2.OSArtifact) 
 			Namespace: artifact.Namespace,
 		},
 		Data: map[string]string{
-			"grub.cfg":            grubCfg,
-			configMapKeyOSRelease: osRelease,
+			"grub.cfg":                grubCfg,
+			configMapKeyOSRelease:     osRelease,
+			configMapKeyKairosRelease: kairosRelease,
 		}}
 }
