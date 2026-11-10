@@ -128,11 +128,30 @@ func (r *OSArtifactReconciler) CreateConfigMap(ctx context.Context, artifact *bu
 	if err := controllerutil.SetOwnerReference(artifact, cm, r.Scheme); err != nil {
 		return err
 	}
-	if err := r.Create(ctx, cm); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := r.Create(ctx, cm); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &corev1.ConfigMap{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cm), existing); err != nil {
+			return err
+		}
+		if !ownedByArtifact(existing, artifact) {
+			return fmt.Errorf("configmap %q already exists and is not owned by this OSArtifact (uid=%s); refusing to use it", cm.Name, artifact.UID)
+		}
 	}
 
 	return nil
+}
+
+// ownedByArtifact reports whether obj carries an owner reference to the given OSArtifact.
+func ownedByArtifact(obj metav1.Object, artifact *buildv1alpha2.OSArtifact) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == artifact.UID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *OSArtifactReconciler) createPVC(ctx context.Context,
@@ -151,6 +170,9 @@ func (r *OSArtifactReconciler) createPVC(ctx context.Context,
 			existingPVC := &corev1.PersistentVolumeClaim{}
 			if err := r.Get(ctx, client.ObjectKeyFromObject(pvc), existingPVC); err != nil {
 				return pvc, err
+			}
+			if !ownedByArtifact(existingPVC, artifact) {
+				return pvc, fmt.Errorf("persistentvolumeclaim %q already exists and is not owned by this OSArtifact (uid=%s); refusing to use it", pvc.Name, artifact.UID)
 			}
 			return existingPVC, nil
 		}
