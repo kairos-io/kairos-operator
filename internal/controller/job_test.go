@@ -1245,6 +1245,48 @@ var _ = Describe("volumeForExportArtifacts", func() {
 	})
 })
 
+var _ = Describe("checkCloudConfigRef", func() {
+	newArtifact := func(ref *buildv1alpha2.SecretKeySelector) *buildv1alpha2.OSArtifact {
+		return &buildv1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-artifact", Namespace: "default"},
+			Spec: buildv1alpha2.OSArtifactSpec{
+				Artifacts: &buildv1alpha2.ArtifactSpec{ISO: true, CloudConfigRef: ref},
+			},
+		}
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cc", Namespace: "default"},
+		Data:       map[string][]byte{"userdata": []byte("#cloud-config\n")},
+	}
+
+	It("returns nil when cloudConfigRef is not set", func() {
+		r := &OSArtifactReconciler{Client: fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()}
+		Expect(r.checkCloudConfigRef(context.Background(), newArtifact(nil))).To(Succeed())
+	})
+
+	It("returns nil when the Secret holds the key", func() {
+		r := &OSArtifactReconciler{Client: fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(secret.DeepCopy()).Build()}
+		ref := &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "userdata"}
+		Expect(r.checkCloudConfigRef(context.Background(), newArtifact(ref))).To(Succeed())
+	})
+
+	It("returns an error naming the Secret when it does not exist", func() {
+		r := &OSArtifactReconciler{Client: fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()}
+		ref := &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "userdata"}
+		err := r.checkCloudConfigRef(context.Background(), newArtifact(ref))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`cloud config secret "cc"`))
+	})
+
+	It("returns an error naming the key when the Secret lacks it", func() {
+		r := &OSArtifactReconciler{Client: fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(secret.DeepCopy()).Build()}
+		ref := &buildv1alpha2.SecretKeySelector{Name: "cc", Key: "cloud-config.yaml"}
+		err := r.checkCloudConfigRef(context.Background(), newArtifact(ref))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`key "cloud-config.yaml" not found in cloud config secret "cc"`))
+	})
+})
+
 var _ = Describe("unpackContainer", func() {
 	It("does not add --allow-insecure-registries when insecure is false", func() {
 		c := unpackContainer("0", "auroraboot:test", "localhost:5000/bundle:latest", "amd64", false)

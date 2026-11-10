@@ -543,6 +543,10 @@ func (s *OSArtifactSpec) validateArtifactSpec(volumeNames map[string]bool) error
 		return err
 	}
 
+	if err := validateCloudConfigRef(a.CloudConfigRef); err != nil {
+		return err
+	}
+
 	if err := validateArtifactAliasing(s, a); err != nil {
 		return err
 	}
@@ -572,6 +576,22 @@ func validateArtifactVolumeRefs(a *ArtifactSpec, volumeNames map[string]bool) er
 		if ref.name != "" && !volumeNames[ref.name] {
 			return fmt.Errorf("%s references volume %q which is not defined in spec.volumes", ref.field, ref.name)
 		}
+	}
+	return nil
+}
+
+// validateCloudConfigRef requires both fields of cloudConfigRef. The Secret is
+// mounted with subPath set to the key, so an empty key mounts the whole Secret
+// as a directory and the build fails late with an unrelated AuroraBoot error.
+func validateCloudConfigRef(ref *SecretKeySelector) error {
+	if ref == nil {
+		return nil
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("spec.artifacts.cloudConfigRef.name is required")
+	}
+	if ref.Key == "" {
+		return fmt.Errorf("spec.artifacts.cloudConfigRef.key is required: name the key of Secret %q that holds the cloud config", ref.Name)
 	}
 	return nil
 }
