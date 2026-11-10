@@ -15,8 +15,12 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Render a Namespace object for the release namespace. Off by default: install
+# with `--namespace <ns> --create-namespace`, since Helm 3 fails when the chart
+# creates the namespace Helm already created. Turn it on to render the
+# namespace yourself, e.g. with `helm template ... | kubectl apply -f -`.
 namespace:
-  create: true
+  create: false
 
 serviceAccount:
   name: kairos-operator
