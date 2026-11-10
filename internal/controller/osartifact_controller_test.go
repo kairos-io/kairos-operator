@@ -1039,7 +1039,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 
 				var pods corev1.PodList
 				Expect(r.List(context.TODO(), &pods, &client.ListOptions{
-					LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifact.Name}),
+					LabelSelector: labels.SelectorFromSet(labels.Set{artifactLabel: artifactLabelValue(artifact)}),
 				})).To(Succeed())
 				Expect(pods.Items).ToNot(BeEmpty())
 				buildah := findInitContainerByName(&pods.Items[0], "buildah-build")
@@ -1070,7 +1070,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				var pvcs corev1.PersistentVolumeClaimList
 				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
 					LabelSelector: labels.SelectorFromSet(labels.Set{
-						artifactLabel: artifact.Name,
+						artifactLabel: artifactLabelValue(artifact),
 					}),
 				})).To(Succeed())
 				Expect(pvcs.Items).To(BeEmpty())
@@ -1096,7 +1096,7 @@ var _ = Describe("OSArtifactReconciler", func() {
 				var pvcs corev1.PersistentVolumeClaimList
 				Expect(r.List(context.TODO(), &pvcs, &client.ListOptions{
 					LabelSelector: labels.SelectorFromSet(labels.Set{
-						artifactLabel: artifact.Name,
+						artifactLabel: artifactLabelValue(artifact),
 					}),
 				})).To(Succeed())
 				Expect(pvcs.Items).To(BeEmpty())
