@@ -4697,6 +4697,21 @@ var _ = Describe("NodeOp Controller - Resources", func() {
 		})
 	})
 
+	When("spec.imagePullSecrets is set", func() {
+		It("puts the secrets on the reboot Pod", func() {
+			secrets := []corev1.LocalObjectReference{{Name: "private-registry"}}
+			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
+				Command: []string{
+					"echo",
+					"test",
+				},
+				RebootOnSuccess:  asBool(true),
+				ImagePullSecrets: secrets,
+			})
+			Expect(rebootPod.Spec.ImagePullSecrets).To(Equal(secrets))
+		})
+	})
+
 	When("spec.rebootResources", func() {
 		It("applies the built-in default when unset", func() {
 			rebootPod := getRebootPod(kairosiov1alpha1.NodeOpSpec{
