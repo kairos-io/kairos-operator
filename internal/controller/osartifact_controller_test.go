@@ -1215,6 +1215,55 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
+		When("a Secret with template values is referenced with a key", func() {
+			BeforeEach(func() {
+				_, err := clientset.CoreV1().Secrets(namespace).Create(context.TODO(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      valuesSecretName,
+							Namespace: namespace,
+						},
+						StringData: map[string]string{
+							"BaseImage":  "opensuse/leap:15.6",
+							"InstallCmd": "zypper install -y curl",
+						},
+						Type: "Opaque",
+					}, metav1.CreateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("only uses the selected Secret entry as a template value", func() {
+				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+					Name: valuesSecretName,
+					Key:  "BaseImage",
+				}
+
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
+				Expect(err).ToNot(HaveOccurred())
+
+				renderedSecret, err := clientset.CoreV1().Secrets(namespace).Get(
+					context.TODO(), renderedSecretName, metav1.GetOptions{},
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				rendered := string(renderedSecret.Data[OCISpecSecretKey])
+				Expect(rendered).To(Equal("FROM opensuse/leap:15.6\nRUN \n"))
+			})
+
+			It("returns an error when the selected key is missing", func() {
+				artifact.Spec.Image.OCISpec.TemplateValuesFrom = &buildv1alpha2.SecretKeySelector{
+					Name: valuesSecretName,
+					Key:  "Missing",
+				}
+
+				err := r.resolveFinalOCISpec(context.TODO(), artifact)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring(
+					fmt.Sprintf("key %q not found in template values secret %q", "Missing", valuesSecretName),
+				))
+			})
+		})
+
 		When("inline template values are provided", func() {
 			BeforeEach(func() {
 				artifact.Spec.Image.OCISpec.TemplateValues = map[string]string{
