@@ -102,6 +102,11 @@ var _ = Describe("NodeLabeler Controller", func() {
 			Expect(foundJob.Labels).To(HaveKeyWithValue("app", "kairos-node-labeler"))
 			Expect(foundJob.Labels).To(HaveKeyWithValue("node", nodeName))
 
+			// Verify the pod tolerates every taint so tainted nodes still get labeled
+			Expect(foundJob.Spec.Template.Spec.Tolerations).To(ContainElement(corev1.Toleration{
+				Operator: corev1.TolerationOpExists,
+			}))
+
 			// Verify Job has correct container configuration
 			Expect(foundJob.Spec.Template.Spec.Containers).To(HaveLen(1))
 			container := foundJob.Spec.Template.Spec.Containers[0]

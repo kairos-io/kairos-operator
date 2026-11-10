@@ -106,6 +106,9 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 				Spec: corev1.PodSpec{
 					NodeName:           node.Name,
 					ServiceAccountName: nodeLabelerServiceAccount,
+					Tolerations: []corev1.Toleration{
+						{Operator: corev1.TolerationOpExists},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:            "node-labeler",
