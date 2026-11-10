@@ -241,16 +241,24 @@ func (r *OSArtifactReconciler) fetchAndRenderUserOCISpec(ctx context.Context, ar
 		return "", fmt.Errorf("key %q not found in secret %q", key, secret.Name)
 	}
 	values := map[string]string{}
-	if artifact.Spec.Image.OCISpec.TemplateValuesFrom != nil {
+	if valuesFrom := artifact.Spec.Image.OCISpec.TemplateValuesFrom; valuesFrom != nil {
 		valuesSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
-			Name:      artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name,
+			Name:      valuesFrom.Name,
 			Namespace: artifact.Namespace,
 		}, valuesSecret); err != nil {
-			return "", fmt.Errorf("failed to fetch template values Secret %q: %w", artifact.Spec.Image.OCISpec.TemplateValuesFrom.Name, err)
+			return "", fmt.Errorf("failed to fetch template values Secret %q: %w", valuesFrom.Name, err)
 		}
-		for k, v := range valuesSecret.Data {
-			values[k] = string(v)
+		if valuesFrom.Key != "" {
+			v, ok := valuesSecret.Data[valuesFrom.Key]
+			if !ok {
+				return "", fmt.Errorf("key %q not found in template values secret %q", valuesFrom.Key, valuesSecret.Name)
+			}
+			values[valuesFrom.Key] = string(v)
+		} else {
+			for k, v := range valuesSecret.Data {
+				values[k] = string(v)
+			}
 		}
 	}
 	for k, v := range artifact.Spec.Image.OCISpec.TemplateValues {
