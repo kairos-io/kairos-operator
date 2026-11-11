@@ -811,6 +811,53 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(updatedNodeOpUpgrade.Status.NodeStatuses["test-node"].Phase).To(Equal("Running"))
 		})
 
+		It("should drop node statuses the NodeOp no longer reports", func() {
+			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+			controllerReconciler := &NodeOpUpgradeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nodeOpUpgradeName,
+					Namespace: "default",
+				},
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Reporting two nodes on the NodeOp")
+			nodeOp := &kairosiov1alpha1.NodeOp{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, nodeOp)).To(Succeed())
+			nodeOp.Status.Phase = "Running"
+			nodeOp.Status.NodeStatuses = map[string]kairosiov1alpha1.NodeStatus{
+				"node-a": {Phase: "Running", JobName: "job-a"},
+				"node-b": {Phase: "Running", JobName: "job-b"},
+			}
+			Expect(k8sClient.Status().Update(ctx, nodeOp)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &kairosiov1alpha1.NodeOpUpgrade{}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.NodeStatuses).To(HaveLen(2))
+
+			By("Removing node-b from the NodeOp status")
+			Expect(k8sClient.Get(ctx, req.NamespacedName, nodeOp)).To(Succeed())
+			delete(nodeOp.Status.NodeStatuses, "node-b")
+			Expect(k8sClient.Status().Update(ctx, nodeOp)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.NodeStatuses).To(HaveKey("node-a"))
+			Expect(updated.Status.NodeStatuses).NotTo(HaveKey("node-b"))
+		})
+
 		It("should not create a new NodeOp if one already exists", func() {
 			By("Creating the NodeOpUpgrade resource")
 			Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
