@@ -66,7 +66,7 @@ func (r *NodeLabelerReconciler) jobExists(ctx context.Context, namespace string,
 	if err := r.List(ctx, jobList,
 		client.InNamespace(namespace),
 		client.MatchingLabels(map[string]string{
-			labelKeyJobNode: nodeName,
+			labelKeyJobNode: utils.TruncateLabelValue(nodeName),
 			labelKeyApp:     labelValueNodeLabelerApp,
 		}),
 	); err != nil {
@@ -92,8 +92,11 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 			Name:      jobName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				labelKeyApp:     labelValueNodeLabelerApp,
-				labelKeyJobNode: node.Name,
+				labelKeyApp: labelValueNodeLabelerApp,
+				// A node name may be up to 253 characters, a label value only
+				// 63, so the same truncation the Job name gets is applied here.
+				// jobExists selects on the truncated value too.
+				labelKeyJobNode: utils.TruncateLabelValue(node.Name),
 			},
 		},
 		Spec: batchv1.JobSpec{
