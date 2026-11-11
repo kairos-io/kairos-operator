@@ -390,6 +390,13 @@ func (r *NodeOpUpgradeReconciler) updateStatusFromNodeOp(ctx context.Context,
 		}
 	}
 
+	for nodeName := range nodeOpUpgrade.Status.NodeStatuses {
+		if _, exists := nodeOp.Status.NodeStatuses[nodeName]; !exists {
+			delete(nodeOpUpgrade.Status.NodeStatuses, nodeName)
+			statusChanged = true
+		}
+	}
+
 	// Update message based on phase
 	newMessage := ""
 	switch nodeOp.Status.Phase {
