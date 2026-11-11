@@ -196,13 +196,14 @@ undeploy-dev: kustomize ## Undeploy controller from the K8s cluster specified in
 ##@ Testing with Kind
 
 .PHONY: kind-setup
-kind-setup: ## Create a kind cluster for testing
-	@if ! $(KIND) get clusters | grep -q "$(CLUSTER_NAME)"; then \
+kind-setup: ## Create a kind cluster for testing and select its kubectl context
+	@if ! $(KIND) get clusters | grep -qx "$(CLUSTER_NAME)"; then \
 		echo "Creating kind cluster $(CLUSTER_NAME)..."; \
 		$(KIND) create cluster --name $(CLUSTER_NAME) --config test/e2e/kind-2node.yaml || true; \
 	else \
 		echo "Kind cluster $(CLUSTER_NAME) already exists"; \
 	fi
+	$(KIND) export kubeconfig --name $(CLUSTER_NAME)
 	$(MAKE) kind-setup-image
 
 .PHONY: kind-setup-image
