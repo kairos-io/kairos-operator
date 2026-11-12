@@ -84,9 +84,11 @@ type NodeOpUpgradeSpec struct {
 	// /etc/resolv.conf, /etc/hosts and /etc/hostname that Kubernetes mounts
 	// into the upgrade container are never copied, so they need no entry here.
 	//
-	// Setting it requires kairos-agent v3.6.0+ in Spec.Image. Older kairos-agent
-	// versions do not recognize --exclude-path and the upgrade Job will fail
-	// with "unknown flag". Since Kairos is an atomic-upgrade OS, this only
+	// --exclude-path requires kairos-agent v3.6.0+ in Spec.Image. Older
+	// kairos-agent versions do not recognize it and the upgrade Job will fail
+	// with "unknown flag". The operator also passes it on its own when
+	// Spec.Image has no /etc/resolv.conf, /etc/hosts or /etc/hostname, or ships
+	// one of them empty. Since Kairos is an atomic-upgrade OS, this only
 	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`

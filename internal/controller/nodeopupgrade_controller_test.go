@@ -311,7 +311,15 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 	// files, so kairos-agent reads from a plain (non-recursive) bind mount of
 	// the container's root, which shows the root filesystem without anything
 	// mounted on top of it. These tests run the real script with `mount` and
-	// `kairos-agent` stubbed on PATH.
+	// `kairos-agent` stubbed on PATH. The `mount --bind` stub fills the bind
+	// point with the given image files, standing in for the image's root.
+
+	// fullImage ships all three files Kubernetes mounts over.
+	fullImage := map[string]string{
+		"etc/resolv.conf": "nameserver 192.0.2.53\n",
+		"etc/hosts":       "127.0.0.1 localhost\n",
+		"etc/hostname":    "image-host\n",
+	}
 
 	type run struct {
 		output    string
@@ -320,14 +328,22 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 		bindPoint string
 	}
 
-	runScript := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, bindExit int) run {
+	runScriptWithImage := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, image map[string]string, bindExit int) run {
 		tmpDir := GinkgoT().TempDir()
+		imageDir := filepath.Join(tmpDir, "image")
+		Expect(os.MkdirAll(imageDir, 0o755)).To(Succeed())
+		for rel, content := range image {
+			p := filepath.Join(imageDir, rel)
+			Expect(os.MkdirAll(filepath.Dir(p), 0o755)).To(Succeed())
+			Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
+		}
 		binDir := filepath.Join(tmpDir, "bin")
 		Expect(os.MkdirAll(binDir, 0o755)).To(Succeed())
 		callLog := filepath.Join(tmpDir, "calls")
 		Expect(os.WriteFile(filepath.Join(binDir, "mount"), []byte(fmt.Sprintf(
-			"#!/bin/sh\necho \"mount $*\" >> \"%s\"\n[ \"$1\" = --bind ] && exit %d\nexit 0\n",
-			callLog, bindExit,
+			"#!/bin/sh\necho \"mount $*\" >> \"%s\"\n"+
+				"if [ \"$1\" = --bind ]; then [ %d -eq 0 ] || exit %d; cp -a \"%s/.\" \"$3\"; fi\nexit 0\n",
+			callLog, bindExit, bindExit, imageDir,
 		)), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(binDir, "kairos-agent"), []byte(fmt.Sprintf(
 			"#!/bin/sh\necho \"kairos-agent $*\" >> \"%s\"\n", callLog,
@@ -358,6 +374,10 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 			}
 		}
 		return r
+	}
+
+	runScript := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, bindExit int) run {
+		return runScriptWithImage(spec, fullImage, bindExit)
 	}
 
 	agentCalls := func(calls []string) []string {
@@ -410,6 +430,60 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 		Expect(agents).To(HaveLen(2), "calls: %v", r.calls)
 		Expect(agents[0]).To(MatchRegexp(`--recovery --source dir:` + regexp.QuoteMeta(r.bindPoint) + `( |$)`))
 		Expect(agents[1]).To(MatchRegexp(`--source dir:` + regexp.QuoteMeta(r.bindPoint) + `( |$)`))
+	})
+
+	// When the image lacks one of these files, the container runtime creates
+	// an empty file in the container's writable layer to mount the pod's copy
+	// onto, and the bind mount shows that empty file. Copying it would leave
+	// an empty file where a fresh install has none, which would stop systemd's
+	// tmpfiles from creating the /etc/resolv.conf symlink at boot on images
+	// that rely on it.
+	It("copies all three files when the image ships them with content", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).NotTo(ContainSubstring("--exclude-path"))
+	})
+
+	It("leaves out a file that is empty in the image view", func() {
+		image := map[string]string{
+			"etc/resolv.conf": "",
+			"etc/hosts":       fullImage["etc/hosts"],
+			"etc/hostname":    fullImage["etc/hostname"],
+		}
+		r := runScriptWithImage(kairosiov1alpha1.NodeOpUpgradeSpec{}, image, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).To(HaveSuffix(" --exclude-path /etc/resolv.conf"))
+	})
+
+	It("leaves out all three files when the image has none of them", func() {
+		r := runScriptWithImage(kairosiov1alpha1.NodeOpUpgradeSpec{}, map[string]string{}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).To(HaveSuffix(
+			" --exclude-path /etc/resolv.conf --exclude-path /etc/hosts --exclude-path /etc/hostname"))
+	})
+
+	It("puts user ExcludePaths after the automatic ones, on every invocation", func() {
+		r := runScriptWithImage(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeActive:   asBool(true),
+			UpgradeRecovery: asBool(true),
+			ExcludePaths:    []string{"/opt/keep"},
+		}, map[string]string{"etc/hosts": "x\n", "etc/hostname": "y\n"}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(2), "calls: %v", r.calls)
+		for _, a := range agents {
+			Expect(a).To(HaveSuffix(" --exclude-path /etc/resolv.conf --exclude-path /opt/keep"))
+		}
 	})
 
 	It("does not run kairos-agent when the bind mount fails", func() {
@@ -1411,9 +1485,11 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 		})
 
 		Context("--exclude-path propagation", func() {
-			// The upgrade copies the image's own root filesystem, without the
-			// files Kubernetes mounts into the pod, so the operator adds no
-			// exclusions of its own. Spec.ExcludePaths is passed through as is.
+			// Spec.ExcludePaths is passed through as is, after the
+			// automatic exclusions the script works out at run time (see
+			// the "generateUpgradeCommand upgrade source" tests). These tests
+			// check the generated script text, so only the user's paths
+			// appear here as literal --exclude-path flags.
 
 			const activeSource = "--source \"dir:${UPGRADE_ROOTFS}\""
 			const recoverySource = "--recovery --source \"dir:${UPGRADE_ROOTFS}\""
@@ -1437,7 +1513,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				}
 			}
 
-			It("emits no --exclude-path when ExcludePaths is unset", func() {
+			It("emits no literal --exclude-path when ExcludePaths is unset", func() {
 				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
 				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
@@ -1448,7 +1524,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Expect(upgradeLine(nodeOp.Spec.Command[2], activeSource)).NotTo(ContainSubstring("--exclude-path"))
 			})
 
-			It("emits no --exclude-path when ExcludePaths is explicitly empty", func() {
+			It("emits no literal --exclude-path when ExcludePaths is explicitly empty", func() {
 				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
 				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 				nodeOpUpgrade.Spec.ExcludePaths = []string{}

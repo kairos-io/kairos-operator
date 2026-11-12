@@ -15,17 +15,23 @@ import (
 	"github.com/kairos-io/kairos-operator/test/utils"
 )
 
-// upgradeSourceImage is a stand-in for a Kairos image. It carries its own
-// /etc/hosts, /etc/hostname and /etc/resolv.conf with marker contents, and a
-// fake kairos-agent that writes a report of what it finds under its
-// `--source dir:<path>` onto the node, instead of installing anything.
+// The stand-in upgrade images are busybox plus a fake kairos-agent that
+// writes a report of what it finds under its `--source dir:<path>` onto the
+// node, instead of installing anything.
 //
-// /etc/resolv.conf is a regular file on purpose. When an image ships it as a
-// symlink, the container runtime follows the link and mounts the pod's file
-// at the link target under /run, which the upgrade script then hides by
-// mounting the host's /run over it, so a symlink would not show whether the
-// pod's file leaks into the upgrade.
-const upgradeSourceImage = "kairos-e2e-upgrade-source:e2e"
+// upgradeSourceImage carries its own /etc/hosts, /etc/hostname and
+// /etc/resolv.conf with marker contents. /etc/resolv.conf is a regular file
+// on purpose. When an image ships it as a symlink, the container runtime
+// follows the link and mounts the pod's file at the link target under /run,
+// which the upgrade script then hides by mounting the host's /run over it, so
+// a symlink would not show whether the pod's file leaks into the upgrade.
+//
+// upgradeSourceImageBare has none of the three files. Hadron images, for
+// example, ship no /etc/resolv.conf and get the symlink created at boot.
+const (
+	upgradeSourceImage     = "kairos-e2e-upgrade-source:e2e"
+	upgradeSourceImageBare = "kairos-e2e-upgrade-source-bare:e2e"
+)
 
 const (
 	imageHostsMarker    = "# hosts file from the upgrade image"
@@ -54,25 +60,29 @@ report=/host` + upgradeReportPath + `
 } > "${report}"
 `
 
-func buildUpgradeSourceImage() {
+func buildUpgradeSourceImage(tag string, withEtcFiles bool) {
 	ctxDir := GinkgoT().TempDir()
 	write := func(rel, content string, mode os.FileMode) {
 		p := filepath.Join(ctxDir, rel)
 		Expect(os.MkdirAll(filepath.Dir(p), 0o755)).To(Succeed())
 		Expect(os.WriteFile(p, []byte(content), mode)).To(Succeed())
 	}
-	write("rootfs/etc/hosts", imageHostsMarker+"\n127.0.0.1 localhost\n", 0o644)
-	write("rootfs/etc/hostname", imageHostnameMarker+"\n", 0o644)
-	write("rootfs/etc/resolv.conf", imageResolvMarker+"\nnameserver 192.0.2.53\n", 0o644)
+	if withEtcFiles {
+		write("rootfs/etc/hosts", imageHostsMarker+"\n127.0.0.1 localhost\n", 0o644)
+		write("rootfs/etc/hostname", imageHostnameMarker+"\n", 0o644)
+		write("rootfs/etc/resolv.conf", imageResolvMarker+"\nnameserver 192.0.2.53\n", 0o644)
+	}
 	write("rootfs/usr/bin/kairos-agent", fakeKairosAgent, 0o755)
-	// RUN steps see the build's own resolv.conf/hosts/hostname mounted over
-	// /etc, so the files go in with COPY. busybox has no /run, which the
-	// upgrade script mounts the host's /run onto, and every Kairos image has.
+	// busybox ships none of the three files, so the bare image needs no
+	// removal step. RUN steps see the build's own resolv.conf/hosts/hostname
+	// mounted over /etc, so the files go in with COPY. busybox has no /run,
+	// which the upgrade script mounts the host's /run onto, and every Kairos
+	// image has.
 	write("Dockerfile", "FROM busybox:latest\nRUN mkdir -p /run\nCOPY rootfs/ /\n", 0o644)
 
-	out, err := exec.Command("docker", "build", "-t", upgradeSourceImage, ctxDir).CombinedOutput()
+	out, err := exec.Command("docker", "build", "-t", tag, ctxDir).CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), string(out))
-	out, err = exec.Command("kind", "load", "docker-image", upgradeSourceImage, "--name", clusterName).CombinedOutput()
+	out, err = exec.Command("kind", "load", "docker-image", tag, "--name", clusterName).CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), string(out))
 }
 
@@ -90,7 +100,10 @@ func readUpgradeReport() map[string]string {
 }
 
 var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
-	const name = "e2e-upgrade-source"
+	const (
+		name     = "e2e-upgrade-source"
+		nameBare = "e2e-upgrade-source-bare"
+	)
 	var kairosNodeName string
 
 	BeforeAll(func() {
@@ -98,15 +111,15 @@ var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), string(out))
 		kairosNodeName = strings.TrimSpace(string(out))
 
-		By("building and loading the stand-in upgrade image")
-		buildUpgradeSourceImage()
+		By("building and loading the stand-in upgrade images")
+		buildUpgradeSourceImage(upgradeSourceImage, true)
+		buildUpgradeSourceImage(upgradeSourceImageBare, false)
 	})
 
-	AfterAll(func() {
+	AfterEach(func() {
 		if CurrentSpecReport().Failed() {
 			for _, args := range [][]string{
-				{"get", "nodeopupgrade", name, "-n", "default", "-o", "yaml"},
-				{"get", "nodeop", name, "-n", "default", "-o", "yaml"},
+				{"get", "nodeopupgrade,nodeop", "-n", "default", "-o", "yaml"},
 				{"get", "jobs,pods", "-n", "default", "-o", "wide"},
 				{"get", "events", "-n", "default", "--sort-by=.lastTimestamp"},
 			} {
@@ -119,18 +132,22 @@ var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "--- kubectl logs %s\n%s\n", pod, out)
 			}
 		}
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "nodeopupgrade", name, "-n", "default",
-			"--ignore-not-found=true", "--wait=true"))
+		for _, n := range []string{name, nameBare} {
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "nodeopupgrade", n, "-n", "default",
+				"--ignore-not-found=true", "--wait=true"))
+		}
 		_, _ = utils.Run(exec.Command("docker", "exec", kairosNode, "rm", "-f", upgradeReportPath))
 		_, _ = utils.Run(exec.Command("kubectl", "uncordon", kairosNodeName))
 	})
 
-	It("copies the image's own resolv.conf, hosts and hostname, not the pod's", func() {
+	// runUpgrade applies a recovery-only NodeOpUpgrade of image to the Kairos
+	// node, waits for it to complete and returns the fake agent's report.
+	// Recovery-only upgrades do not reboot the node, which a kind node cannot
+	// survive. Force skips the version check, since the stand-in images have
+	// no kairos-release.
+	runUpgrade := func(nodeOpUpgradeName, image string) map[string]string {
 		_, _ = utils.Run(exec.Command("docker", "exec", kairosNode, "rm", "-f", upgradeReportPath))
 
-		// Recovery-only upgrades do not reboot the node, which a kind node
-		// cannot survive. Force skips the version check, since the stand-in
-		// image has no kairos-release.
 		manifest := fmt.Sprintf(`apiVersion: operator.kairos.io/v1alpha1
 kind: NodeOpUpgrade
 metadata:
@@ -144,7 +161,7 @@ spec:
   nodeSelector:
     matchLabels:
       kubernetes.io/hostname: %s
-`, name, upgradeSourceImage, kairosNodeName)
+`, nodeOpUpgradeName, image, kairosNodeName)
 
 		By("applying the NodeOpUpgrade")
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
@@ -154,7 +171,7 @@ spec:
 
 		By("waiting for the NodeOpUpgrade to complete")
 		Eventually(func(g Gomega) {
-			out, err := exec.Command("kubectl", "get", "nodeopupgrade", name, "-n", "default",
+			out, err := exec.Command("kubectl", "get", "nodeopupgrade", nodeOpUpgradeName, "-n", "default",
 				"-o", "json").CombinedOutput()
 			g.Expect(err).NotTo(HaveOccurred(), string(out))
 			var s struct {
@@ -171,11 +188,16 @@ spec:
 
 		report := readUpgradeReport()
 		By(fmt.Sprintf("checking the upgrade source (report: %v)", report))
-
 		Expect(report["args"]).To(HavePrefix("upgrade --recovery --source dir:"))
 		Expect(report["source"]).NotTo(BeEmpty())
 		Expect(report["source"]).NotTo(Equal("/"))
+		return report
+	}
 
+	It("copies the image's own resolv.conf, hosts and hostname, not the pod's", func() {
+		report := runUpgrade(name, upgradeSourceImage)
+
+		Expect(report["args"]).NotTo(ContainSubstring("--exclude-path"))
 		Expect(report["resolv"]).To(HavePrefix(imageResolvMarker),
 			"the source must hold the image's resolv.conf, not the pod's")
 		Expect(report["hosts"]).To(HavePrefix(imageHostsMarker))
@@ -186,5 +208,18 @@ spec:
 
 		By("checking that the upgrade container itself kept the cluster DNS settings")
 		Expect(report["pod_resolv"]).To(ContainSubstring("svc.cluster.local"))
+	})
+
+	It("leaves out the empty files the runtime creates when the image has none", func() {
+		report := runUpgrade(nameBare, upgradeSourceImageBare)
+
+		By("checking the source shows the runtime's empty placeholders, not the pod's files")
+		Expect(report["resolv"]).To(BeEmpty())
+		Expect(report["hosts"]).To(BeEmpty())
+		Expect(report["hostname"]).To(BeEmpty())
+
+		By("checking all three are passed to kairos-agent as exclusions")
+		Expect(report["args"]).To(HaveSuffix(
+			" --exclude-path /etc/resolv.conf --exclude-path /etc/hosts --exclude-path /etc/hostname"))
 	})
 })
