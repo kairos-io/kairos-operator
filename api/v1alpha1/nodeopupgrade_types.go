@@ -75,17 +75,16 @@ type NodeOpUpgradeSpec struct {
 	// +optional
 	UncordonOnFailure *bool `json:"uncordonOnFailure,omitempty"`
 
-	// ExcludePaths is an optional list of additional paths passed to
-	// `kairos-agent upgrade` as `--exclude-path` arguments, so those paths on
-	// the host are preserved during the upgrade rsync.
+	// ExcludePaths is an optional list of paths passed to
+	// `kairos-agent upgrade` as `--exclude-path` arguments. kairos-agent
+	// builds the new system image from scratch and leaves these paths of
+	// Spec.Image out of it; it does not carry the host's current files over.
 	//
-	// The operator always excludes /etc/hostname and /etc/hosts (emitted
-	// before any paths listed here), because the pod's copies of those files
-	// are injected by Kubernetes and would overwrite the node's real ones.
-	// To overwrite them intentionally, author a manual NodeOp with an OCI
-	// source instead.
+	// The upgrade copies the image's own files. The pod-specific
+	// /etc/resolv.conf, /etc/hosts and /etc/hostname that Kubernetes mounts
+	// into the upgrade container are never copied, so they need no entry here.
 	//
-	// Requires kairos-agent v3.6.0+ in Spec.Image. Older kairos-agent
+	// Setting it requires kairos-agent v3.6.0+ in Spec.Image. Older kairos-agent
 	// versions do not recognize --exclude-path and the upgrade Job will fail
 	// with "unknown flag". Since Kairos is an atomic-upgrade OS, this only
 	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.

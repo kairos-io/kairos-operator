@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -195,6 +196,7 @@ var _ = Describe("generateUpgradeCommand version gate", func() {
 		cmd.Env = append(
 			os.Environ(),
 			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TMPDIR="+tmpDir,
 			"TARGET_KAIROS_RELEASE="+writeMaybe("target-kairos", f.targetKairos),
 			"TARGET_OS_RELEASE="+writeMaybe("target-os", f.targetOS),
 			"HOST_KAIROS_RELEASE="+writeMaybe("host-kairos", f.hostKairos),
@@ -300,6 +302,120 @@ ID=generic
 		}, gateFiles{targetKairos: gateMatching, hostKairos: gateMatching})
 		Expect(r.saidUpToDate).To(BeFalse(), r.output)
 		Expect(r.ranUpgrade).To(BeTrue(), r.output)
+	})
+})
+
+var _ = Describe("generateUpgradeCommand upgrade source", func() {
+	// Kubernetes mounts pod-specific files over the image's /etc/resolv.conf,
+	// /etc/hosts and /etc/hostname. The upgrade must copy the image's own
+	// files, so kairos-agent reads from a plain (non-recursive) bind mount of
+	// the container's root, which shows the root filesystem without anything
+	// mounted on top of it. These tests run the real script with `mount` and
+	// `kairos-agent` stubbed on PATH.
+
+	type run struct {
+		output    string
+		err       error
+		calls     []string
+		bindPoint string
+	}
+
+	runScript := func(spec kairosiov1alpha1.NodeOpUpgradeSpec, bindExit int) run {
+		tmpDir := GinkgoT().TempDir()
+		binDir := filepath.Join(tmpDir, "bin")
+		Expect(os.MkdirAll(binDir, 0o755)).To(Succeed())
+		callLog := filepath.Join(tmpDir, "calls")
+		Expect(os.WriteFile(filepath.Join(binDir, "mount"), []byte(fmt.Sprintf(
+			"#!/bin/sh\necho \"mount $*\" >> \"%s\"\n[ \"$1\" = --bind ] && exit %d\nexit 0\n",
+			callLog, bindExit,
+		)), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(binDir, "kairos-agent"), []byte(fmt.Sprintf(
+			"#!/bin/sh\necho \"kairos-agent $*\" >> \"%s\"\n", callLog,
+		)), 0o755)).To(Succeed())
+
+		spec.Force = asBool(true)
+		reconciler := &NodeOpUpgradeReconciler{}
+		command := reconciler.generateUpgradeCommand(&kairosiov1alpha1.NodeOpUpgrade{Spec: spec})
+		Expect(command).To(HaveLen(3))
+
+		tmpRoot := filepath.Join(tmpDir, "tmp")
+		Expect(os.MkdirAll(tmpRoot, 0o755)).To(Succeed())
+		cmd := exec.Command(command[0], command[1], command[2])
+		cmd.Env = append(
+			os.Environ(),
+			"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"TMPDIR="+tmpRoot,
+		)
+		out, err := cmd.CombinedOutput()
+
+		r := run{output: string(out), err: err}
+		if data, readErr := os.ReadFile(callLog); readErr == nil {
+			r.calls = strings.Split(strings.TrimSpace(string(data)), "\n")
+		}
+		for _, c := range r.calls {
+			if rest, ok := strings.CutPrefix(c, "mount --bind / "); ok {
+				r.bindPoint = rest
+			}
+		}
+		return r
+	}
+
+	agentCalls := func(calls []string) []string {
+		var out []string
+		for _, c := range calls {
+			if strings.HasPrefix(c, "kairos-agent ") {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+
+	It("copies from a non-recursive bind mount of / instead of from / itself", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		Expect(r.bindPoint).NotTo(BeEmpty(), "expected `mount --bind / <dir>`, calls: %v", r.calls)
+		Expect(r.calls).NotTo(ContainElement(HavePrefix("mount --rbind / ")))
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).To(MatchRegexp(`--source dir:` + regexp.QuoteMeta(r.bindPoint) + `( |$)`))
+	})
+
+	It("binds / before running kairos-agent", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		bindIdx, agentIdx := -1, -1
+		for i, c := range r.calls {
+			if strings.HasPrefix(c, "mount --bind / ") && bindIdx < 0 {
+				bindIdx = i
+			}
+			if strings.HasPrefix(c, "kairos-agent ") && agentIdx < 0 {
+				agentIdx = i
+			}
+		}
+		Expect(bindIdx).To(BeNumerically(">=", 0), "calls: %v", r.calls)
+		Expect(agentIdx).To(BeNumerically(">", bindIdx), "calls: %v", r.calls)
+	})
+
+	It("uses the bind mount for both invocations when upgrading both partitions", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{
+			UpgradeActive:   asBool(true),
+			UpgradeRecovery: asBool(true),
+		}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(2), "calls: %v", r.calls)
+		Expect(agents[0]).To(MatchRegexp(`--recovery --source dir:` + regexp.QuoteMeta(r.bindPoint) + `( |$)`))
+		Expect(agents[1]).To(MatchRegexp(`--source dir:` + regexp.QuoteMeta(r.bindPoint) + `( |$)`))
+	})
+
+	It("does not run kairos-agent when the bind mount fails", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, 1)
+		Expect(r.err).To(HaveOccurred(), r.output)
+		Expect(agentCalls(r.calls)).To(BeEmpty(), "calls: %v", r.calls)
 	})
 })
 
@@ -604,7 +720,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			Expect(nodeOp.Spec.Command[1]).To(Equal("-c"))
 
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source \"dir:${UPGRADE_ROOTFS}\""))
 			Expect(script).To(ContainSubstring("get_version()"))
 			Expect(script).To(ContainSubstring("mount --rbind"))
 			Expect(script).NotTo(ContainSubstring("--recovery"))
@@ -641,7 +757,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			}, nodeOp)).To(Succeed())
 
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source \"dir:${UPGRADE_ROOTFS}\""))
 		})
 
 		It("should generate correct upgrade command for both partitions", func() {
@@ -659,9 +775,9 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 			By("Verifying the generated command")
 			script := nodeOp.Spec.Command[2]
 			Expect(script).To(ContainSubstring("# Upgrade recovery partition"))
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --recovery --source \"dir:${UPGRADE_ROOTFS}\""))
 			Expect(script).To(ContainSubstring("# Upgrade active partition"))
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source \"dir:${UPGRADE_ROOTFS}\""))
 		})
 
 		It("should generate correct upgrade command with force enabled", func() {
@@ -698,7 +814,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command uses the global --debug flag")
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source \"dir:${UPGRADE_ROOTFS}\""))
 		})
 
 		It("should generate recovery upgrade command with --debug when debug is enabled", func() {
@@ -715,7 +831,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command uses the global --debug flag")
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source \"dir:${UPGRADE_ROOTFS}\""))
 		})
 
 		It("should generate both-partition upgrade command with --debug on each invocation", func() {
@@ -732,8 +848,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command uses the global --debug flag on both invocations")
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source dir:/"))
-			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --recovery --source \"dir:${UPGRADE_ROOTFS}\""))
+			Expect(script).To(ContainSubstring("kairos-agent --debug upgrade --source \"dir:${UPGRADE_ROOTFS}\""))
 		})
 
 		It("should not add --debug to the upgrade command when debug is unset", func() {
@@ -749,7 +865,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 
 			By("Verifying the generated command does not include --debug")
 			script := nodeOp.Spec.Command[2]
-			Expect(script).To(ContainSubstring("kairos-agent upgrade --source dir:/"))
+			Expect(script).To(ContainSubstring("kairos-agent upgrade --source \"dir:${UPGRADE_ROOTFS}\""))
 			Expect(script).NotTo(ContainSubstring("--debug"))
 		})
 
@@ -1295,14 +1411,14 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 		})
 
 		Context("--exclude-path propagation", func() {
-			// The always-excluded paths are a hard invariant of the `dir:/` flow:
-			// kubernetes injects a pod-specific /etc/hostname and /etc/hosts into
-			// every pod, and rsyncing those onto the host breaks the node's
-			// identity after reboot. The user's ExcludePaths is purely additive.
+			// The upgrade copies the image's own root filesystem, without the
+			// files Kubernetes mounts into the pod, so the operator adds no
+			// exclusions of its own. Spec.ExcludePaths is passed through as is.
 
-			safeDefaults := []string{"/etc/hostname", "/etc/hosts"}
+			const activeSource = "--source \"dir:${UPGRADE_ROOTFS}\""
+			const recoverySource = "--recovery --source \"dir:${UPGRADE_ROOTFS}\""
 
-			expectExcludesAfter := func(script, sourceFlag string, expectedPaths []string) {
+			upgradeLine := func(script, sourceFlag string) string {
 				needle := "kairos-agent upgrade " + sourceFlag
 				idx := strings.Index(script, needle)
 				Expect(idx).To(BeNumerically(">=", 0), "expected to find %q in script", needle)
@@ -1310,13 +1426,18 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				if nl := strings.IndexByte(line, '\n'); nl >= 0 {
 					line = line[:nl]
 				}
+				return line
+			}
+
+			expectExcludesAfter := func(script, sourceFlag string, expectedPaths []string) {
+				line := upgradeLine(script, sourceFlag)
 				for _, p := range expectedPaths {
 					Expect(line).To(ContainSubstring("--exclude-path '"+p+"'"),
 						"line was: %s", line)
 				}
 			}
 
-			It("emits the safe defaults on the active-only upgrade even when ExcludePaths is unset", func() {
+			It("emits no --exclude-path when ExcludePaths is unset", func() {
 				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
 				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
@@ -1324,29 +1445,10 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
 				Expect(err).NotTo(HaveOccurred())
 
-				expectExcludesAfter(nodeOp.Spec.Command[2], "--source dir:/", safeDefaults)
+				Expect(upgradeLine(nodeOp.Spec.Command[2], activeSource)).NotTo(ContainSubstring("--exclude-path"))
 			})
 
-			It("appends user-configured ExcludePaths after the safe defaults", func() {
-				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
-				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
-				nodeOpUpgrade.Spec.ExcludePaths = []string{"/var/lib/mystuff", "/opt/keep"}
-				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
-
-				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
-				Expect(err).NotTo(HaveOccurred())
-
-				script := nodeOp.Spec.Command[2]
-				expectExcludesAfter(script, "--source dir:/",
-					append(append([]string{}, safeDefaults...), "/var/lib/mystuff", "/opt/keep"))
-
-				By("preserving the order: safe defaults first, then user paths")
-				hostnameIdx := strings.Index(script, "--exclude-path '"+safeDefaults[0]+"'")
-				userIdx := strings.Index(script, "--exclude-path '/var/lib/mystuff'")
-				Expect(hostnameIdx).To(BeNumerically("<", userIdx))
-			})
-
-			It("still emits the safe defaults when ExcludePaths is explicitly empty", func() {
+			It("emits no --exclude-path when ExcludePaths is explicitly empty", func() {
 				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
 				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
 				nodeOpUpgrade.Spec.ExcludePaths = []string{}
@@ -1355,7 +1457,20 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
 				Expect(err).NotTo(HaveOccurred())
 
-				expectExcludesAfter(nodeOp.Spec.Command[2], "--source dir:/", safeDefaults)
+				Expect(upgradeLine(nodeOp.Spec.Command[2], activeSource)).NotTo(ContainSubstring("--exclude-path"))
+			})
+
+			It("emits user-configured ExcludePaths in order", func() {
+				nodeOpUpgrade.Spec.UpgradeActive = asBool(true)
+				nodeOpUpgrade.Spec.UpgradeRecovery = asBool(false)
+				nodeOpUpgrade.Spec.ExcludePaths = []string{"/var/lib/mystuff", "/opt/keep"}
+				Expect(k8sClient.Create(ctx, nodeOpUpgrade)).To(Succeed())
+
+				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(upgradeLine(nodeOp.Spec.Command[2], activeSource)).To(HaveSuffix(
+					" --exclude-path '/var/lib/mystuff' --exclude-path '/opt/keep'"))
 			})
 
 			It("emits excludes on the recovery-only invocation", func() {
@@ -1367,8 +1482,7 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				nodeOp, err := reconcileNodeOpUpgrade(ctx, k8sClient, nodeOpUpgradeName)
 				Expect(err).NotTo(HaveOccurred())
 
-				expectExcludesAfter(nodeOp.Spec.Command[2], "--recovery --source dir:/",
-					append(append([]string{}, safeDefaults...), "/var/lib/mystuff"))
+				expectExcludesAfter(nodeOp.Spec.Command[2], recoverySource, []string{"/var/lib/mystuff"})
 			})
 
 			It("emits excludes on both invocations when upgrading both partitions", func() {
@@ -1381,9 +1495,8 @@ var _ = Describe("NodeOpUpgrade Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				script := nodeOp.Spec.Command[2]
-				expected := append(append([]string{}, safeDefaults...), "/var/lib/mystuff")
-				expectExcludesAfter(script, "--recovery --source dir:/", expected)
-				expectExcludesAfter(script, "--source dir:/", expected)
+				expectExcludesAfter(script, recoverySource, []string{"/var/lib/mystuff"})
+				expectExcludesAfter(script, activeSource, []string{"/var/lib/mystuff"})
 			})
 
 			It("wraps each path in single quotes so shell metacharacters are literal", func() {
