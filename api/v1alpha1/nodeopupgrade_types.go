@@ -88,7 +88,7 @@ type NodeOpUpgradeSpec struct {
 	// kairos-agent versions do not recognize it and the upgrade Job will fail
 	// with "unknown flag". The operator also passes it on its own when
 	// Spec.Image has no /etc/resolv.conf, /etc/hosts or /etc/hostname, or ships
-	// one of them empty. Since Kairos is an atomic-upgrade OS, this only
+	// one of them as an empty regular file. Since Kairos is an atomic-upgrade OS, this only
 	// affects users pinning Spec.Image to a pre-3.6.0 kairos image.
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`

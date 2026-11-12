@@ -335,6 +335,10 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 		for rel, content := range image {
 			p := filepath.Join(imageDir, rel)
 			Expect(os.MkdirAll(filepath.Dir(p), 0o755)).To(Succeed())
+			if target, ok := strings.CutPrefix(content, "symlink:"); ok {
+				Expect(os.Symlink(target, p)).To(Succeed())
+				continue
+			}
 			Expect(os.WriteFile(p, []byte(content), 0o644)).To(Succeed())
 		}
 		binDir := filepath.Join(tmpDir, "bin")
@@ -469,6 +473,40 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
 		Expect(agents[0]).To(HaveSuffix(
 			" --exclude-path /etc/resolv.conf --exclude-path /etc/hosts --exclude-path /etc/hostname"))
+	})
+
+	// The check is on the entry itself. An image that ships one of the files
+	// as a symlink gets the symlink copied as is, whatever its target holds
+	// in the bind mount: a relative target resolves to the empty file the
+	// runtime creates when it follows the link to mount the pod's copy, and
+	// an absolute one resolves against the pod's /run, which is the host's.
+	It("copies a symlink whose target is missing", func() {
+		image := map[string]string{
+			"etc/resolv.conf": "symlink:../run/systemd/resolve/stub-resolv.conf",
+			"etc/hosts":       fullImage["etc/hosts"],
+			"etc/hostname":    fullImage["etc/hostname"],
+		}
+		r := runScriptWithImage(kairosiov1alpha1.NodeOpUpgradeSpec{}, image, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).NotTo(ContainSubstring("--exclude-path"))
+	})
+
+	It("copies a symlink whose target is empty", func() {
+		image := map[string]string{
+			"etc/resolv.conf":                      "symlink:../run/systemd/resolve/stub-resolv.conf",
+			"run/systemd/resolve/stub-resolv.conf": "",
+			"etc/hosts":                            fullImage["etc/hosts"],
+			"etc/hostname":                         fullImage["etc/hostname"],
+		}
+		r := runScriptWithImage(kairosiov1alpha1.NodeOpUpgradeSpec{}, image, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		agents := agentCalls(r.calls)
+		Expect(agents).To(HaveLen(1), "calls: %v", r.calls)
+		Expect(agents[0]).NotTo(ContainSubstring("--exclude-path"))
 	})
 
 	It("puts user ExcludePaths after the automatic ones, on every invocation", func() {

@@ -28,9 +28,16 @@ import (
 //
 // upgradeSourceImageBare has none of the three files. Hadron images, for
 // example, ship no /etc/resolv.conf and get the symlink created at boot.
+//
+// upgradeSourceImageLink ships /etc/resolv.conf as a relative symlink to
+// systemd-resolved's stub file, which does not exist in the image. The
+// runtime follows the link to mount the pod's copy and creates an empty file
+// at the target, so the upgrade must keep the link without looking at it.
 const (
 	upgradeSourceImage     = "kairos-e2e-upgrade-source:e2e"
 	upgradeSourceImageBare = "kairos-e2e-upgrade-source-bare:e2e"
+	upgradeSourceImageLink = "kairos-e2e-upgrade-source-link:e2e"
+	imageResolvLinkTarget  = "../run/systemd/resolve/stub-resolv.conf"
 )
 
 const (
@@ -53,6 +60,7 @@ report=/host` + upgradeReportPath + `
   echo "args=$*"
   echo "source=${src}"
   echo "resolv=$(cat "${src}/etc/resolv.conf" | tr '\n' ' ')"
+  echo "resolv_link=$(readlink "${src}/etc/resolv.conf" || true)"
   echo "hosts=$(cat "${src}/etc/hosts" | tr '\n' ' ')"
   echo "hostname=$(cat "${src}/etc/hostname" | tr '\n' ' ')"
   echo "pod_resolv=$(cat /etc/resolv.conf | tr '\n' ' ')"
@@ -60,21 +68,36 @@ report=/host` + upgradeReportPath + `
 } > "${report}"
 `
 
-func buildUpgradeSourceImage(tag string, withEtcFiles bool) {
+// etcFiles selects the image's /etc/hosts, /etc/hostname and /etc/resolv.conf.
+type etcFiles int
+
+const (
+	etcFilesMarkers etcFiles = iota
+	etcFilesNone
+	etcFilesResolvLink
+)
+
+func buildUpgradeSourceImage(tag string, files etcFiles) {
 	ctxDir := GinkgoT().TempDir()
 	write := func(rel, content string, mode os.FileMode) {
 		p := filepath.Join(ctxDir, rel)
 		Expect(os.MkdirAll(filepath.Dir(p), 0o755)).To(Succeed())
 		Expect(os.WriteFile(p, []byte(content), mode)).To(Succeed())
 	}
-	if withEtcFiles {
+	switch files {
+	case etcFilesMarkers:
 		write("rootfs/etc/hosts", imageHostsMarker+"\n127.0.0.1 localhost\n", 0o644)
 		write("rootfs/etc/hostname", imageHostnameMarker+"\n", 0o644)
 		write("rootfs/etc/resolv.conf", imageResolvMarker+"\nnameserver 192.0.2.53\n", 0o644)
+	case etcFilesResolvLink:
+		write("rootfs/etc/hosts", imageHostsMarker+"\n127.0.0.1 localhost\n", 0o644)
+		write("rootfs/etc/hostname", imageHostnameMarker+"\n", 0o644)
+		Expect(os.Symlink(imageResolvLinkTarget, filepath.Join(ctxDir, "rootfs/etc/resolv.conf"))).To(Succeed())
+	case etcFilesNone:
 	}
 	write("rootfs/usr/bin/kairos-agent", fakeKairosAgent, 0o755)
 	// busybox ships none of the three files, so the bare image needs no
-	// removal step. RUN steps see the build's own resolv.conf/hosts/hostname
+	// removal step. COPY keeps a symlink as is. RUN steps see the build's own resolv.conf/hosts/hostname
 	// mounted over /etc, so the files go in with COPY. busybox has no /run,
 	// which the upgrade script mounts the host's /run onto, and every Kairos
 	// image has.
@@ -103,6 +126,7 @@ var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
 	const (
 		name     = "e2e-upgrade-source"
 		nameBare = "e2e-upgrade-source-bare"
+		nameLink = "e2e-upgrade-source-link"
 	)
 	var kairosNodeName string
 
@@ -112,8 +136,9 @@ var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
 		kairosNodeName = strings.TrimSpace(string(out))
 
 		By("building and loading the stand-in upgrade images")
-		buildUpgradeSourceImage(upgradeSourceImage, true)
-		buildUpgradeSourceImage(upgradeSourceImageBare, false)
+		buildUpgradeSourceImage(upgradeSourceImage, etcFilesMarkers)
+		buildUpgradeSourceImage(upgradeSourceImageBare, etcFilesNone)
+		buildUpgradeSourceImage(upgradeSourceImageLink, etcFilesResolvLink)
 	})
 
 	AfterEach(func() {
@@ -132,7 +157,7 @@ var _ = Describe("NodeOpUpgrade E2E", Ordered, func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "--- kubectl logs %s\n%s\n", pod, out)
 			}
 		}
-		for _, n := range []string{name, nameBare} {
+		for _, n := range []string{name, nameBare, nameLink} {
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "nodeopupgrade", n, "-n", "default",
 				"--ignore-not-found=true", "--wait=true"))
 		}
@@ -221,5 +246,14 @@ spec:
 		By("checking all three are passed to kairos-agent as exclusions")
 		Expect(report["args"]).To(HaveSuffix(
 			" --exclude-path /etc/resolv.conf --exclude-path /etc/hosts --exclude-path /etc/hostname"))
+	})
+
+	It("keeps an image's resolv.conf symlink even though its target is empty in the pod", func() {
+		report := runUpgrade(nameLink, upgradeSourceImageLink)
+
+		Expect(report["resolv_link"]).To(Equal(imageResolvLinkTarget))
+		By("checking the link's target is the runtime's empty file, the case the check must not follow")
+		Expect(report["resolv"]).To(BeEmpty())
+		Expect(report["args"]).NotTo(ContainSubstring("--exclude-path"))
 	})
 })

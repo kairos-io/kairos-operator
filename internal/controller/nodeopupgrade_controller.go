@@ -296,10 +296,15 @@ func buildExcludePathFlags(userPaths []string) string {
 // on images that rely on systemd's tmpfiles rule to create the symlink at
 // boot, since the rule only acts when the path does not exist. Hadron images
 // carry that rule; kairos-init's boot step that relinks the file does not
-// run on every boot. So any of the three that is empty or missing in the
-// bind mount is left out of the new system. An image that ships one of them
-// empty on purpose loses nothing, since an empty file and a missing one mean
-// the same for all three.
+// run on every boot. So any of the three that is missing, or is an empty
+// regular file, in the bind mount is left out of the new system. An image
+// that ships one of them empty on purpose loses nothing, since an empty file
+// and a missing one mean the same for all three.
+//
+// A symlink is always copied as is. The check looks at the link itself:
+// following it would test whatever the target holds inside the upgrade
+// container, such as the empty file the runtime creates at a relative
+// target, or the host's /run for an absolute one.
 //
 // With `set -e`, a failed bind mount stops the script before kairos-agent
 // runs.
@@ -307,7 +312,7 @@ const upgradeSourceSnippet = `UPGRADE_ROOTFS=$(mktemp -d)
 mount --bind / "${UPGRADE_ROOTFS}"
 UPGRADE_EXCLUDES=""
 for f in /etc/resolv.conf /etc/hosts /etc/hostname; do
-  if [ ! -s "${UPGRADE_ROOTFS}${f}" ]; then
+  if [ ! -L "${UPGRADE_ROOTFS}${f}" ] && [ ! -s "${UPGRADE_ROOTFS}${f}" ]; then
     UPGRADE_EXCLUDES="${UPGRADE_EXCLUDES} --exclude-path ${f}"
   fi
 done
