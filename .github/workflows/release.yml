@@ -49,14 +49,18 @@ jobs:
     needs: setup
     strategy:
       matrix:
-        # This image is built for amd64 and arm64. The reboot Pod runs it on
-        # every node a NodeOp reboots, so rebooting RISC-V nodes needs a
-        # riscv64 build of this image.
+        # The reboot Pod runs this image on every node a NodeOp reboots, so
+        # every node architecture needs a build. There is no GitHub-hosted
+        # riscv64 runner: that leg runs on amd64. The builder stage is pinned
+        # to BUILDPLATFORM and cross-compiles the manager natively; only the
+        # alpine runtime stage (adduser, apk add) runs under QEMU.
         include:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
             runner: ubuntu-24.04-arm
+          - arch: riscv64
+            runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -66,6 +70,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.version }}
+
+      - name: Set up QEMU
+        if: matrix.arch == 'riscv64'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -169,7 +177,7 @@ jobs:
       - name: Create and push operator manifest
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.OPERATOR_IMAGE_NAME }}:${{ inputs.version }}
-          ARCHES: amd64 arm64
+          ARCHES: amd64 arm64 riscv64
         run: ./hack/push-manifest.sh
 
       - name: Create and push node-labeler manifest
