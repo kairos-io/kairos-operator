@@ -13,4 +13,4 @@ configurations:
 images:
 - name: controller
   newName: quay.io/kairos/operator
-  newTag: v0.3.0@sha256:bc0462a0bd5e240ee17af9e3743d228173905ec642e894e30cbfc650ef43fed7
+  newTag: v0.4.0
