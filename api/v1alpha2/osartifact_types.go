@@ -586,6 +586,44 @@ func validateArtifactAliasing(s *OSArtifactSpec, a *ArtifactSpec) error {
 	return nil
 }
 
+// Validate runs OSArtifactSpec.Validate plus the checks that depend on
+// metadata.name, such as the resolved output file names.
+func (s *OSArtifact) Validate() error {
+	if err := s.Spec.Validate(); err != nil {
+		return err
+	}
+	return s.validateISONames()
+}
+
+// validateISONames rejects specs where build-uki and build-iso would write the
+// same /artifacts/<name>.iso. build-iso runs after build-uki and replaces the
+// file, so the signed ISO would be lost.
+func (s *OSArtifact) validateISONames() error {
+	a := s.Spec.Artifacts
+	if a == nil || a.UKI == nil || !a.UKI.ISO || (!a.ISO && !a.Netboot) {
+		return nil
+	}
+	uki := s.UKIArtifactName()
+	iso := s.ArtifactNameFor(OSArtifactKindISO)
+	if uki != iso {
+		return nil
+	}
+	return fmt.Errorf("the UKI ISO and the unsigned ISO would both be written to /artifacts/%s.iso "+
+		"(UKI name from spec.nameOverride.uki %q, unsigned ISO name from spec.nameOverride.iso %q, metadata.name %q); "+
+		"set spec.nameOverride.uki or spec.nameOverride.iso so they differ",
+		iso, s.Spec.NameOverride.UKI, s.Spec.NameOverride.ISO, s.Name)
+}
+
+// UKIArtifactName returns the basename build-uki writes its outputs under.
+// Without spec.nameOverride.uki it is <metadata.name>-uki, so it does not
+// collide with the unsigned <metadata.name>.iso.
+func (s *OSArtifact) UKIArtifactName() string {
+	if s.Spec.NameOverride.UKI != "" {
+		return s.Spec.NameOverride.UKI
+	}
+	return s.Name + "-uki"
+}
+
 func (s *OSArtifact) ArtifactNameFor(kind OSArtifactKind) string {
 	switch kind {
 	case OSArtifactKindISO:

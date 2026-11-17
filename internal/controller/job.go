@@ -509,11 +509,7 @@ const ukiKeysMountPath = "/uki-keys"
 // ukiArtifactName returns the basename for UKI outputs so they do not collide with unsigned artifacts (e.g. <name>-uki.iso vs <name>.iso).
 // The suffix is skipped when NameOverride.UKI is set.
 func ukiArtifactName(artifact *buildv1alpha2.OSArtifact) string {
-	name := artifact.ArtifactNameFor(buildv1alpha2.OSArtifactKindUKI)
-	if artifact.Spec.NameOverride.UKI != "" {
-		return name
-	}
-	return name + "-uki"
+	return artifact.UKIArtifactName()
 }
 
 func buildUKICommand(artifact *buildv1alpha2.OSArtifact, outputType string) string {

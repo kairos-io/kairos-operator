@@ -312,7 +312,7 @@ func (r *OSArtifactReconciler) resolveFinalOCISpec(ctx context.Context, artifact
 
 func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
-	if err := artifact.Spec.Validate(); err != nil {
+	if err := artifact.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
 	}
 
