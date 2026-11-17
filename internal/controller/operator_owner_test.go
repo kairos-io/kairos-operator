@@ -45,6 +45,12 @@ var _ = Describe("Operator owner reference on node-labeler objects", func() {
 		return fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(objs...).Build()
 	}
 
+	// The reconcilers receive the resolved reference from main, so their
+	// clients hold no operator Pod or ReplicaSet.
+	newReconcilerClient := func(extra ...client.Object) client.Client {
+		return fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(extra...).Build()
+	}
+
 	BeforeEach(func() {
 		ctx = context.Background()
 		GinkgoT().Setenv(controllerPodNamespaceEnv, ns)
@@ -92,24 +98,24 @@ var _ = Describe("Operator owner reference on node-labeler objects", func() {
 
 	It("owns the DaemonSet it creates and adopts one left by an older operator", func() {
 		By("creating it")
-		c := newClient()
-		r := &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme}
+		c := newReconcilerClient()
+		r := &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		Expect(r.ensureDaemonSetOnStartup(ctx, c, ns)).To(Succeed())
 		ds := &appsv1.DaemonSet{}
 		Expect(c.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: ns}, ds)).To(Succeed())
 		Expect(ds.OwnerReferences).To(ConsistOf(wantOwner))
 
 		By("creating it from Reconcile")
-		c = newClient()
-		r = &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme}
+		c = newReconcilerClient()
+		r = &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		Expect(r.ensureDaemonSet(ctx, ns)).To(Succeed())
 		Expect(c.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: ns}, ds)).To(Succeed())
 		Expect(ds.OwnerReferences).To(ConsistOf(wantOwner))
 
 		By("adopting an unowned one on startup")
 		old := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: kairosNodeLabelerDaemonSetName, Namespace: ns}}
-		c = newClient(old)
-		r = &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme}
+		c = newReconcilerClient(old)
+		r = &NodeLabelerDaemonSetReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		Expect(r.ensureDaemonSetOnStartup(ctx, c, ns)).To(Succeed())
 		Expect(c.Get(ctx, types.NamespacedName{Name: kairosNodeLabelerDaemonSetName, Namespace: ns}, ds)).To(Succeed())
 		Expect(ds.OwnerReferences).To(ConsistOf(wantOwner))
@@ -119,15 +125,15 @@ var _ = Describe("Operator owner reference on node-labeler objects", func() {
 		sa := &corev1.ServiceAccount{}
 		key := types.NamespacedName{Name: nodeLabelerServiceAccount, Namespace: ns}
 
-		c := newClient()
-		r := &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme}
+		c := newReconcilerClient()
+		r := &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		Expect(r.ensureServiceAccount(ctx, ns)).To(Succeed())
 		Expect(c.Get(ctx, key, sa)).To(Succeed())
 		Expect(sa.OwnerReferences).To(ConsistOf(wantOwner))
 
 		By("adopting an unowned one, and not duplicating the reference on the next start")
-		c = newClient(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: nodeLabelerServiceAccount, Namespace: ns}})
-		r = &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme}
+		c = newReconcilerClient(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: nodeLabelerServiceAccount, Namespace: ns}})
+		r = &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		Expect(r.ensureServiceAccount(ctx, ns)).To(Succeed())
 		Expect(r.ensureServiceAccount(ctx, ns)).To(Succeed())
 		Expect(c.Get(ctx, key, sa)).To(Succeed())
@@ -136,8 +142,8 @@ var _ = Describe("Operator owner reference on node-labeler objects", func() {
 
 	It("owns the per-node Job", func() {
 		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "kairos-node"}}
-		c := newClient(node)
-		r := &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme}
+		c := newReconcilerClient(node)
+		r := &NodeLabelerReconciler{Client: c, Scheme: scheme.Scheme, OwnerRef: &wantOwner}
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: node.Name}})
 		Expect(err).NotTo(HaveOccurred())
 
