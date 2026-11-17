@@ -1,6 +1,6 @@
 ---
 # Secret containing an OCI build definition with Go template syntax.
-# The operator renders the template before passing it to Kaniko.
+# The operator renders the template before passing it to buildah.
 # Template variables use {{ .VarName }} syntax and are replaced with values
 # at build time. Values can come from a Secret (templateValuesFrom)
 # and/or inline in the spec (templateValues). Inline values take
