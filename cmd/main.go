@@ -225,19 +225,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The operator Deployment cannot change while this process runs, so it is
+	// resolved once. GetAPIReader works before the manager starts.
+	ownerRef, err := controller.OperatorOwnerReference(context.Background(), mgr.GetAPIReader())
+	if err != nil {
+		setupLog.Error(err, "unable to resolve the operator Deployment")
+		os.Exit(1)
+	}
+
 	if err = (&controller.NodeLabelerReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		APIReader: mgr.GetAPIReader(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		OwnerRef: ownerRef,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeLabeler")
 		os.Exit(1)
 	}
 
 	if err = (&controller.NodeLabelerDaemonSetReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		APIReader: mgr.GetAPIReader(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		OwnerRef: ownerRef,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeLabelerDaemonSet")
 		os.Exit(1)

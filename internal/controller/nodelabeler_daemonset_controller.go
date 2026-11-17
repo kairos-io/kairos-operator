@@ -43,17 +43,9 @@ const (
 type NodeLabelerDaemonSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// APIReader reads the operator Pod and ReplicaSet without starting an
-	// informer for them (see operatorOwnerReference). It falls back to Client
-	// when nil.
-	APIReader client.Reader
-}
-
-func (r *NodeLabelerDaemonSetReconciler) ownerReader() client.Reader {
-	if r.APIReader != nil {
-		return r.APIReader
-	}
-	return r.Client
+	// OwnerRef is set as owner of the objects this reconciler creates. It is
+	// resolved once at startup (see operatorOwnerReference); nil sets no owner.
+	OwnerRef *metav1.OwnerReference
 }
 
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
@@ -69,12 +61,8 @@ func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl
 // through apiReader (mgr.GetAPIReader()), so the patch is based on the live
 // object and not on the cache.
 func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, apiReader client.Reader, namespace string) error {
-	owner, err := operatorOwnerReference(ctx, r.ownerReader())
-	if err != nil {
-		return err
-	}
 	desired := r.buildDaemonSet(namespace)
-	addOwnerReference(desired, owner)
+	addOwnerReference(desired, r.OwnerRef)
 	if err := r.Create(ctx, desired); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return err
@@ -85,7 +73,7 @@ func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Co
 		}
 		patch := client.MergeFrom(existing.DeepCopy())
 		existing.Spec = desired.Spec
-		addOwnerReference(existing, owner)
+		addOwnerReference(existing, r.OwnerRef)
 		return r.Patch(ctx, existing, patch)
 	}
 	return nil
@@ -103,12 +91,8 @@ func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSet(ctx context.Context, na
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
-	owner, err := operatorOwnerReference(ctx, r.ownerReader())
-	if err != nil {
-		return err
-	}
 	desired := r.buildDaemonSet(namespace)
-	addOwnerReference(desired, owner)
+	addOwnerReference(desired, r.OwnerRef)
 	if err := r.Create(ctx, desired); err != nil {
 		log.Error(err, "Failed to create node-labeler DaemonSet")
 		return err
@@ -201,9 +185,6 @@ func (r *NodeLabelerDaemonSetReconciler) buildDaemonSet(namespace string) *appsv
 func (r *NodeLabelerDaemonSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	namespace := getOperatorNamespace()
 	apiReader := mgr.GetAPIReader()
-	if r.APIReader == nil {
-		r.APIReader = apiReader
-	}
 	if err := addStartupTask(mgr, "node-labeler DaemonSet", func(ctx context.Context) error {
 		return r.ensureDaemonSetOnStartup(ctx, apiReader, namespace)
 	}); err != nil {
