@@ -264,25 +264,64 @@ exit 0
 }
 
 // buildExcludePathFlags returns a shell fragment of `--exclude-path` flags to
-// append after `--source dir:/`. The always-excluded paths come first, then
-// any user-configured paths. Each path is single-quoted so spaces and shell
-// metacharacters stay literal; embedded single quotes are handled with the
-// POSIX close-escape-reopen idiom (close the quote, emit an escaped literal
-// single quote, reopen the quote), which is the raw-string literal used in
-// the ReplaceAll call below.
+// append after the upgrade source, one per user-configured path. Each path is
+// single-quoted so spaces and shell metacharacters stay literal; embedded
+// single quotes are handled with the POSIX close-escape-reopen idiom (close
+// the quote, emit an escaped literal single quote, reopen the quote), which
+// is the raw-string literal used in the ReplaceAll call below.
 func buildExcludePathFlags(userPaths []string) string {
-	all := make([]string, 0, len(upgradeAlwaysExcludePaths)+len(userPaths))
-	all = append(all, upgradeAlwaysExcludePaths...)
-	all = append(all, userPaths...)
-
 	var b strings.Builder
-	for _, p := range all {
+	for _, p := range userPaths {
 		b.WriteString(" --exclude-path '")
 		b.WriteString(strings.ReplaceAll(p, "'", `'\''`))
 		b.WriteString("'")
 	}
 	return b.String()
 }
+
+// upgradeSourceSnippet prepares the directory kairos-agent copies the new
+// system from, and the --exclude-path flags that go with it. The upgrade
+// container runs the target image, and kairos-agent copies its root
+// filesystem into the new host image. Kubernetes mounts pod-specific files
+// over the image's /etc/resolv.conf (cluster DNS and the pod's search
+// domains), /etc/hosts and /etc/hostname (the pod's IP and name), and
+// kairos-agent's rsync follows those mounts. A plain bind mount of / is not
+// recursive, so it shows the image's own files with none of the pod's mounts
+// on top, and the host gets what a fresh install of the image would get.
+//
+// When the image lacks one of those files, the container runtime creates an
+// empty file in the container's writable layer to mount the pod's copy onto,
+// and the bind mount shows that empty file. Copying it would leave an empty
+// file where a fresh install has none. For /etc/resolv.conf that breaks DNS
+// on images that rely on systemd's tmpfiles rule to create the symlink at
+// boot, since the rule only acts when the path does not exist. Hadron images
+// carry that rule; kairos-init's boot step that relinks the file does not
+// run on every boot. So any of the three that is missing, or is an empty
+// regular file, in the bind mount is left out of the new system. An image
+// that ships one of them empty on purpose loses nothing, since an empty file
+// and a missing one mean the same for all three.
+//
+// A symlink is always copied as is. The check looks at the link itself:
+// following it would test whatever the target holds inside the upgrade
+// container, such as the empty file the runtime creates at a relative
+// target, or the host's /run for an absolute one.
+//
+// With `set -e`, a failed bind mount stops the script before kairos-agent
+// runs.
+const upgradeSourceSnippet = `UPGRADE_ROOTFS=$(mktemp -d)
+mount --bind / "${UPGRADE_ROOTFS}"
+UPGRADE_EXCLUDES=""
+for f in /etc/resolv.conf /etc/hosts /etc/hostname; do
+  if [ ! -L "${UPGRADE_ROOTFS}${f}" ] && [ ! -s "${UPGRADE_ROOTFS}${f}" ]; then
+    UPGRADE_EXCLUDES="${UPGRADE_EXCLUDES} --exclude-path ${f}"
+  fi
+done
+`
+
+// upgradeSourceFlags is the source and automatic exclusions for every
+// kairos-agent upgrade call. UPGRADE_EXCLUDES is unquoted so each flag and
+// path becomes its own argument; it only ever holds the fixed paths above.
+const upgradeSourceFlags = `--source "dir:${UPGRADE_ROOTFS}"${UPGRADE_EXCLUDES}`
 
 // generateUpgradeCommand creates the upgrade command based on the NodeOpUpgrade specification
 func (r *NodeOpUpgradeReconciler) generateUpgradeCommand(nodeOpUpgrade *kairosiov1alpha1.NodeOpUpgrade) []string {
@@ -319,6 +358,7 @@ fi
 	script += `mount --rbind ` + defaultHostMountPath + `/dev /dev
 mount --rbind ` + defaultHostMountPath + `/run /run
 
+` + upgradeSourceSnippet + `
 `
 
 	// --debug is a global flag on the kairos-agent CLI, so it must precede the
@@ -332,28 +372,28 @@ mount --rbind ` + defaultHostMountPath + `/run /run
 	if upgradeRecovery && upgradeActive {
 		// Both recovery and active
 		script += `# Upgrade recovery partition
-` + agent + ` upgrade --recovery --source dir:/` + excludes + `
+` + agent + ` upgrade --recovery ` + upgradeSourceFlags + excludes + `
 
 # Upgrade active partition
-` + agent + ` upgrade --source dir:/` + excludes + `
+` + agent + ` upgrade ` + upgradeSourceFlags + excludes + `
 exit 0
 `
 	} else if upgradeRecovery {
 		// Recovery only
 		script += `# Upgrade recovery partition only
-` + agent + ` upgrade --recovery --source dir:/` + excludes + `
+` + agent + ` upgrade --recovery ` + upgradeSourceFlags + excludes + `
 exit 0
 `
 	} else if upgradeActive {
 		// Active only (default behavior)
 		script += `# Upgrade active partition
-` + agent + ` upgrade --source dir:/` + excludes + `
+` + agent + ` upgrade ` + upgradeSourceFlags + excludes + `
 exit 0
 `
 	} else {
 		// Neither specified - default to active
 		script += `# Upgrade active partition (default)
-` + agent + ` upgrade --source dir:/` + excludes + `
+` + agent + ` upgrade ` + upgradeSourceFlags + excludes + `
 exit 0
 `
 	}
