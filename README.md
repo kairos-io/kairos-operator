@@ -63,7 +63,7 @@ make test
 make controller-tests
 ```
 
-This will set up a kind cluster, deploy the operator, and run OSArtifact controller tests.
+This will set up a kind cluster, install the CRDs, and run OSArtifact controller tests. It does not deploy the operator.
 
 **End-to-end tests**:
 
