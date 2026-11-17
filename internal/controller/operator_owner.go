@@ -77,3 +77,9 @@ func addOwnerReference(obj metav1.Object, ref *metav1.OwnerReference) bool {
 	obj.SetOwnerReferences(append(refs, *ref))
 	return true
 }
+
+// OperatorOwnerReference resolves the operator Deployment once, for main to
+// hand to the reconcilers. See operatorOwnerReference.
+func OperatorOwnerReference(ctx context.Context, reader client.Reader) (*metav1.OwnerReference, error) {
+	return operatorOwnerReference(ctx, reader)
+}
