@@ -50,7 +50,7 @@ patches:
       path: /spec/template/spec/containers/0/env/-
       value:
         name: NODE_LABELER_IMAGE
-        value: quay.io/kairos/operator-node-labeler:v0.3.0
+        value: quay.io/kairos/operator-node-labeler:v0.4.0
 
 # Patch to update the boot-id-reporter image (SENTINEL_IMAGE)
 - target:
