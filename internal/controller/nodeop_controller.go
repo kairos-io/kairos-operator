@@ -402,6 +402,19 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 		deleteOptions = &metav1.DeleteOptions{GracePeriodSeconds: &grace}
 	}
 
+	// Evict the pod through the eviction subresource, so the API server
+	// weighs the request against any PodDisruptionBudget that covers it.
+	evict := func(pod *corev1.Pod) error {
+		eviction := &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			},
+			DeleteOptions: deleteOptions,
+		}
+		return r.SubResource(subResourceEviction).Create(ctx, pod, eviction)
+	}
+
 	// Filter pods that are on this node
 	for _, pod := range podList.Items {
 		// Skip pods that are not on this node
@@ -460,39 +473,28 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 			}
 		}
 
-		// Evict the pod through the eviction subresource, so the API server
-		// weighs the request against any PodDisruptionBudget that covers it.
-		eviction := &policyv1.Eviction{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pod.Name,
-				Namespace: pod.Namespace,
-			},
-			DeleteOptions: deleteOptions,
-		}
-		if err := r.SubResource(subResourceEviction).Create(ctx, &pod, eviction); err != nil {
-			switch {
-			case apierrors.IsNotFound(err):
-				// Something else removed the Pod between the List and now,
-				// which is the outcome the drain wanted anyway.
-				continue
-			case apierrors.IsTooManyRequests(err):
-				// A budget covering this Pod has no disruption left. The drain
-				// has to wait rather than take the workload down, so report it
-				// and let the caller requeue.
-				log.Info("Eviction denied by a PodDisruptionBudget, the drain will be retried",
-					"pod", pod.Name,
-					"namespace", pod.Namespace,
-					"reason", err.Error())
-				return err
-			default:
-				log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
-				return err
-			}
+		err := evict(&pod)
+		switch {
+		case apierrors.IsNotFound(err):
+			// Something else removed the Pod between the List and now,
+			// which is the outcome the drain wanted anyway.
+			continue
+		case apierrors.IsTooManyRequests(err):
+			// A budget covering this Pod has no disruption left.  The wait
+			// below tries the eviction again until the drain times out.
+			log.Info("Eviction denied by a PodDisruptionBudget, the eviction will be retried",
+				"pod", pod.Name,
+				"namespace", pod.Namespace,
+				"reason", err.Error())
+		case err != nil:
+			log.Error(err, "Failed to evict pod", "pod", pod.Name, "namespace", pod.Namespace)
+			return err
 		}
 
 		evicting = append(evicting, evictedPod{
-			name: types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
-			uid:  pod.UID,
+			name:   types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name},
+			uid:    pod.UID,
+			denied: err != nil,
 		})
 	}
 
@@ -501,7 +503,7 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 	// drained, so the caller does not start a Job (and, with RebootOnSuccess, a
 	// reboot) on a node still running the workloads we just asked to leave.
 	// This is the wait drainOptions.timeoutSeconds bounds.
-	if err := r.waitForPodsGone(ctx, node.Name, evicting, drainTimeout(drainOptions)); err != nil {
+	if err := r.waitForPodsGone(ctx, node.Name, evicting, evict, drainTimeout(drainOptions)); err != nil {
 		return err
 	}
 
@@ -515,6 +517,8 @@ func (r *NodeOpReconciler) drainNode(ctx context.Context, node *corev1.Node, dra
 type evictedPod struct {
 	name types.NamespacedName
 	uid  types.UID
+	// denied is true while a PodDisruptionBudget refuses the eviction.
+	denied bool
 }
 
 // drainTimeout returns how long the drain waits for the pods it evicted. A
@@ -531,7 +535,9 @@ func drainTimeout(drainOptions *kairosiov1alpha1.DrainOptions) time.Duration {
 // waitForPodsGone blocks until every pod the drain evicted has left the node,
 // or until timeout expires. A pod counts as gone when it no longer exists,
 // when the object under its name is a different pod (a recreated one carries a
-// new UID), or when it has been rescheduled onto another node.
+// new UID), or when it has been rescheduled onto another node.  It tries the
+// denied evictions again on each poll, so a budget denial does not end the
+// drain while time is left.
 //
 // On expiry it returns an error naming the pods that are still there. The
 // caller treats that as a drain failure and uncordons the node, so a node
@@ -540,6 +546,7 @@ func (r *NodeOpReconciler) waitForPodsGone(
 	ctx context.Context,
 	nodeName string,
 	evicting []evictedPod,
+	evict func(*corev1.Pod) error,
 	timeout time.Duration,
 ) error {
 	if len(evicting) == 0 {
@@ -555,7 +562,7 @@ func (r *NodeOpReconciler) waitForPodsGone(
 	var remaining []string
 	err := wait.PollUntilContextTimeout(ctx, drainPollInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		stillThere := make([]string, 0, len(evicting))
-		for _, evicted := range evicting {
+		for i, evicted := range evicting {
 			pod := &corev1.Pod{}
 			if err := r.Get(ctx, evicted.name, pod); err != nil {
 				if apierrors.IsNotFound(err) {
@@ -567,6 +574,18 @@ func (r *NodeOpReconciler) waitForPodsGone(
 			// this node, is not the pod we are draining.
 			if pod.UID != evicted.uid || pod.Spec.NodeName != nodeName {
 				continue
+			}
+			if evicted.denied {
+				switch err := evict(pod); {
+				case apierrors.IsNotFound(err):
+					continue
+				case apierrors.IsTooManyRequests(err):
+					stillThere = append(stillThere, evicted.name.String()+" (eviction denied)")
+					continue
+				case err != nil:
+					return false, err
+				}
+				evicting[i].denied = false
 			}
 			stillThere = append(stillThere, evicted.name.String())
 		}
