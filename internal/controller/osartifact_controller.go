@@ -39,11 +39,13 @@ import (
 )
 
 const (
-	FinalizerName                   = "build.kairos.io/osbuilder-finalizer"
-	CompatibleAurorabootVersion     = "v0.24.0"
+	// buildAnnotationPrefix is the build.kairos.io key prefix shared by OSArtifact finalizers, labels and annotations.
+	buildAnnotationPrefix           = "build.kairos.io/"
+	FinalizerName                   = buildAnnotationPrefix + "osbuilder-finalizer"
+	CompatibleAurorabootVersion     = "v0.29.0"
 	CompatibleBuildahVersion        = "v1.43.1"
-	artifactLabel                   = "build.kairos.io/artifact"
-	artifactExporterIndexAnnotation = "build.kairos.io/export-index"
+	artifactLabel                   = buildAnnotationPrefix + "artifact"
+	artifactExporterIndexAnnotation = buildAnnotationPrefix + "export-index"
 	// OCISpecSecretKey is the Secret data key for the OCI build definition.
 	OCISpecSecretKey = "ociSpec"
 )
@@ -314,6 +316,9 @@ func (r *OSArtifactReconciler) startBuild(ctx context.Context,
 	artifact *buildv1alpha2.OSArtifact) (ctrl.Result, error) {
 	if err := artifact.Spec.Validate(); err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact spec: %w", err)
+	}
+	if _, err := diskOptionsFor(artifact); err != nil {
+		return ctrl.Result{}, fmt.Errorf("invalid OSArtifact annotations: %w", err)
 	}
 
 	// Resolve final OCI build definition (single path: assemble sections when buildOptions set, else user content only).

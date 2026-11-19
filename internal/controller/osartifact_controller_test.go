@@ -1515,6 +1515,54 @@ var _ = Describe("OSArtifactReconciler", func() {
 			})
 		})
 
+		When("raw disk annotations are set", func() {
+			BeforeEach(func() {
+				artifact.Spec.Artifacts.CloudImage = true
+				artifact.Spec.Artifacts.AzureImage = true
+				artifact.Spec.Artifacts.GCEImage = true
+			})
+
+			DescribeTable("passes the disk.* options to every raw-disk based build",
+				func(annotations map[string]string, present, absent []string) {
+					artifact.Annotations = annotations
+					pvc, err := r.createPVC(context.TODO(), artifact)
+					Expect(err).ToNot(HaveOccurred())
+
+					pod, err := r.createBuilderPod(context.TODO(), artifact, pvc)
+					Expect(err).ToNot(HaveOccurred())
+
+					for _, name := range []string{"build-cloud-image", "build-azure-cloud-image", "build-gce-cloud-image"} {
+						container := findContainerByName(pod, name)
+						Expect(container).ToNot(BeNil(), name)
+						Expect(container.Args).To(HaveLen(1))
+						for _, arg := range present {
+							Expect(container.Args[0]).To(ContainSubstring(arg), name)
+						}
+						for _, arg := range absent {
+							Expect(container.Args[0]).ToNot(ContainSubstring(arg), name)
+						}
+					}
+				},
+				Entry("none", nil, nil, []string{diskKeyBootActive, diskKeyStateSlots, diskKeyNoRecovery}),
+				Entry("boot_active only",
+					map[string]string{annotationDiskBootActive: "true"},
+					[]string{"--set 'disk.boot_active=true'"},
+					[]string{diskKeyStateSlots, diskKeyNoRecovery}),
+				Entry("boot_active=false",
+					map[string]string{annotationDiskBootActive: "false"},
+					nil,
+					[]string{diskKeyBootActive, diskKeyStateSlots, diskKeyNoRecovery}),
+				Entry("single image without recovery",
+					map[string]string{
+						annotationDiskBootActive: "true",
+						annotationDiskStateSlots: "1",
+						annotationDiskNoRecovery: "true",
+					},
+					[]string{"--set 'disk.boot_active=true'", "--set 'disk.state_slots=1'", "--set 'disk.no_recovery=true'"},
+					nil),
+			)
+		})
+
 		When("Netboot is enabled", func() {
 			BeforeEach(func() {
 				artifact.Spec.Artifacts.Netboot = true
