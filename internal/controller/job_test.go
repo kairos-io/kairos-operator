@@ -653,6 +653,21 @@ var _ = Describe("buildNetbootCmd", func() {
 	})
 })
 
+var _ = Describe("makeNetbootContainer netbootURL", func() {
+	artifact := &buildv1alpha2.OSArtifact{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-artifact"},
+	}
+
+	When("netbootURL is set", func() {
+		It("renders the same container as when it is unset", func() {
+			without := makeNetbootContainer("tool", artifact, nil, &buildv1alpha2.ArtifactSpec{ISO: true, Netboot: true})
+			with := makeNetbootContainer("tool", artifact, nil, &buildv1alpha2.ArtifactSpec{ISO: true, Netboot: true, NetbootURL: "http://example.com"}) //nolint:staticcheck // the deprecated field is what this test sets
+			Expect(with.Env).To(BeEmpty())
+			Expect(with).To(Equal(without))
+		})
+	})
+})
+
 var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 	artifact := func() *buildv1alpha2.OSArtifact {
 		return &buildv1alpha2.OSArtifact{
