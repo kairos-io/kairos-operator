@@ -129,7 +129,12 @@ var _ = Describe("drainNode and PodDisruptionBudgets", func() {
 	It("evicts a Pod whose budget has room", func() {
 		allowDisruptions(1)
 
-		Expect(reconciler.drainNode(ctx, node, &kairosiov1alpha1.DrainOptions{})).To(Succeed())
+		// The drain then waits for the evicted Pod to finish terminating, and
+		// envtest runs no kubelet to end it, so the wait gets one second and
+		// times out. What this spec checks is that the eviction was admitted.
+		oneSecond := int32(1)
+		Expect(reconciler.drainNode(ctx, node, &kairosiov1alpha1.DrainOptions{TimeoutSeconds: &oneSecond})).To(
+			MatchError(ContainSubstring("still terminating")))
 
 		pod := &corev1.Pod{}
 		Expect(k8sClient.Get(ctx, podKey, pod)).To(Succeed())
