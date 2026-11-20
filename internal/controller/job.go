@@ -624,13 +624,6 @@ func buildNetbootCmd(isoBasename, basename string, removeSourceISO bool) string 
 	return c.String()
 }
 
-func netbootURL(artifacts *buildv1alpha2.ArtifactSpec) string {
-	if artifacts != nil {
-		return artifacts.NetbootURL
-	}
-	return ""
-}
-
 // pruneSourceISO reports whether the ISO netboot extracted from is an
 // intermediate the user never asked for, and can be deleted.
 //
@@ -662,7 +655,6 @@ func makeNetbootContainer(toolImage string, artifact *buildv1alpha2.OSArtifact, 
 		Name:            "build-netboot",
 		Image:           toolImage,
 		Command:         bashCxeCommand(),
-		Env:             []corev1.EnvVar{{Name: "URL", Value: netbootURL(artifacts)}},
 		Args:            []string{buildNetbootCmd(isoBasename, baseName, removeSourceISO)},
 		VolumeMounts:    mounts,
 		Resources:       artifact.ResourcesFor(buildv1alpha2.OSArtifactKindNetboot),
