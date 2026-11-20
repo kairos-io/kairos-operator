@@ -41,6 +41,9 @@ const (
 type NodeLabelerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OwnerRef is set as owner of the objects this reconciler creates. It is
+	// resolved once at startup (see operatorOwnerReference); nil sets no owner.
+	OwnerRef *metav1.OwnerReference
 }
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
@@ -159,16 +162,30 @@ func (r *NodeLabelerReconciler) createNodeLabelerJob(node *corev1.Node, namespac
 }
 
 func (r *NodeLabelerReconciler) ensureServiceAccount(ctx context.Context, namespace string) error {
-	// Create ServiceAccount
+	// Create ServiceAccount, owned by the operator Deployment so that
+	// uninstalling the operator removes it.
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      nodeLabelerServiceAccount,
 			Namespace: namespace,
 		},
 	}
+	addOwnerReference(sa, r.OwnerRef)
 	if err := r.Create(ctx, sa); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create service account: %w", err)
+		}
+		// Adopt a ServiceAccount left by an operator version that did not set
+		// the owner reference.
+		existing := &corev1.ServiceAccount{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(sa), existing); err != nil {
+			return fmt.Errorf("failed to get service account: %w", err)
+		}
+		patch := client.MergeFrom(existing.DeepCopy())
+		if addOwnerReference(existing, r.OwnerRef) {
+			if err := r.Patch(ctx, existing, patch); err != nil {
+				return fmt.Errorf("failed to set owner on service account: %w", err)
+			}
 		}
 	}
 
@@ -244,6 +261,7 @@ func (r *NodeLabelerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Create the node-labeler job
 	job := r.createNodeLabelerJob(node, namespace)
+	addOwnerReference(job, r.OwnerRef)
 
 	if err := r.Create(ctx, job); err != nil {
 		log.Error(err, "Failed to create node-labeler job")
