@@ -77,6 +77,7 @@ type NodeOpSpec struct {
 	// This directly maps to the Job spec.backoffLimit field.
 	// If not specified, defaults to 6 (Kubernetes default).
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	BackoffLimit *int32 `json:"backoffLimit,omitempty"`
 
 	// Concurrency specifies the maximum number of nodes that can run the operation simultaneously.
@@ -146,6 +147,7 @@ type PreflightSpec struct {
 	// On expiry the kubelet terminates the Pod and the node is marked Failed.
 	// +optional
 	// +kubebuilder:default=120
+	// +kubebuilder:validation:Minimum=1
 	ActiveDeadlineSeconds *int32 `json:"activeDeadlineSeconds,omitempty"`
 }
 

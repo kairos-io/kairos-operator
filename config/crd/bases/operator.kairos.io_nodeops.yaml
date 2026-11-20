@@ -28,6 +28,7 @@ spec:
             properties:
               backoffLimit:
                 format: int32
+                minimum: 0
                 type: integer
               command:
                 items:
@@ -107,6 +108,7 @@ spec:
                   activeDeadlineSeconds:
                     default: 120
                     format: int32
+                    minimum: 1
                     type: integer
                   command:
                     items:
