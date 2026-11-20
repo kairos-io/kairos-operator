@@ -696,8 +696,8 @@ var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 	// nameOverride.uki drops the "-uki" suffix, so setting it to the unsigned
 	// ISO's name makes build-uki and build-iso write the same file. That is
 	// the one shape where the source ISO really is the requested artifact.
-	// validateArtifactSpec only rejects nameOverride.uki == nameOverride.iso,
-	// so this passes validation with nameOverride.iso empty.
+	// OSArtifact.Validate rejects this shape, but the job builder must still
+	// keep the file if such a spec ever reaches it.
 	When("nameOverride.uki resolves to the unsigned ISO's basename", func() {
 		It("keeps the source ISO, because it is the UKI ISO", func() {
 			a := artifact()
@@ -727,8 +727,7 @@ var _ = Describe("makeNetbootContainer source ISO cleanup", func() {
 	// The mirror of the case above: the collision can be reached from the
 	// other side too, by moving the unsigned ISO onto the default UKI
 	// basename instead of moving the UKI ISO onto the unsigned one.
-	// nameOverride.uki stays empty, so validateArtifactSpec, which only
-	// rejects nameOverride.uki == nameOverride.iso, does not see it either.
+	// nameOverride.uki stays empty here; OSArtifact.Validate rejects it too.
 	When("nameOverride.iso resolves to the default UKI basename", func() {
 		It("keeps the source ISO, because it is the UKI ISO", func() {
 			a := artifact()

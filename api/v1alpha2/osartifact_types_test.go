@@ -5,6 +5,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kairos-io/kairos-operator/api/v1alpha2"
 )
@@ -809,5 +810,63 @@ var _ = Describe("OSArtifactSpec.Resources", func() {
 		Expect(spec.Resources.Pod).ToNot(BeNil())
 		Expect(spec.Resources.Netboot).To(BeNil())
 		Expect(spec.Resources.UKI).To(BeNil())
+	})
+})
+
+var _ = Describe("OSArtifact.Validate", func() {
+	ukiArtifact := func(artifacts *v1alpha2.ArtifactSpec, overrides v1alpha2.NameOverrideSpec) *v1alpha2.OSArtifact {
+		spec := validImageRef("img")
+		spec.Volumes = []corev1.Volume{{Name: "uki-keys"}}
+		artifacts.UKI = &v1alpha2.UKISpec{ISO: true, KeysVolume: "uki-keys"}
+		spec.Artifacts = artifacts
+		spec.NameOverride = overrides
+		return &v1alpha2.OSArtifact{
+			ObjectMeta: metav1.ObjectMeta{Name: "myos"},
+			Spec:       spec,
+		}
+	}
+
+	It("returns nil with the default names", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{ISO: true}, v1alpha2.NameOverrideSpec{})
+		Expect(a.UKIArtifactName()).To(Equal("myos-uki"))
+		Expect(a.Validate()).ToNot(HaveOccurred())
+	})
+
+	It("returns nil when the overrides resolve to different names", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{ISO: true}, v1alpha2.NameOverrideSpec{UKI: "signed", ISO: "plain"})
+		Expect(a.Validate()).ToNot(HaveOccurred())
+	})
+
+	It("returns error when nameOverride.uki equals metadata.name and an unsigned iso is built", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{ISO: true}, v1alpha2.NameOverrideSpec{UKI: "myos"})
+		err := a.Validate()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("/artifacts/myos.iso"))
+		Expect(err.Error()).To(ContainSubstring("nameOverride.uki"))
+	})
+
+	It("returns error when nameOverride.iso equals <metadata.name>-uki and an unsigned iso is built", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{ISO: true}, v1alpha2.NameOverrideSpec{ISO: "myos-uki"})
+		err := a.Validate()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("/artifacts/myos-uki.iso"))
+		Expect(err.Error()).To(ContainSubstring("nameOverride.iso"))
+	})
+
+	It("returns error when nameOverride.uki equals metadata.name and netboot is enabled", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{Netboot: true}, v1alpha2.NameOverrideSpec{UKI: "myos"})
+		Expect(a.Validate()).To(HaveOccurred())
+	})
+
+	It("returns error when nameOverride.uki equals nameOverride.iso", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{ISO: true}, v1alpha2.NameOverrideSpec{UKI: "same", ISO: "same"})
+		err := a.Validate()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same"))
+	})
+
+	It("returns nil when nameOverride.uki equals metadata.name but no unsigned iso is built", func() {
+		a := ukiArtifact(&v1alpha2.ArtifactSpec{}, v1alpha2.NameOverrideSpec{UKI: "myos"})
+		Expect(a.Validate()).ToNot(HaveOccurred())
 	})
 })
