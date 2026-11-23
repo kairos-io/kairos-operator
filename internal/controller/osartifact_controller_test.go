@@ -1568,7 +1568,6 @@ var _ = Describe("OSArtifactReconciler", func() {
 			BeforeEach(func() {
 				artifact.Spec.Artifacts.Netboot = true
 				artifact.Spec.Artifacts.ISO = true
-				artifact.Spec.Artifacts.NetbootURL = "http://example.com"
 			})
 
 			It("creates build-netboot container with correct auroraboot netboot command", func() {

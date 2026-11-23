@@ -330,8 +330,7 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 					Ref: HadronPreKairosified,
 				},
 				Artifacts: &buildv1alpha2.ArtifactSpec{
-					Netboot:    true,
-					NetbootURL: "https://kairos.io",
+					Netboot: true,
 				},
 				NameOverride: buildv1alpha2.NameOverrideSpec{
 					Netboot: overrideName,
@@ -400,9 +399,8 @@ var _ = Describe("OSArtifact NameOverride Tests", func() {
 						Ref: HadronPreKairosified,
 					},
 					Artifacts: &buildv1alpha2.ArtifactSpec{
-						ISO:        true,
-						Netboot:    true,
-						NetbootURL: "http://example.com",
+						ISO:     true,
+						Netboot: true,
 					},
 					Exporters: []batchv1.JobSpec{
 						{

@@ -185,7 +185,12 @@ type ArtifactSpec struct {
 	AzureImage bool   `json:"azureImage,omitempty"`
 	GCEImage   bool   `json:"gceImage,omitempty"`
 
-	Netboot    bool   `json:"netboot,omitempty"`
+	Netboot bool `json:"netboot,omitempty"`
+	// NetbootURL is ignored. auroraboot netboot only extracts the kernel,
+	// initrd and squashfs from the ISO; it does not use a base URL.
+	//
+	// Deprecated: has no effect and will be removed in a future API version.
+	// +optional
 	NetbootURL string `json:"netbootURL,omitempty"`
 
 	CloudConfigRef *SecretKeySelector `json:"cloudConfigRef,omitempty"`
