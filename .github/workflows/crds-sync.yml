@@ -23,4 +23,4 @@ jobs:
       - name: Verify chart CRDs match generated CRDs
         run: |
           make update-crds
-          git diff --exit-code -- config/crd/bases charts/kairos-operator/crds api/v1alpha1
+          git diff --exit-code -- config/crd/bases charts/kairos-operator/crds charts/kairos-operator/files api/v1alpha1

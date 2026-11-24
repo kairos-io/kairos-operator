@@ -1,0 +1,5 @@
+resources:
+- osartifact_disk_annotations.yaml
+
+configurations:
+- kustomizeconfig.yaml

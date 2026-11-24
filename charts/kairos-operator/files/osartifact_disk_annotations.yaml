@@ -1,0 +1,77 @@
+# Rejects invalid build.kairos.io/disk.* annotations on OSArtifacts at admission time.
+# Mirrors internal/controller/disk_annotations.go, which stays as the fallback for clusters without this policy.
+# Requires Kubernetes >= 1.30. Synced into charts/kairos-operator/files by `make sync-crds`.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kairos-osartifact-disk-annotations
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["build.kairos.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["osartifacts"]
+  matchConditions:
+    # Never block finalizer removal on an object that is already being deleted.
+    - name: not-deleting
+      expression: "!has(object.metadata.deletionTimestamp)"
+  variables:
+    - name: annotations
+      expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+    - name: prefix
+      expression: "'build.kairos.io/disk.'"
+    - name: keyBootActive
+      expression: "'build.kairos.io/disk.boot_active'"
+    - name: keyStateSlots
+      expression: "'build.kairos.io/disk.state_slots'"
+    - name: keyNoRecovery
+      expression: "'build.kairos.io/disk.no_recovery'"
+    - name: bootActive
+      expression: "variables.keyBootActive in variables.annotations && variables.annotations[variables.keyBootActive] == 'true'"
+    - name: noRecovery
+      expression: "variables.keyNoRecovery in variables.annotations && variables.annotations[variables.keyNoRecovery] == 'true'"
+    - name: hasStateSlots
+      expression: "variables.keyStateSlots in variables.annotations"
+    - name: rawDiskArtifact
+      expression: >-
+        has(object.spec.artifacts) && (
+          (has(object.spec.artifacts.cloudImage) && object.spec.artifacts.cloudImage) ||
+          (has(object.spec.artifacts.azureImage) && object.spec.artifacts.azureImage) ||
+          (has(object.spec.artifacts.gceImage) && object.spec.artifacts.gceImage))
+  validations:
+    - expression: >-
+        variables.annotations.all(k, !k.startsWith(variables.prefix) ||
+          k in [variables.keyBootActive, variables.keyStateSlots, variables.keyNoRecovery])
+      message: "unknown build.kairos.io/disk.* annotation, supported: build.kairos.io/disk.boot_active, build.kairos.io/disk.state_slots, build.kairos.io/disk.no_recovery"
+      reason: Invalid
+    - expression: "!(variables.keyBootActive in variables.annotations) || variables.annotations[variables.keyBootActive] in ['true', 'false']"
+      message: "build.kairos.io/disk.boot_active must be \"true\" or \"false\""
+      reason: Invalid
+    - expression: "!(variables.keyNoRecovery in variables.annotations) || variables.annotations[variables.keyNoRecovery] in ['true', 'false']"
+      message: "build.kairos.io/disk.no_recovery must be \"true\" or \"false\""
+      reason: Invalid
+    - expression: "!variables.hasStateSlots || variables.annotations[variables.keyStateSlots] in ['1', '2', '3']"
+      message: "build.kairos.io/disk.state_slots must be \"1\", \"2\" or \"3\""
+      reason: Invalid
+    - expression: "!variables.hasStateSlots || variables.bootActive"
+      message: "build.kairos.io/disk.state_slots requires build.kairos.io/disk.boot_active=true"
+      reason: Invalid
+    - expression: "!variables.noRecovery || variables.bootActive"
+      message: "build.kairos.io/disk.no_recovery requires build.kairos.io/disk.boot_active=true"
+      reason: Invalid
+    - expression: "!variables.noRecovery || (variables.hasStateSlots && variables.annotations[variables.keyStateSlots] == '1')"
+      message: "build.kairos.io/disk.no_recovery requires build.kairos.io/disk.state_slots=1"
+      reason: Invalid
+    - expression: "!variables.bootActive || variables.rawDiskArtifact"
+      message: "build.kairos.io/disk.boot_active requires at least one of spec.artifacts.cloudImage, azureImage or gceImage"
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kairos-osartifact-disk-annotations
+spec:
+  policyName: kairos-osartifact-disk-annotations
+  validationActions: [Deny]
