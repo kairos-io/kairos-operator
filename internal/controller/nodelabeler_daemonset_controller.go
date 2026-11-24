@@ -43,6 +43,9 @@ const (
 type NodeLabelerDaemonSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OwnerRef is set as owner of the objects this reconciler creates. It is
+	// resolved once at startup (see operatorOwnerReference); nil sets no owner.
+	OwnerRef *metav1.OwnerReference
 }
 
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
@@ -59,6 +62,7 @@ func (r *NodeLabelerDaemonSetReconciler) Reconcile(ctx context.Context, req ctrl
 // object and not on the cache.
 func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Context, apiReader client.Reader, namespace string) error {
 	desired := r.buildDaemonSet(namespace)
+	addOwnerReference(desired, r.OwnerRef)
 	if err := r.Create(ctx, desired); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return err
@@ -69,6 +73,7 @@ func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSetOnStartup(ctx context.Co
 		}
 		patch := client.MergeFrom(existing.DeepCopy())
 		existing.Spec = desired.Spec
+		addOwnerReference(existing, r.OwnerRef)
 		return r.Patch(ctx, existing, patch)
 	}
 	return nil
@@ -86,7 +91,9 @@ func (r *NodeLabelerDaemonSetReconciler) ensureDaemonSet(ctx context.Context, na
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := r.Create(ctx, r.buildDaemonSet(namespace)); err != nil {
+	desired := r.buildDaemonSet(namespace)
+	addOwnerReference(desired, r.OwnerRef)
+	if err := r.Create(ctx, desired); err != nil {
 		log.Error(err, "Failed to create node-labeler DaemonSet")
 		return err
 	}
