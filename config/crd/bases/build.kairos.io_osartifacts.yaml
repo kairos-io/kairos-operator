@@ -4725,6 +4725,7 @@ spec:
                   buildOptions:
                     properties:
                       baseImage:
+                        minLength: 1
                         type: string
                       fips:
                         type: boolean
@@ -4741,6 +4742,7 @@ spec:
                       version:
                         type: string
                     required:
+                    - baseImage
                     - version
                     type: object
                   caCertificatesVolume:
