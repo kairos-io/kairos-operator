@@ -354,9 +354,15 @@ fi
 `
 	}
 
-	// Add mount operations
+	// Add mount operations. kairos-agent points the next boot at the active
+	// entry by writing /oem/grubenv, so an upgrade from the passive slot
+	// (after a failed upgrade fell back) boots the new image. Without the
+	// host's OEM mounted, that write lands in the container and the node keeps
+	// booting passive. Images do not ship /oem, hence the mkdir.
 	script += `mount --rbind ` + defaultHostMountPath + `/dev /dev
 mount --rbind ` + defaultHostMountPath + `/run /run
+mkdir -p /oem
+mount --rbind ` + defaultHostMountPath + `/oem /oem
 
 ` + upgradeSourceSnippet + `
 `
