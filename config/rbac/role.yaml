@@ -133,6 +133,7 @@ rules:
   resources:
   - nodeops
   - nodeopupgrades
+  - nodeopupgradeschedules
   verbs:
   - create
   - delete
@@ -146,6 +147,7 @@ rules:
   resources:
   - nodeops/finalizers
   - nodeopupgrades/finalizers
+  - nodeopupgradeschedules/finalizers
   verbs:
   - update
 - apiGroups:
@@ -153,6 +155,7 @@ rules:
   resources:
   - nodeops/status
   - nodeopupgrades/status
+  - nodeopupgradeschedules/status
   verbs:
   - get
   - patch
