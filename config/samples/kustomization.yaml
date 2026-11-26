@@ -2,4 +2,5 @@
 resources:
 - kairos.io_v1alpha1_nodeop.yaml
 - build.kairos.io_v1alpha2_osartifact.yaml
+- operator_v1alpha1_nodeopupgradeschedule.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

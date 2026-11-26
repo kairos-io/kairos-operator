@@ -26,4 +26,13 @@ resources:
   kind: OSArtifact
   path: github.com/kairos-io/kairos-operator/api/v1alpha2
   version: v1alpha2
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kairos.io
+  group: operator
+  kind: NodeOpUpgradeSchedule
+  path: github.com/kairos-io/kairos-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"
