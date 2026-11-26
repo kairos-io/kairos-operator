@@ -364,14 +364,46 @@ var _ = Describe("Scheduled registry credentials", func() {
 		Expect(config).To(Equal(&authn.AuthConfig{IdentityToken: "identity", RegistryToken: "registry"}))
 	})
 
-	It("rejects a secret without Docker registry credentials", func() {
-		secret.Type = corev1.SecretTypeOpaque
-		_, err := keychain("default", corev1.LocalObjectReference{Name: secret.Name})
-		Expect(err).To(MatchError(ContainSubstring("must contain Docker registry credentials")))
-	})
+	DescribeTable("uses anonymous access when secrets contain no Docker registry credentials", func(secretType corev1.SecretType, data map[string][]byte) {
+		secret.Type = secretType
+		secret.Data = data
+		chain, err := keychain("default", corev1.LocalObjectReference{Name: secret.Name})
+		Expect(err).NotTo(HaveOccurred())
+		repository, err := name.NewRepository("ghcr.io/example/kairos")
+		Expect(err).NotTo(HaveOccurred())
+		auth, err := chain.Resolve(repository)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(auth).To(Equal(authn.Anonymous))
+	},
+		Entry("unsupported secret type", corev1.SecretTypeOpaque, map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"ghcr.io":{"username":"user","password":"password"}}}`)}),
+		Entry("missing Docker config", corev1.SecretTypeDockerConfigJson, nil),
+		Entry("empty Docker config", corev1.SecretTypeDockerConfigJson, map[string][]byte{corev1.DockerConfigJsonKey: {}}),
+	)
 })
 
 var _ = Describe("Scheduled image policy parsing", func() {
+	DescribeTable("preserves the baseline tag when an image is pinned by digest", func(repository, template, successful, expectedTag string) {
+		schedule := &operatorv1alpha1.NodeOpUpgradeSchedule{
+			Spec: operatorv1alpha1.NodeOpUpgradeScheduleSpec{
+				ImagePolicy:     &operatorv1alpha1.NodeOpUpgradeScheduleImagePolicy{Repository: repository, Semver: ">=3.6.2"},
+				UpgradeTemplate: operatorv1alpha1.NodeOpUpgradeSpec{Image: template},
+			},
+			Status: operatorv1alpha1.NodeOpUpgradeScheduleStatus{LastSuccessfulImage: successful},
+		}
+		policy, err := parseScheduledImagePolicy(schedule)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(policy.currentTag).To(Equal(expectedTag))
+		selected, err := policy.semver.selectUpgrade([]string{"v3.6.3", "v3.6.4"}, policy.currentTag)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(selected).To(Equal("v3.6.4"))
+	},
+		Entry("tagged template", "ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2", "", "v3.6.2"),
+		Entry("digest-pinned template", "ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2@sha256:"+strings.Repeat("a", 64), "", "v3.6.2"),
+		Entry("successful upgrade takes precedence", "ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2", "ghcr.io/example/kairos:v3.6.3@sha256:"+strings.Repeat("b", 64), "v3.6.3"),
+		Entry("registry port", "localhost:5000/kairos", "localhost:5000/kairos:v3.6.2@sha256:"+strings.Repeat("a", 64), "", "v3.6.2"),
+		Entry("IPv6 registry", "[2001:db8::1]:5000/kairos", "[2001:db8::1]:5000/kairos:v3.6.2@sha256:"+strings.Repeat("a", 64), "", "v3.6.2"),
+	)
+
 	DescribeTable("rejects invalid repository or baseline references", func(repository, current string) {
 		schedule := &operatorv1alpha1.NodeOpUpgradeSchedule{Spec: operatorv1alpha1.NodeOpUpgradeScheduleSpec{
 			ImagePolicy:     &operatorv1alpha1.NodeOpUpgradeScheduleImagePolicy{Repository: repository, Semver: ">=3.6.2"},
@@ -383,9 +415,12 @@ var _ = Describe("Scheduled image policy parsing", func() {
 		Entry("tag in repository", "ghcr.io/example/kairos:v3.6.2", "ghcr.io/example/kairos:v3.6.2"),
 		Entry("scheme in repository", "https://ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2"),
 		Entry("digest in repository", "ghcr.io/example/kairos@sha256:abc", "ghcr.io/example/kairos:v3.6.2"),
+		Entry("empty repository segment", "ghcr.io/example//kairos", "ghcr.io/example/kairos:v3.6.2"),
+		Entry("invalid repository separator", "ghcr.io/example/kairos___image", "ghcr.io/example/kairos:v3.6.2"),
 		Entry("mutable current tag", "ghcr.io/example/kairos", "ghcr.io/example/kairos:latest"),
 		Entry("missing current tag", "ghcr.io/example/kairos", "ghcr.io/example/kairos"),
 		Entry("digest-only baseline", "ghcr.io/example/kairos", "ghcr.io/example/kairos@sha256:"+strings.Repeat("a", 64)),
 		Entry("invalid digest", "ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2@sha256:bad"),
+		Entry("multiple digest separators", "ghcr.io/example/kairos", "ghcr.io/example/kairos:v3.6.2@sha256:"+strings.Repeat("a", 64)+"@sha256:"+strings.Repeat("b", 64)),
 	)
 })

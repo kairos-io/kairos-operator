@@ -3,9 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/google/go-containerregistry/pkg/authn"
 	kauth "github.com/google/go-containerregistry/pkg/authn/kubernetes"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -34,10 +34,11 @@ func parseScheduledImagePolicy(schedule *operatorv1alpha1.NodeOpUpgradeSchedule)
 	if err != nil {
 		return nil, err
 	}
-	if strings.Contains(schedule.Spec.ImagePolicy.Repository, "://") || strings.Contains(schedule.Spec.ImagePolicy.Repository, "@") {
-		return nil, fmt.Errorf("imagePolicy.repository must not contain a URL scheme or digest")
+	repositoryName, err := reference.WithName(schedule.Spec.ImagePolicy.Repository)
+	if err != nil {
+		return nil, fmt.Errorf("invalid imagePolicy.repository: %w", err)
 	}
-	repository, err := name.NewRepository(schedule.Spec.ImagePolicy.Repository)
+	repository, err := name.NewRepository(repositoryName.Name())
 	if err != nil {
 		return nil, fmt.Errorf("invalid imagePolicy.repository: %w", err)
 	}
@@ -47,18 +48,18 @@ func parseScheduledImagePolicy(schedule *operatorv1alpha1.NodeOpUpgradeSchedule)
 	}
 	// Validate the whole reference before extracting its tag, including a digest
 	// when present. Digest-only references cannot establish a semantic version.
-	if _, err := name.ParseReference(currentImage); err != nil {
+	current, err := reference.Parse(currentImage)
+	if err != nil {
 		return nil, fmt.Errorf("invalid current image: %w", err)
 	}
-	imageWithoutDigest, _, _ := strings.Cut(currentImage, "@")
-	current, err := name.NewTag(imageWithoutDigest)
-	if err != nil {
-		return nil, fmt.Errorf("invalid current image tag: %w", err)
+	tagged, ok := current.(reference.Tagged)
+	if !ok {
+		return nil, fmt.Errorf("current image must include a semantic version tag")
 	}
-	if _, err := parseSemverTag(current.TagStr()); err != nil {
+	if _, err := parseSemverTag(tagged.Tag()); err != nil {
 		return nil, fmt.Errorf("current image must include a semantic version tag: %w", err)
 	}
-	return &scheduledImagePolicy{repository: repository, semver: policy, currentTag: current.TagStr()}, nil
+	return &scheduledImagePolicy{repository: repository, semver: policy, currentTag: tagged.Tag()}, nil
 }
 
 func (r *NodeOpUpgradeScheduleReconciler) checkScheduledImage(ctx context.Context,
@@ -115,25 +116,15 @@ func (r *NodeOpUpgradeScheduleReconciler) checkScheduledImage(ctx context.Contex
 // namespace. The registry library handles credential decoding and matching.
 func (r *NodeOpUpgradeScheduleReconciler) scheduleRegistryKeychain(ctx context.Context, namespace string,
 	refs []corev1.LocalObjectReference) (authn.Keychain, error) {
-	seen := make(map[string]bool, len(refs))
 	secrets := make([]corev1.Secret, 0, len(refs))
 	for _, ref := range refs {
-		if seen[ref.Name] {
-			continue
-		}
-		seen[ref.Name] = true
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, secret); err != nil {
 			return nil, fmt.Errorf("read image pull secret %q: %w", ref.Name, err)
 		}
-		switch {
-		case secret.Type == corev1.SecretTypeDockerConfigJson && len(secret.Data[corev1.DockerConfigJsonKey]) > 0:
-		case secret.Type == corev1.SecretTypeDockercfg && len(secret.Data[corev1.DockerConfigKey]) > 0:
-		default:
-			return nil, fmt.Errorf("image pull secret %q must contain Docker registry credentials", ref.Name)
-		}
 		secrets = append(secrets, *secret)
 	}
+
 	// This keychain does not read the operator's local or cloud credentials.
 	keychain, err := kauth.NewFromPullSecrets(ctx, secrets)
 	if err != nil {
