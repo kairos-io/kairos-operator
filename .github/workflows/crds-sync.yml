@@ -23,4 +23,10 @@ jobs:
       - name: Verify chart CRDs match generated CRDs
         run: |
           make update-crds
-          git diff --exit-code -- config/crd/bases charts/kairos-operator/crds api/v1alpha1
+          git diff --exit-code -- config/crd/bases config/rbac charts/kairos-operator/crds api/v1alpha1
+
+      - name: Verify chart ClusterRole covers generated RBAC rules
+        run: |
+          helm template kairos-operator charts/kairos-operator \
+            --show-only templates/clusterrole.yaml > "$RUNNER_TEMP/chart-clusterrole.yaml"
+          go run ./hack/chart-rbac-check config/rbac/role.yaml "$RUNNER_TEMP/chart-clusterrole.yaml"
