@@ -179,11 +179,13 @@ var _ = Describe("generateUpgradeCommand version gate", func() {
 			return p
 		}
 
-		// Stub out the two commands the script would otherwise run for real.
+		// Stub out the commands the script would otherwise run for real.
 		binDir := filepath.Join(tmpDir, "bin")
 		Expect(os.MkdirAll(binDir, 0o755)).To(Succeed())
 		marker := filepath.Join(tmpDir, "upgrade-ran")
 		Expect(os.WriteFile(filepath.Join(binDir, "mount"),
+			[]byte("#!/bin/sh\nexit 0\n"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(binDir, "mkdir"),
 			[]byte("#!/bin/sh\nexit 0\n"), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(binDir, "kairos-agent"),
 			[]byte("#!/bin/sh\necho \"$@\" >> \""+marker+"\"\nexit 0\n"), 0o755)).To(Succeed())
@@ -310,9 +312,10 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 	// /etc/hosts and /etc/hostname. The upgrade must copy the image's own
 	// files, so kairos-agent reads from a plain (non-recursive) bind mount of
 	// the container's root, which shows the root filesystem without anything
-	// mounted on top of it. These tests run the real script with `mount` and
-	// `kairos-agent` stubbed on PATH. The `mount --bind` stub fills the bind
-	// point with the given image files, standing in for the image's root.
+	// mounted on top of it. These tests run the real script with `mount`,
+	// `mkdir` and `kairos-agent` stubbed on PATH. The `mount --bind` stub fills
+	// the bind point with the given image files, standing in for the image's
+	// root.
 
 	// fullImage ships all three files Kubernetes mounts over.
 	fullImage := map[string]string{
@@ -348,6 +351,9 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 			"#!/bin/sh\necho \"mount $*\" >> \"%s\"\n"+
 				"if [ \"$1\" = --bind ]; then [ %d -eq 0 ] || exit %d; cp -a \"%s/.\" \"$3\"; fi\nexit 0\n",
 			callLog, bindExit, bindExit, imageDir,
+		)), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(binDir, "mkdir"), []byte(fmt.Sprintf(
+			"#!/bin/sh\necho \"mkdir $*\" >> \"%s\"\n", callLog,
 		)), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(binDir, "kairos-agent"), []byte(fmt.Sprintf(
 			"#!/bin/sh\necho \"kairos-agent $*\" >> \"%s\"\n", callLog,
@@ -421,6 +427,24 @@ var _ = Describe("generateUpgradeCommand upgrade source", func() {
 		}
 		Expect(bindIdx).To(BeNumerically(">=", 0), "calls: %v", r.calls)
 		Expect(agentIdx).To(BeNumerically(">", bindIdx), "calls: %v", r.calls)
+	})
+
+	It("mounts the host's OEM before running kairos-agent, so the next boot entry reaches the host", func() {
+		r := runScript(kairosiov1alpha1.NodeOpUpgradeSpec{}, 0)
+		Expect(r.err).NotTo(HaveOccurred(), r.output)
+
+		oemIdx, agentIdx := -1, -1
+		for i, c := range r.calls {
+			if c == "mount --rbind /host/oem /oem" && oemIdx < 0 {
+				oemIdx = i
+			}
+			if strings.HasPrefix(c, "kairos-agent ") && agentIdx < 0 {
+				agentIdx = i
+			}
+		}
+		Expect(r.calls).To(ContainElement("mkdir -p /oem"))
+		Expect(oemIdx).To(BeNumerically(">=", 0), "calls: %v", r.calls)
+		Expect(agentIdx).To(BeNumerically(">", oemIdx), "calls: %v", r.calls)
 	})
 
 	It("uses the bind mount for both invocations when upgrading both partitions", func() {
