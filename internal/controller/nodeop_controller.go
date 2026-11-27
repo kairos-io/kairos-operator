@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -544,6 +545,7 @@ func (r *NodeOpReconciler) createRebootJobSpec(nodeOp *kairosiov1alpha1.NodeOp, 
 			Spec: corev1.PodSpec{
 				NodeName:         node.Name,
 				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
+				Tolerations:      nodeOp.Spec.Tolerations,
 				InitContainers: []corev1.Container{
 					{
 						Name:      "nodeop",
@@ -610,6 +612,7 @@ func (r *NodeOpReconciler) createStandardJobSpec(nodeOp *kairosiov1alpha1.NodeOp
 			Spec: corev1.PodSpec{
 				NodeName:         node.Name,
 				ImagePullSecrets: nodeOp.Spec.ImagePullSecrets,
+				Tolerations:      nodeOp.Spec.Tolerations,
 				Containers: []corev1.Container{
 					{
 						Name:      "nodeop",
@@ -1300,18 +1303,7 @@ func (r *NodeOpReconciler) createRebootPod(ctx context.Context, nodeOp *kairosio
 			// TolerationSeconds is deliberately omitted: a NoExecute toleration
 			// without it tolerates the taint indefinitely, which is what makes
 			// these tolerations "infinite".
-			Tolerations: []corev1.Toleration{
-				{
-					Key:      corev1.TaintNodeNotReady,
-					Operator: corev1.TolerationOpExists,
-					Effect:   corev1.TaintEffectNoExecute,
-				},
-				{
-					Key:      corev1.TaintNodeUnreachable,
-					Operator: corev1.TolerationOpExists,
-					Effect:   corev1.TaintEffectNoExecute,
-				},
-			},
+			Tolerations: rebootPodTolerations(nodeOp.Spec.Tolerations),
 		},
 	}
 
@@ -2195,6 +2187,7 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 			RestartPolicy:         corev1.RestartPolicyOnFailure,
 			ActiveDeadlineSeconds: &deadline,
 			ImagePullSecrets:      nodeOp.Spec.ImagePullSecrets,
+			Tolerations:           nodeOp.Spec.Tolerations,
 			Containers: []corev1.Container{{
 				Name:                     preflightContainerName,
 				Image:                    image,
@@ -2223,4 +2216,36 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 			}},
 		},
 	}
+}
+
+// rebootPodTolerations returns infinite NoExecute tolerations for the
+// not-ready and unreachable taints, followed by extra without duplicates. An
+// extra NoExecute toleration for either of those taints is left out: its
+// tolerationSeconds would let the taint-eviction controller evict the pod
+// during the reboot.
+func rebootPodTolerations(extra []corev1.Toleration) []corev1.Toleration {
+	tolerations := []corev1.Toleration{
+		{
+			Key:      corev1.TaintNodeNotReady,
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoExecute,
+		},
+		{
+			Key:      corev1.TaintNodeUnreachable,
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoExecute,
+		},
+	}
+	for _, t := range extra {
+		if t.Effect == corev1.TaintEffectNoExecute &&
+			(t.Key == corev1.TaintNodeNotReady || t.Key == corev1.TaintNodeUnreachable) {
+			continue
+		}
+		if !slices.ContainsFunc(tolerations, func(existing corev1.Toleration) bool {
+			return existing.MatchToleration(&t)
+		}) {
+			tolerations = append(tolerations, t)
+		}
+	}
+	return tolerations
 }

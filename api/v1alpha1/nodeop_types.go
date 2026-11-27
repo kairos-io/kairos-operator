@@ -128,6 +128,15 @@ type NodeOpSpec struct {
 	// PreflightResources (built-in default 200m CPU, 128Mi memory).
 	// +optional
 	RebootResources *corev1.ResourceRequirements `json:"rebootResources,omitempty"`
+
+	// Tolerations are added to every Pod this NodeOp creates: the Job Pod,
+	// the preflight Pod and the reboot Pod. Use them to run the operation
+	// on nodes with custom taints. The reboot Pod also keeps its own
+	// NoExecute tolerations for the not-ready and unreachable taints, so a
+	// toleration given here for one of those taints with the NoExecute
+	// effect is not added to the reboot Pod.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // PreflightSpec defines a per-node check that runs before cordon/drain/Job.
