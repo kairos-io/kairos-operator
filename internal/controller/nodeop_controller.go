@@ -2220,7 +2220,8 @@ func (r *NodeOpReconciler) buildPreflightPod(nodeOp *kairosiov1alpha1.NodeOp, no
 
 // rebootPodTolerations returns infinite NoExecute tolerations for the
 // not-ready and unreachable taints, followed by extra without duplicates. An
-// extra NoExecute toleration for either of those taints is left out: its
+// extra toleration with tolerationSeconds that can match one of those taints
+// with the NoExecute effect is left out, including an empty-key wildcard: its
 // tolerationSeconds would let the taint-eviction controller evict the pod
 // during the reboot.
 func rebootPodTolerations(extra []corev1.Toleration) []corev1.Toleration {
@@ -2237,8 +2238,7 @@ func rebootPodTolerations(extra []corev1.Toleration) []corev1.Toleration {
 		},
 	}
 	for _, t := range extra {
-		if t.Effect == corev1.TaintEffectNoExecute &&
-			(t.Key == corev1.TaintNodeNotReady || t.Key == corev1.TaintNodeUnreachable) {
+		if boundsRebootEviction(t) {
 			continue
 		}
 		if !slices.ContainsFunc(tolerations, func(existing corev1.Toleration) bool {
@@ -2248,4 +2248,16 @@ func rebootPodTolerations(extra []corev1.Toleration) []corev1.Toleration {
 		}
 	}
 	return tolerations
+}
+
+// boundsRebootEviction reports whether t can tolerate the not-ready or
+// unreachable NoExecute taint only for a limited time.
+func boundsRebootEviction(t corev1.Toleration) bool {
+	if t.TolerationSeconds == nil {
+		return false
+	}
+	if t.Effect != "" && t.Effect != corev1.TaintEffectNoExecute {
+		return false
+	}
+	return t.Key == "" || t.Key == corev1.TaintNodeNotReady || t.Key == corev1.TaintNodeUnreachable
 }

@@ -133,8 +133,9 @@ type NodeOpSpec struct {
 	// the preflight Pod and the reboot Pod. Use them to run the operation
 	// on nodes with custom taints. The reboot Pod also keeps its own
 	// NoExecute tolerations for the not-ready and unreachable taints, so a
-	// toleration given here for one of those taints with the NoExecute
-	// effect is not added to the reboot Pod.
+	// toleration given here with tolerationSeconds that matches one of
+	// those taints with the NoExecute effect, including an empty-key
+	// wildcard, is not added to the reboot Pod.
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }

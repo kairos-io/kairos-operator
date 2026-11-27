@@ -109,6 +109,38 @@ var _ = Describe("NodeOp tolerations", func() {
 			Expect(rebootPodTolerations(bounded)).To(Equal([]corev1.Toleration{notReadyInfinite, unreachableInfinite}))
 		})
 
+		It("drops a wildcard toleration with tolerationSeconds that would bound the reboot", func() {
+			bounded := []corev1.Toleration{
+				{
+					Operator:          corev1.TolerationOpExists,
+					Effect:            corev1.TaintEffectNoExecute,
+					TolerationSeconds: seconds(300),
+				},
+				{
+					Operator:          corev1.TolerationOpExists,
+					TolerationSeconds: seconds(300),
+				},
+				{
+					Key:               corev1.TaintNodeNotReady,
+					Operator:          corev1.TolerationOpExists,
+					TolerationSeconds: seconds(300),
+				},
+			}
+			Expect(rebootPodTolerations(bounded)).To(Equal([]corev1.Toleration{notReadyInfinite, unreachableInfinite}))
+		})
+
+		It("keeps tolerations that cannot bound the reboot", func() {
+			wildcardForever := corev1.Toleration{Operator: corev1.TolerationOpExists}
+			otherNoExecute := corev1.Toleration{
+				Key:               "dedicated",
+				Operator:          corev1.TolerationOpExists,
+				Effect:            corev1.TaintEffectNoExecute,
+				TolerationSeconds: seconds(300),
+			}
+			Expect(rebootPodTolerations([]corev1.Toleration{wildcardForever, otherNoExecute})).To(Equal(
+				[]corev1.Toleration{notReadyInfinite, unreachableInfinite, wildcardForever, otherNoExecute}))
+		})
+
 		It("does not modify the NodeOp tolerations", func() {
 			Expect(rebootPodTolerations(nodeOp.Spec.Tolerations)).To(HaveLen(4))
 			Expect(nodeOp.Spec.Tolerations).To(Equal([]corev1.Toleration{customTaint, controlPlane}))
